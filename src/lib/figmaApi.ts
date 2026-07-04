@@ -11,12 +11,30 @@ async function figmaFetch(path: string, token: string): Promise<Response> {
   });
 
   if (!response.ok) {
-    throw new Error(
-      `Figma API request failed (${response.status} ${response.statusText}): ${path}`,
-    );
+    throw new Error(describeFigmaError(response, path));
   }
 
   return response;
+}
+
+/** Translates common Figma API failure statuses into actionable messages. */
+function describeFigmaError(response: Response, path: string): string {
+  const { status, statusText } = response;
+
+  if (status === 401 || status === 403) {
+    return `Figma token is invalid or expired (${status} ${statusText}). Generate a new personal access token under Figma → Settings → Security.`;
+  }
+  if (status === 404) {
+    return `Figma file not found (404) — check the Figma file URL: ${path}`;
+  }
+  if (status === 429) {
+    const retryAfter = response.headers.get("Retry-After");
+    const hint = retryAfter
+      ? ` Retry after ${retryAfter} seconds (Retry-After header).`
+      : " Wait a moment before retrying.";
+    return `Figma API rate limit exceeded (429).${hint}`;
+  }
+  return `Figma API request failed (${status} ${statusText}): ${path}`;
 }
 
 /**
@@ -31,8 +49,9 @@ export async function fetchFileTree(fileKey: string, token: string): Promise<unk
 
 /**
  * Fetches image fill references for a file via GET /v1/files/:file_key/images.
- * Used to resolve which nodes have exportable image content before
- * requesting screenshots.
+ * Maps imageRef → CDN URL for original bitmaps. The ingest pipeline detects
+ * image content via node fills (nodeTree.ts) and screenshots via the render
+ * endpoint below; this is kept for callers that need the raw source images.
  */
 export async function fetchImageRefs(
   fileKey: string,
@@ -44,19 +63,21 @@ export async function fetchImageRefs(
 }
 
 /**
- * Renders and downloads a PNG screenshot for the given node IDs via
- * GET /v1/images/:file_key?ids=...&format=png. The returned buffer is fed
- * into visionInterpreter.ts#refineClusterWithVision for labeling.
+ * Renders and downloads PNG screenshots for the given node IDs via
+ * GET /v1/images/:file_key?ids=...&format=png. The buffers are fed into
+ * visionInterpreter.ts#refineClusterWithVision as separate images within a
+ * single vision request.
  *
- * The render endpoint returns one URL per node id rather than a single
- * merged image; since callers only need one screenshot per call right now,
- * this downloads the first URL that comes back.
+ * Figma's render endpoint returns one URL per node ID (not a composited
+ * image), so this resolves to one Buffer per node ID, in the same order as
+ * `nodeIds`. IDs Figma could not render (null URL — e.g. zero-size nodes)
+ * are skipped; only if nothing renders at all does the call fail.
  */
 export async function fetchScreenshot(
   fileKey: string,
   nodeIds: string[],
   token: string,
-): Promise<Buffer> {
+): Promise<Buffer[]> {
   if (nodeIds.length === 0) {
     throw new Error("fetchScreenshot: nodeIds must not be empty");
   }
@@ -75,21 +96,25 @@ export async function fetchScreenshot(
     throw new Error(`Figma image render error: ${renderData.err}`);
   }
 
-  const imageUrl = nodeIds
+  const urls = nodeIds
     .map((id) => renderData.images?.[id])
-    .find((url): url is string => Boolean(url));
+    .filter((url): url is string => Boolean(url));
 
-  if (!imageUrl) {
-    throw new Error(`Figma image render returned no URL for node IDs: ${idsParam}`);
+  if (urls.length === 0) {
+    throw new Error(`Figma image render returned no URLs for node IDs: ${idsParam}`);
   }
 
-  const imageResponse = await fetch(imageUrl);
+  return Promise.all(urls.map((url) => downloadImage(url)));
+}
+
+/** Downloads a single rendered PNG from Figma's CDN into a Buffer. */
+async function downloadImage(url: string): Promise<Buffer> {
+  const imageResponse = await fetch(url);
   if (!imageResponse.ok) {
     throw new Error(
       `Failed to download rendered screenshot (${imageResponse.status} ${imageResponse.statusText})`,
     );
   }
-
   const arrayBuffer = await imageResponse.arrayBuffer();
   return Buffer.from(arrayBuffer);
 }

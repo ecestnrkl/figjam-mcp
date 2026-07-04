@@ -16,9 +16,12 @@ import { getBoardContext } from "./tools/getBoardContext.js";
 import { answerFromBoard } from "./tools/answerFromBoard.js";
 
 /**
- * Builds the MCP server and registers all three tools. Handlers currently
- * return mock data only — real board ingestion/clustering/Q&A logic lands
- * in a follow-up step.
+ * Builds the MCP server and registers all three tools.
+ *
+ * Error handling: handlers throw plain Errors with actionable messages; the
+ * MCP SDK catches anything thrown inside registerTool() handlers and turns
+ * it into { isError: true, content: [{ type: "text", text: message }] }, so
+ * no per-tool try/catch is needed here.
  */
 export function createServer(): McpServer {
   const server = new McpServer({

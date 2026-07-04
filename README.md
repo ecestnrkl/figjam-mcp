@@ -1,23 +1,37 @@
 # figjam-context-mcp
 
-MCP server that turns a FigJam board into queryable context for LLMs. It
-exposes three tools:
+MCP server that turns a FigJam board into queryable context for LLMs — read
+directly via the Figma REST API, no manual PDF-export detour. It exposes
+three tools:
 
-- **ingest_board** — reads a FigJam/Figma file and caches it under a `boardId`.
-- **get_board_context** — returns a text summary and clusters for an ingested board.
-- **answer_from_board** — answers a free-form question about an ingested board.
+- **ingest_board** — reads a FigJam/Figma file, clusters its content
+  spatially, verifies and labels each cluster with a vision model, and
+  caches the result under a `boardId` (= the Figma file key).
+- **get_board_context** — returns a compact, paste-ready context block plus
+  the underlying clusters for an ingested board, optionally scoped to a topic.
+- **answer_from_board** — answers a free-form question about an ingested
+  board, citing the clusters the answer was derived from.
 
-> **Status:** scaffold. The three MCP tools still return mock data — real
-> orchestration lands in Schritt 2. A few purely mechanical `lib/` pieces are
-> already implemented (no design decisions involved):
-> - `figmaApi.ts` — real Figma REST calls (`/files/:key`, `/files/:key/images`, `/images/:key`)
-> - `nodeTree.ts` — flattens the real Figma document tree into `NormalizedNode[]`
-> - `cache.ts` — working in-memory board store
->
-> Still stubbed for Schritt 2 (real design decisions — clustering heuristic,
-> vision prompting, Double Diamond mapping, Q&A synthesis, and wiring it all
-> together in the tool handlers): `spatialCluster.ts`, `visionInterpreter.ts`,
-> `docStructureMapper.ts`, and the orchestration inside `tools/*.ts`.
+## How it works
+
+FigJam boards are spatially chaotic: rotated stickies, overlapping shapes,
+embedded screenshots, no reading order. The pipeline therefore combines
+geometry with vision:
+
+1. `fetchFileTree` + `flattenNodeTree` — pull the raw node tree and flatten
+   it into normalized nodes (position, size, rotation, text, image refs),
+   dropping empty structural noise.
+2. `geometricPreCluster` — rotation-aware distance clustering into coarse
+   groups.
+3. `refineClusterWithVision` — per cluster, node screenshots + extracted
+   text go to a vision model in one request; it confirms which nodes belong
+   together, labels the group, describes embedded images, and writes a 3–5
+   sentence summary.
+4. `mapToDoubleDiamond` (optional, `docStructureHint: "double_diamond"`) —
+   assigns each cluster to Discover / Define / Develop / Deliver (or
+   "unclear").
+5. Results are cached in-memory per file key; `get_board_context` and
+   `answer_from_board` read from the cache.
 
 ## Setup
 
@@ -26,14 +40,27 @@ npm install
 cp .env.example .env
 ```
 
-Fill in `.env` with a Figma personal access token:
+Fill in `.env`:
 
-1. Log in at [figma.com](https://www.figma.com).
-2. Go to **Settings → Security → Personal access tokens**.
-3. Generate a new token and paste it into `.env` as `FIGMA_ACCESS_TOKEN`.
+**`FIGMA_ACCESS_TOKEN`** — log in at [figma.com](https://www.figma.com), go
+to **Settings → Security → Personal access tokens**, generate a token. (Can
+also be passed per-call via the `figmaAccessToken` input on `ingest_board`.)
 
-(You can also pass a token per-call via the `figmaAccessToken` input on
-`ingest_board` instead of using the env var.)
+**`LLM_BASE_URL` / `LLM_API_KEY` / `LLM_VISION_MODEL` / `LLM_TEXT_MODEL`** —
+any OpenAI-compatible endpoint. Free options:
+
+- **OpenRouter** (default in `.env.example`): get a key at
+  [openrouter.ai/keys](https://openrouter.ai/keys). The preconfigured
+  `openrouter/free` model id is OpenRouter's Free Models Router, which
+  auto-routes to a live free model that supports image input — individual
+  `:free` models come and go, the router doesn't. Free tier (~20 req/min,
+  200/day) comfortably covers occasional board scans.
+- **GitHub Models**: free with any GitHub account — create a token at
+  [github.com/marketplace/models](https://github.com/marketplace/models),
+  set `LLM_BASE_URL=https://models.github.ai/inference`.
+
+The same model can serve both the vision and text roles; the two variables
+exist so they're easy to split later.
 
 ## Run
 
@@ -41,14 +68,51 @@ Fill in `.env` with a Figma personal access token:
 npm run dev
 ```
 
-This starts the MCP server over stdio using `tsx watch`.
-
-## Inspect
-
-To try the tools interactively (mock responses for now):
+This starts the MCP server over stdio using `tsx watch`. To try the tools
+interactively:
 
 ```bash
 npx @modelcontextprotocol/inspector npm run dev
+```
+
+## Usage example
+
+Paste in a Figma board link and ingest it:
+
+```jsonc
+// tool: ingest_board
+{
+  "figmaFileUrl": "https://www.figma.com/board/AbC123XyZ456/Semester-Project-Research",
+  "docStructureHint": "double_diamond"
+}
+// → { "boardId": "AbC123XyZ456", "clusterCount": 5,
+//     "summary": "Ingested board AbC123XyZ456: 5 clusters — \"User interview quotes\", \"Problem framing\", …" }
+```
+
+The `boardId` is the file key itself — re-running `ingest_board` on the same
+file refreshes the cache entry. Then pull context, optionally scoped to a
+topic:
+
+```jsonc
+// tool: get_board_context
+{ "boardId": "AbC123XyZ456", "topic": "user research" }
+// → contextText:
+// FigJam board AbC123XyZ456 — 2 of 5 clusters (topic: user research):
+//
+// ## User interview quotes [discover]
+// Sticky notes with verbatim quotes from six student interviews about exam
+// stress. Two embedded screenshots show survey results (bar charts of study
+// habits). Main pain points: unclear requirements and late feedback. …
+```
+
+The `contextText` block is deliberately token-lean — paste it straight into
+a documentation-writing chat (e.g. for a semester report). Or ask directly:
+
+```jsonc
+// tool: answer_from_board
+{ "boardId": "AbC123XyZ456", "question": "What were the main user pain points?" }
+// → { "answer": "Unclear requirements and late feedback …",
+//     "citedClusters": ["User interview quotes", "Problem framing"] }
 ```
 
 ## Scripts
@@ -62,10 +126,10 @@ npx @modelcontextprotocol/inspector npm run dev
 
 ```
 src/
-├── index.ts               # stdio entrypoint
-├── server.ts               # McpServer setup + tool registration
-├── tools/                   # tool handlers (mock data for now)
-├── schemas/                 # Zod input/output schemas per tool
-├── lib/                     # Figma API, clustering, vision, cache (stubs)
-└── types.ts                 # shared domain types
+├── index.ts        # stdio entrypoint
+├── server.ts       # McpServer setup + tool registration
+├── tools/          # tool handlers (ingest pipeline, context, Q&A)
+├── schemas/        # Zod input/output schemas per tool
+├── lib/            # Figma API, node tree, clustering, vision, LLM, cache
+└── types.ts        # shared domain types
 ```
