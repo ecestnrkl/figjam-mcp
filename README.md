@@ -7,9 +7,17 @@ exposes three tools:
 - **get_board_context** — returns a text summary and clusters for an ingested board.
 - **answer_from_board** — answers a free-form question about an ingested board.
 
-> **Status:** scaffold only. All three tools currently return mock data.
-> Fachlogik folgt in Schritt 2 (Figma API calls, node flattening, spatial
-> clustering, vision-based labeling, Double Diamond mapping).
+> **Status:** scaffold. The three MCP tools still return mock data — real
+> orchestration lands in Schritt 2. A few purely mechanical `lib/` pieces are
+> already implemented (no design decisions involved):
+> - `figmaApi.ts` — real Figma REST calls (`/files/:key`, `/files/:key/images`, `/images/:key`)
+> - `nodeTree.ts` — flattens the real Figma document tree into `NormalizedNode[]`
+> - `cache.ts` — working in-memory board store
+>
+> Still stubbed for Schritt 2 (real design decisions — clustering heuristic,
+> vision prompting, Double Diamond mapping, Q&A synthesis, and wiring it all
+> together in the tool handlers): `spatialCluster.ts`, `visionInterpreter.ts`,
+> `docStructureMapper.ts`, and the orchestration inside `tools/*.ts`.
 
 ## Setup
 

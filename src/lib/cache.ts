@@ -6,11 +6,12 @@ import type { BoardData } from "../types.js";
  * get_board_context / answer_from_board. Swap for a persistent store
  * (Redis/SQLite/file) once boards need to survive process restarts.
  */
+const boards = new Map<string, BoardData>();
+
 export function setBoard(boardId: string, data: BoardData): void {
-  // TODO: implement — siehe Folge-Prompt
+  boards.set(boardId, data);
 }
 
 export function getBoard(boardId: string): BoardData | undefined {
-  // TODO: implement — siehe Folge-Prompt
-  return undefined;
+  return boards.get(boardId);
 }
