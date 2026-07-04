@@ -14,6 +14,16 @@ interface RawFigmaNode {
 /** Container types that carry no content of their own — only their children do. */
 const STRUCTURAL_TYPES = new Set(["DOCUMENT", "CANVAS", "PAGE", "FRAME", "GROUP", "SECTION"]);
 
+/**
+ * Types whose children are internal plumbing, not separate board content —
+ * never descended into. FigJam TABLE nodes are the case in point: each
+ * TABLE_CELL child gets a compound id like "T1993:6094;1993:280;1993:309"
+ * (row/column path), which the /v1/images render endpoint rejects with a
+ * 400. Treating the table as one atomic node (screenshotted as a whole,
+ * like a sticky) sidesteps that entirely.
+ */
+const ATOMIC_TYPES = new Set(["TABLE"]);
+
 function isRawFigmaNode(value: unknown): value is RawFigmaNode {
   if (typeof value !== "object" || value === null) {
     return false;
@@ -34,6 +44,24 @@ function extractImageRef(node: RawFigmaNode): string | undefined {
 /** True if the node itself carries content (non-empty text or an image fill). */
 function hasOwnContent(node: RawFigmaNode): boolean {
   return Boolean(node.characters?.trim()) || extractImageRef(node) !== undefined;
+}
+
+/** Builds the NormalizedNode for one raw node (position, rotation, text, image ref). */
+function toNormalizedNode(node: RawFigmaNode, parentId: string | undefined): NormalizedNode {
+  const box = node.absoluteBoundingBox ?? { x: 0, y: 0, width: 0, height: 0 };
+  return {
+    id: node.id,
+    name: node.name,
+    type: node.type,
+    x: box.x,
+    y: box.y,
+    width: box.width,
+    height: box.height,
+    rotation: node.rotation ?? 0,
+    imageRef: extractImageRef(node),
+    text: node.characters,
+    parentId,
+  };
 }
 
 /**
@@ -66,6 +94,11 @@ export function flattenNodeTree(rawFigmaJson: unknown): NormalizedNode[] {
    * contributed content. Returns true if this subtree was kept.
    */
   function visit(node: RawFigmaNode, parentId: string | undefined): boolean {
+    if (ATOMIC_TYPES.has(node.type)) {
+      result.push(toNormalizedNode(node, parentId));
+      return true;
+    }
+
     const childEntries: NormalizedNode[] = [];
     const before = result.length;
 
@@ -86,20 +119,7 @@ export function flattenNodeTree(rawFigmaJson: unknown): NormalizedNode[] {
     const keep = !isStructural || ownContent || childrenHaveContent;
 
     if (keep) {
-      const box = node.absoluteBoundingBox ?? { x: 0, y: 0, width: 0, height: 0 };
-      result.push({
-        id: node.id,
-        name: node.name,
-        type: node.type,
-        x: box.x,
-        y: box.y,
-        width: box.width,
-        height: box.height,
-        rotation: node.rotation ?? 0,
-        imageRef: extractImageRef(node),
-        text: node.characters,
-        parentId,
-      });
+      result.push(toNormalizedNode(node, parentId));
       result.push(...childEntries);
     }
 

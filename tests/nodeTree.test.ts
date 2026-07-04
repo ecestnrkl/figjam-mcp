@@ -72,6 +72,28 @@ const sampleFigmaFile = {
               },
             ],
           },
+          {
+            id: "1:10",
+            name: "Table",
+            type: "TABLE",
+            absoluteBoundingBox: { x: 1700, y: 20, width: 300, height: 150 },
+            children: [
+              {
+                id: "T1:10;1:11;1:12",
+                name: "Table cell",
+                type: "TABLE_CELL",
+                absoluteBoundingBox: { x: 1700, y: 20, width: 150, height: 75 },
+                characters: "Row 1",
+              },
+              {
+                id: "T1:10;1:11;1:13",
+                name: "Table cell",
+                type: "TABLE_CELL",
+                absoluteBoundingBox: { x: 1850, y: 20, width: 150, height: 75 },
+                characters: "Row 2",
+              },
+            ],
+          },
         ],
       },
     ],
@@ -81,9 +103,10 @@ const sampleFigmaFile = {
 describe("flattenNodeTree", () => {
   it("flattens a nested Figma document tree into NormalizedNode[]", () => {
     const nodes = flattenNodeTree(sampleFigmaFile);
-    // canvas + sticky + group + nested sticky + rotated sticky + image shape;
-    // the empty frame/section/group are filtered out.
-    expect(nodes).toHaveLength(6);
+    // canvas + sticky + group + nested sticky + rotated sticky + image shape
+    // + table (kept whole, its cells dropped); the empty frame/section/group
+    // are filtered out.
+    expect(nodes).toHaveLength(7);
 
     const sticky = nodes.find((n) => n.id === "1:2");
     expect(sticky).toEqual({
@@ -124,6 +147,18 @@ describe("flattenNodeTree", () => {
     expect(ids).not.toContain("1:8"); // section with only an empty group
     expect(ids).not.toContain("1:9"); // the empty group itself
     expect(ids).toContain("1:3"); // group WITH contentful child stays
+  });
+
+  it("keeps TABLE nodes whole and drops their TABLE_CELL children", () => {
+    const nodes = flattenNodeTree(sampleFigmaFile);
+    const ids = nodes.map((n) => n.id);
+
+    expect(ids).toContain("1:10"); // the table itself
+    expect(ids).not.toContain("T1:10;1:11;1:12"); // compound-id cells dropped
+    expect(ids).not.toContain("T1:10;1:11;1:13");
+
+    const table = nodes.find((n) => n.id === "1:10");
+    expect(table).toMatchObject({ type: "TABLE", width: 300, height: 150 });
   });
 
   it("throws on input without a document node", () => {
