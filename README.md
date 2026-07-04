@@ -72,8 +72,14 @@ This starts the MCP server over stdio using `tsx watch`. To try the tools
 interactively:
 
 ```bash
-npx @modelcontextprotocol/inspector npm run dev
+npx @modelcontextprotocol/inspector npx tsx src/index.ts
 ```
+
+> **Note:** don't pass plain `npm run dev` to the Inspector (or any MCP
+> client) — npm prints a `> figjam-context-mcp@0.1.0 dev` banner to stdout
+> before the server starts, which corrupts the JSON-RPC stream the client
+> expects there. Either invoke `tsx` directly as above, or add `--silent`:
+> `npx @modelcontextprotocol/inspector npm run dev --silent`.
 
 ## Usage example
 
