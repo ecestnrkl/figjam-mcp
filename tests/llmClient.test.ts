@@ -20,6 +20,7 @@ vi.mock("openai", async (importActual) => {
     constructor(_opts?: unknown) {}
     static RateLimitError = Real.RateLimitError;
     static APIError = Real.APIError;
+    static APIConnectionTimeoutError = Real.APIConnectionTimeoutError;
   }
   return { default: MockOpenAI };
 });
@@ -50,6 +51,41 @@ describe("chatJson", () => {
   it("parses a normal completion", async () => {
     createMock.mockResolvedValueOnce(okCompletion('{"answer":42}'));
     await expect(chatJson("test-model", MESSAGES)).resolves.toEqual({ answer: 42 });
+  });
+
+  it("uses strict json_schema and OpenRouter parameter requirements when a schema is supplied", async () => {
+    createMock.mockResolvedValueOnce(okCompletion('{"answer":42}'));
+
+    await expect(
+      chatJson("test-model", MESSAGES, {
+        schemaName: "answer",
+        jsonSchema: {
+          type: "object",
+          properties: { answer: { type: "number" } },
+          required: ["answer"],
+          additionalProperties: false,
+        },
+      }),
+    ).resolves.toEqual({ answer: 42 });
+
+    const params = createMock.mock.calls[0]?.[0] as {
+      response_format?: { type?: string; json_schema?: { name?: string; strict?: boolean } };
+      provider?: { require_parameters?: boolean };
+    };
+    expect(params.response_format?.type).toBe("json_schema");
+    expect(params.response_format?.json_schema?.name).toBe("answer");
+    expect(params.response_format?.json_schema?.strict).toBe(true);
+    expect(params.provider?.require_parameters).toBe(true);
+  });
+
+  it("falls back to the next model when the first model returns invalid JSON", async () => {
+    createMock
+      .mockResolvedValueOnce(okCompletion("not json"))
+      .mockResolvedValueOnce(okCompletion('{"ok":true}'));
+
+    await expect(chatJson(["bad-model", "good-model"], MESSAGES)).resolves.toEqual({ ok: true });
+    expect(createMock.mock.calls[0]?.[0]).toMatchObject({ model: "bad-model" });
+    expect(createMock.mock.calls[1]?.[0]).toMatchObject({ model: "good-model" });
   });
 
   it("surfaces a clear error when a 200 body is an error envelope (no choices)", async () => {

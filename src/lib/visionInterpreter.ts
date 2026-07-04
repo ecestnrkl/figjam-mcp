@@ -1,6 +1,17 @@
 import type OpenAI from "openai";
 import type { Cluster, NormalizedNode, RefinedCluster } from "../types.js";
-import { chatJson, getVisionModel } from "./llmClient.js";
+import { chatJson, getVisionModels } from "./llmClient.js";
+
+const VISION_REPLY_SCHEMA = {
+  type: "object",
+  properties: {
+    label: { type: "string" },
+    summary: { type: "string" },
+    confirmedNodeIds: { type: "array", items: { type: "string" } },
+  },
+  required: ["label", "summary", "confirmedNodeIds"],
+  additionalProperties: false,
+};
 
 /**
  * Refines one geometric cluster with a vision-capable model.
@@ -31,8 +42,19 @@ export async function refineClusterWithVision(
     ),
   ];
 
-  const reply = await chatJson(getVisionModel(), [{ role: "user", content }]);
-  return applyReply(cluster, reply);
+  let modelId: string | undefined;
+  const reply = await chatJson(
+    getVisionModels(),
+    [{ role: "user", content }],
+    {
+      schemaName: "figjam_cluster_refinement",
+      jsonSchema: VISION_REPLY_SCHEMA,
+      onModelUsed: (model) => {
+        modelId = model;
+      },
+    },
+  );
+  return { ...applyReply(cluster, reply), summarySource: "vision_llm", modelId };
 }
 
 /** Builds the instruction text: task description + per-node text inventory. */

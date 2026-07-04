@@ -11,12 +11,17 @@ import {
   answerFromBoardInputShape,
   answerFromBoardOutputShape,
 } from "./schemas/answerFromBoard.js";
+import {
+  diagnoseLlmConfigInputShape,
+  diagnoseLlmConfigOutputShape,
+} from "./schemas/diagnoseLlmConfig.js";
 import { ingestBoard } from "./tools/ingestBoard.js";
 import { getBoardContext } from "./tools/getBoardContext.js";
 import { answerFromBoard } from "./tools/answerFromBoard.js";
+import { diagnoseLlmConfig } from "./tools/diagnoseLlmConfig.js";
 
 /**
- * Builds the MCP server and registers all three tools.
+ * Builds the MCP server and registers all tools.
  *
  * Error handling: handlers throw plain Errors with actionable messages; the
  * MCP SDK catches anything thrown inside registerTool() handlers and turns
@@ -78,6 +83,24 @@ export function createServer(): McpServer {
       const output = await answerFromBoard(input);
       return {
         content: [{ type: "text" as const, text: output.answer }],
+        structuredContent: output,
+      };
+    },
+  );
+
+  server.registerTool(
+    "diagnose_llm_config",
+    {
+      title: "Diagnose LLM Config",
+      description:
+        "Checks the active free-model LLM configuration with small text and vision JSON calls.",
+      inputSchema: diagnoseLlmConfigInputShape,
+      outputSchema: diagnoseLlmConfigOutputShape,
+    },
+    async () => {
+      const output = await diagnoseLlmConfig();
+      return {
+        content: [{ type: "text" as const, text: output.summary }],
         structuredContent: output,
       };
     },

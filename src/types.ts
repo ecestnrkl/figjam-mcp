@@ -4,6 +4,8 @@
  */
 
 export type DocStructureHint = "double_diamond" | "freeform";
+export type IngestMode = "balanced" | "max_quality" | "max_speed";
+export type SummarySource = "vision_llm" | "text_llm" | "deterministic" | "cache";
 
 export type DoubleDiamondPhase =
   | "discover"
@@ -52,6 +54,16 @@ export interface RefinedCluster extends Cluster {
    */
   confirmedNodeIds: string[];
   phase?: DoubleDiamondPhase;
+  summarySource?: SummarySource;
+  modelId?: string;
+}
+
+export interface IngestQualityReport {
+  modelsUsed: string[];
+  cachedClusters: number;
+  deterministicClusters: number;
+  visionClusters: number;
+  fallbackCount: number;
 }
 
 /** Everything ingest_board produces and later tools read back via cache.ts. */
@@ -59,6 +71,12 @@ export interface BoardData {
   boardId: string;
   fileKey: string;
   docStructureHint: DocStructureHint;
+  ingestMode?: IngestMode;
+  cacheKey?: string;
+  figmaLastModified?: string;
+  nodeHash?: string;
+  modelPreset?: string;
+  qualityReport?: IngestQualityReport;
   nodes: NormalizedNode[];
   clusters: RefinedCluster[];
   createdAt: number;

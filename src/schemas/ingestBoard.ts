@@ -21,6 +21,10 @@ export const ingestBoardInputShape = {
     .enum(["double_diamond", "freeform"])
     .default("freeform")
     .describe("How to interpret the board's structure when mapping clusters to phases"),
+  ingestMode: z
+    .enum(["balanced", "max_quality", "max_speed"])
+    .default("balanced")
+    .describe("How aggressively to use vision LLM calls during ingest"),
 };
 
 export const ingestBoardInputSchema = z.object(ingestBoardInputShape);
@@ -30,6 +34,15 @@ export const ingestBoardOutputShape = {
   boardId: z.string(),
   clusterCount: z.number().int().nonnegative(),
   summary: z.string(),
+  qualityReport: z
+    .object({
+      modelsUsed: z.array(z.string()),
+      cachedClusters: z.number().int().nonnegative(),
+      deterministicClusters: z.number().int().nonnegative(),
+      visionClusters: z.number().int().nonnegative(),
+      fallbackCount: z.number().int().nonnegative(),
+    })
+    .optional(),
 };
 
 export const ingestBoardOutputSchema = z.object(ingestBoardOutputShape);

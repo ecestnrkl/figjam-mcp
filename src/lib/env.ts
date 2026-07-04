@@ -9,3 +9,17 @@ export function readIntEnv(name: string, fallback: number, min: number): number 
   }
   return parsed;
 }
+
+export function readBoolEnv(name: string, fallback: boolean): boolean {
+  const raw = process.env[name]?.trim().toLowerCase();
+  if (!raw) {
+    return fallback;
+  }
+  if (["1", "true", "yes", "on"].includes(raw)) {
+    return true;
+  }
+  if (["0", "false", "no", "off"].includes(raw)) {
+    return false;
+  }
+  throw new Error(`${name} must be a boolean`);
+}

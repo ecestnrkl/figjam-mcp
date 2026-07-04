@@ -1,5 +1,5 @@
 import type { IngestBoardInput, IngestBoardOutput } from "../schemas/ingestBoard.js";
-import type { Cluster, NormalizedNode, RefinedCluster } from "../types.js";
+import type { Cluster, IngestMode, IngestQualityReport, NormalizedNode, RefinedCluster } from "../types.js";
 import { fetchFileTree, fetchScreenshot } from "../lib/figmaApi.js";
 import { flattenNodeTree } from "../lib/nodeTree.js";
 import { geometricPreCluster } from "../lib/spatialCluster.js";
@@ -7,6 +7,14 @@ import { refineClusterWithVision } from "../lib/visionInterpreter.js";
 import { mapToDoubleDiamond } from "../lib/docStructureMapper.js";
 import { setBoard } from "../lib/cache.js";
 import { readIntEnv } from "../lib/env.js";
+import { describeModelConfig } from "../lib/modelRegistry.js";
+import {
+  buildBoardCacheKey,
+  extractFigmaLastModified,
+  hashNormalizedNodes,
+  readCachedBoard,
+  writeCachedBoard,
+} from "../lib/persistentCache.js";
 
 /**
  * Max node screenshots sent to the vision model per cluster. Nodes with
@@ -35,6 +43,7 @@ const MIN_VISION_SLOT_MS = readIntEnv("INGEST_BOARD_MIN_VISION_SLOT_MS", 10000, 
  */
 export async function ingestBoard(input: IngestBoardInput): Promise<IngestBoardOutput> {
   const startedAt = Date.now();
+  const ingestMode = input.ingestMode ?? "balanced";
   const fileKey = parseFigmaFileKey(input.figmaFileUrl);
   const token = input.figmaAccessToken ?? process.env.FIGMA_ACCESS_TOKEN;
   if (!token) {
@@ -45,6 +54,36 @@ export async function ingestBoard(input: IngestBoardInput): Promise<IngestBoardO
 
   const rawTree = await fetchFileTree(fileKey, token);
   const nodes = flattenNodeTree(rawTree);
+  const figmaLastModified = extractFigmaLastModified(rawTree);
+  const nodeHash = hashNormalizedNodes(nodes);
+  const cacheKey = buildBoardCacheKey({
+    fileKey,
+    figmaLastModified,
+    nodeHash,
+    docStructureHint: input.docStructureHint,
+    ingestMode,
+  });
+  const cached = await readCachedBoard(cacheKey);
+  if (cached) {
+    const clusters = cached.clusters.map((cluster) => ({
+      ...cluster,
+      summarySource: "cache" as const,
+    }));
+    const qualityReport = buildQualityReport(clusters, clusters.length);
+    setBoard(fileKey, {
+      ...cached,
+      clusters,
+      createdAt: Date.now(),
+      qualityReport,
+    });
+    return {
+      boardId: fileKey,
+      clusterCount: clusters.length,
+      qualityReport,
+      summary: buildSummary(fileKey, clusters, input.docStructureHint, qualityReport),
+    };
+  }
+
   const clusters = geometricPreCluster(selectClusterableNodes(nodes));
 
   if (clusters.length === 0) {
@@ -55,15 +94,20 @@ export async function ingestBoard(input: IngestBoardInput): Promise<IngestBoardO
   // remaining clusters still get deterministic text summaries and are cached.
   const nodesById = new Map(nodes.map((node) => [node.id, node]));
   const refined: RefinedCluster[] = [];
-  let textFallbackCount = 0;
+  let fallbackCount = 0;
   for (const cluster of clusters) {
     const clusterNodes = cluster.nodeIds
       .map((id) => nodesById.get(id))
       .filter((node): node is NormalizedNode => node !== undefined);
 
+    if (!shouldUseVision(clusterNodes, ingestMode)) {
+      refined.push(refineClusterFromText(cluster, clusterNodes));
+      continue;
+    }
+
     if (!hasVisionBudget(startedAt)) {
       refined.push(refineClusterFromText(cluster, clusterNodes));
-      textFallbackCount++;
+      fallbackCount++;
       continue;
     }
 
@@ -79,34 +123,36 @@ export async function ingestBoard(input: IngestBoardInput): Promise<IngestBoardO
         `Vision refinement failed for ${cluster.id}; using text fallback: ${errorMessage(error)}`,
       );
       refined.push(refineClusterFromText(cluster, clusterNodes));
-      textFallbackCount++;
+      fallbackCount++;
     }
   }
 
   const finalClusters =
     input.docStructureHint === "double_diamond" ? mapToDoubleDiamond(refined) : refined;
+  const qualityReport = { ...buildQualityReport(finalClusters, 0), fallbackCount };
 
-  setBoard(fileKey, {
+  const boardData = {
     boardId: fileKey,
     fileKey,
     docStructureHint: input.docStructureHint,
+    ingestMode,
+    cacheKey,
+    figmaLastModified,
+    nodeHash,
+    modelPreset: describeModelConfig().preset,
+    qualityReport,
     nodes,
     clusters: finalClusters,
     createdAt: Date.now(),
-  });
+  };
+  setBoard(fileKey, boardData);
+  await writeCachedBoard(cacheKey, boardData);
 
-  const labels = finalClusters.map((c) => `"${c.label}"`);
-  const shownLabels = labels.slice(0, 8).join(", ") + (labels.length > 8 ? ", …" : "");
-  const fallbackNote =
-    textFallbackCount > 0
-      ? ` ${textFallbackCount} cluster${textFallbackCount === 1 ? "" : "s"} used text fallback because vision processing timed out, failed, or exceeded the MCP-safe budget.`
-      : "";
   return {
     boardId: fileKey,
     clusterCount: finalClusters.length,
-    summary:
-      `Ingested board ${fileKey}: ${finalClusters.length} clusters — ${shownLabels} ` +
-      `(docStructureHint=${input.docStructureHint}).${fallbackNote}`,
+    qualityReport,
+    summary: buildSummary(fileKey, finalClusters, input.docStructureHint, qualityReport),
   };
 }
 
@@ -154,6 +200,21 @@ function hasVisionBudget(startedAt: number): boolean {
   return VISION_BUDGET_MS > 0 && Date.now() - startedAt + MIN_VISION_SLOT_MS <= VISION_BUDGET_MS;
 }
 
+function shouldUseVision(clusterNodes: NormalizedNode[], ingestMode: IngestMode): boolean {
+  if (ingestMode === "max_speed") {
+    return false;
+  }
+  if (ingestMode === "max_quality") {
+    return true;
+  }
+
+  const text = clusterNodes
+    .map((node) => node.text?.trim() ?? "")
+    .filter(Boolean)
+    .join(" ");
+  return clusterNodes.some((node) => node.imageRef) || text.length < 40;
+}
+
 function refineClusterFromText(cluster: Cluster, clusterNodes: NormalizedNode[]): RefinedCluster {
   const textSnippets = clusterNodes
     .map((node) => node.text?.trim())
@@ -165,6 +226,7 @@ function refineClusterFromText(cluster: Cluster, clusterNodes: NormalizedNode[])
     label: fallbackLabel(cluster.id, textSnippets, clusterNodes),
     summary: fallbackSummary(clusterNodes.length, textSnippets, imageCount),
     confirmedNodeIds: [...cluster.nodeIds],
+    summarySource: "deterministic",
   };
 }
 
@@ -229,4 +291,45 @@ function truncate(text: string, maxLength: number): string {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function buildQualityReport(
+  clusters: RefinedCluster[],
+  cachedClusters: number,
+): IngestQualityReport {
+  const modelsUsed = [
+    ...new Set(
+      clusters
+        .map((cluster) => cluster.modelId)
+        .filter((modelId): modelId is string => Boolean(modelId)),
+    ),
+  ];
+  return {
+    modelsUsed,
+    cachedClusters,
+    deterministicClusters: clusters.filter((cluster) => cluster.summarySource === "deterministic")
+      .length,
+    visionClusters: clusters.filter((cluster) => cluster.summarySource === "vision_llm").length,
+    fallbackCount: 0,
+  };
+}
+
+function buildSummary(
+  fileKey: string,
+  clusters: RefinedCluster[],
+  docStructureHint: IngestBoardInput["docStructureHint"],
+  qualityReport: IngestQualityReport,
+): string {
+  const labels = clusters.map((cluster) => `"${cluster.label}"`);
+  const shownLabels = labels.slice(0, 8).join(", ") + (labels.length > 8 ? ", ..." : "");
+  const fallbackNote =
+    qualityReport.fallbackCount > 0
+      ? ` ${qualityReport.fallbackCount} cluster${qualityReport.fallbackCount === 1 ? "" : "s"} used text fallback because vision processing timed out, failed, or exceeded the MCP-safe budget.`
+      : "";
+  const cacheNote =
+    qualityReport.cachedClusters > 0 ? ` Loaded ${qualityReport.cachedClusters} clusters from cache.` : "";
+  return (
+    `Ingested board ${fileKey}: ${clusters.length} clusters - ${shownLabels} ` +
+    `(docStructureHint=${docStructureHint}).${cacheNote}${fallbackNote}`
+  );
 }

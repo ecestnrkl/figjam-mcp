@@ -1,5 +1,6 @@
 import OpenAI from "openai";
 import { readIntEnv } from "./env.js";
+import { getModelConfig, getModelsForRole } from "./modelRegistry.js";
 
 /**
  * Shared LLM access for visionInterpreter.ts and answerFromBoard.ts.
@@ -8,11 +9,32 @@ import { readIntEnv } from "./env.js";
  * GitHub Models, OpenAI, a local server, …) configured via env vars:
  *   LLM_BASE_URL      e.g. https://openrouter.ai/api/v1
  *   LLM_API_KEY       provider API key
- *   LLM_VISION_MODEL  model used for image+text requests
- *   LLM_TEXT_MODEL    model used for text-only requests
+ *   LLM_MODEL_PRESET  default role-based model preset
+ *   LLM_*_MODELS      optional comma-separated role-specific candidates
  */
 
 let client: OpenAI | undefined;
+
+export class LlmInvalidJsonError extends Error {
+  constructor(
+    message: string,
+    readonly rawReply: string,
+    readonly finishReason?: string | null,
+  ) {
+    super(message);
+    this.name = "LlmInvalidJsonError";
+  }
+}
+
+export interface ChatJsonOptions {
+  maxOutputTokens?: number;
+  schemaName?: string;
+  jsonSchema?: JsonSchema;
+  requireStructuredOutputs?: boolean;
+  onModelUsed?: (model: string) => void;
+}
+
+export type JsonSchema = Record<string, unknown>;
 
 /** Reads a required env var or fails with a setup hint. */
 function requireEnv(name: string): string {
@@ -37,11 +59,23 @@ export function getLlmClient(): OpenAI {
 }
 
 export function getVisionModel(): string {
-  return requireEnv("LLM_VISION_MODEL");
+  return getVisionModels()[0]!;
 }
 
 export function getTextModel(): string {
-  return requireEnv("LLM_TEXT_MODEL");
+  return getTextModels()[0]!;
+}
+
+export function getVisionModels(): string[] {
+  return getModelsForRole("vision");
+}
+
+export function getTextModels(): string[] {
+  return getModelsForRole("text");
+}
+
+export function getFastTextModels(): string[] {
+  return getModelsForRole("fastText");
 }
 
 /** Max extra attempts after a 429 before giving up (free-tier limits reset per minute). */
@@ -78,46 +112,135 @@ const MAX_OUTPUT_TOKENS = readIntEnv("LLM_MAX_OUTPUT_TOKENS", 14096, 1);
  * block extracted) and failures surface as clear errors.
  */
 export async function chatJson(
-  model: string,
+  model: string | string[],
   messages: OpenAI.ChatCompletionMessageParam[],
+  options: ChatJsonOptions = {},
 ): Promise<unknown> {
   const llm = getLlmClient();
+  const models = Array.isArray(model) ? model : [model];
+  const errors: unknown[] = [];
+
+  for (const candidate of models) {
+    try {
+      const completion = await createJsonCompletion(llm, candidate, messages, options);
+      const choice = completion.choices[0];
+      const raw = choice?.message?.content;
+      if (!raw) {
+        throw new Error(`LLM (${candidate}) returned an empty response`);
+      }
+      const parsed = parseJsonReply(raw, candidate, choice?.finish_reason);
+      options.onModelUsed?.(candidate);
+      return parsed;
+    } catch (error) {
+      errors.push(error);
+      if (candidate !== models.at(-1) && shouldTryNextModel(error)) {
+        console.error(
+          `LLM model ${candidate} failed; trying next candidate: ${errorMessage(error)}`,
+        );
+        continue;
+      }
+      throw normalizeLlmError(error);
+    }
+  }
+
+  throw normalizeLlmError(errors.at(-1) ?? new Error("LLM request failed"));
+}
+
+async function createJsonCompletion(
+  llm: OpenAI,
+  model: string,
+  messages: OpenAI.ChatCompletionMessageParam[],
+  options: ChatJsonOptions,
+): Promise<OpenAI.ChatCompletion> {
   const base: OpenAI.ChatCompletionCreateParamsNonStreaming = {
     model,
     messages,
     temperature: 0.2,
-    max_tokens: MAX_OUTPUT_TOKENS,
+    max_tokens: options.maxOutputTokens ?? MAX_OUTPUT_TOKENS,
   };
 
-  let completion: OpenAI.ChatCompletion;
-  try {
-    completion = await createCompletion(llm, { ...base, response_format: { type: "json_object" } });
-  } catch (error) {
-    const unsupportedParam =
-      error instanceof OpenAI.APIError &&
-      typeof error.status === "number" &&
-      error.status >= 400 &&
-      error.status < 500 &&
-      error.status !== 401 &&
-      error.status !== 403 &&
-      error.status !== 429;
-    if (!unsupportedParam) {
-      // Wrap raw SDK errors for context; pass our own descriptive errors
-      // (e.g. an embedded-error envelope) through unchanged to avoid double prefixing.
-      throw error instanceof OpenAI.APIError
-        ? new Error(`LLM request failed: ${error.message}`)
-        : error;
+  const formats = responseFormatAttempts(options);
+  for (const responseFormat of formats) {
+    try {
+      const params = responseFormat ? { ...base, response_format: responseFormat } : base;
+      return await createCompletion(llm, withProviderRequirements(params));
+    } catch (error) {
+      if (!isUnsupportedParamError(error) || responseFormat === formats.at(-1)) {
+        throw error;
+      }
     }
-    // Model likely doesn't support response_format — fall back to prompt-only JSON.
-    completion = await createCompletion(llm, base);
   }
 
-  const choice = completion.choices[0];
-  const raw = choice?.message?.content;
-  if (!raw) {
-    throw new Error(`LLM (${model}) returned an empty response`);
+  return createCompletion(llm, base);
+}
+
+type ResponseFormat = NonNullable<OpenAI.ChatCompletionCreateParamsNonStreaming["response_format"]>;
+type ParamsWithOpenRouterProvider = OpenAI.ChatCompletionCreateParamsNonStreaming & {
+  provider?: { require_parameters?: boolean };
+};
+
+function responseFormatAttempts(options: ChatJsonOptions): Array<ResponseFormat | undefined> {
+  if (options.jsonSchema) {
+    return [
+      {
+        type: "json_schema",
+        json_schema: {
+          name: options.schemaName ?? "structured_reply",
+          strict: true,
+          schema: options.jsonSchema,
+        },
+      } as ResponseFormat,
+      { type: "json_object" },
+      undefined,
+    ];
   }
-  return parseJsonReply(raw, model, choice?.finish_reason);
+  return [{ type: "json_object" }, undefined];
+}
+
+function withProviderRequirements(
+  params: OpenAI.ChatCompletionCreateParamsNonStreaming,
+): OpenAI.ChatCompletionCreateParamsNonStreaming {
+  if (!params.response_format || !getModelConfig().providerRequireParameters) {
+    return params;
+  }
+  return {
+    ...params,
+    provider: { require_parameters: true },
+  } as ParamsWithOpenRouterProvider;
+}
+
+function isUnsupportedParamError(error: unknown): boolean {
+  return (
+    error instanceof OpenAI.APIError &&
+    typeof error.status === "number" &&
+    error.status >= 400 &&
+    error.status < 500 &&
+    error.status !== 401 &&
+    error.status !== 403 &&
+    error.status !== 429
+  );
+}
+
+function shouldTryNextModel(error: unknown): boolean {
+  if (error instanceof LlmInvalidJsonError || isLlmTimeout(error)) {
+    return true;
+  }
+  if (error instanceof OpenAI.RateLimitError) {
+    return true;
+  }
+  if (error instanceof OpenAI.APIError) {
+    return error.status === 429 || error.status >= 500 || isUnsupportedParamError(error);
+  }
+  if (error instanceof Error) {
+    return /rate limit|no endpoints|no choices|timed out|unsupported|response contained/i.test(
+      error.message,
+    );
+  }
+  return false;
+}
+
+function normalizeLlmError(error: unknown): unknown {
+  return error instanceof OpenAI.APIError ? new Error(`LLM request failed: ${error.message}`) : error;
 }
 
 /**
@@ -139,10 +262,10 @@ interface EmbeddedErrorEnvelope {
 /**
  * Calls the chat completions endpoint, retrying on rate limits with backoff
  * (honoring a Retry-After header when the provider sends one). Free-tier
- * routers like OpenRouter's `openrouter/free` hit this often on boards with
- * many clusters, since each cluster is one more request against a per-minute
- * quota. Rate limits arrive two ways — as a thrown HTTP 429, or embedded in a
- * 200 body — and both are retried here. Other failures surface as clear errors.
+ * free providers hit this often on boards with many image-heavy clusters, since
+ * each refined cluster is one more request against a per-minute quota. Rate
+ * limits arrive two ways — as a thrown HTTP 429, or embedded in a 200 body —
+ * and both are retried here. Other failures surface as clear errors.
  */
 async function createCompletion(
   llm: OpenAI,
@@ -224,10 +347,15 @@ function retryDelayMs(error: InstanceType<typeof OpenAI.RateLimitError>, attempt
 }
 
 function isLlmTimeout(error: unknown): boolean {
+  const TimeoutError = OpenAI.APIConnectionTimeoutError;
   return (
-    error instanceof OpenAI.APIConnectionTimeoutError ||
+    (typeof TimeoutError === "function" && error instanceof TimeoutError) ||
     (error instanceof Error && error.name === "APIConnectionTimeoutError")
   );
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function sleep(ms: number): Promise<void> {
@@ -257,10 +385,13 @@ function parseJsonReply(raw: string, model: string, finishReason?: string | null
   }
   const hint =
     finishReason === "length"
-      ? " The reply was cut off at max_tokens before the JSON was complete — " +
-        "raise MAX_OUTPUT_TOKENS (reasoning models spend part of the budget thinking first)."
+      ? " The reply was cut off at max_tokens before valid JSON was produced — " +
+        "the selected model may be emitting visible reasoning instead of JSON. " +
+        "Use a JSON-capable/non-reasoning model or raise the relevant output-token limit."
       : "";
-  throw new Error(
+  throw new LlmInvalidJsonError(
     `LLM (${model}) did not return valid JSON.${hint} Reply started with: "${raw.slice(0, 120)}"`,
+    raw,
+    finishReason,
   );
 }

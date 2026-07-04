@@ -2,7 +2,7 @@
 
 MCP server that turns a FigJam board into queryable context for LLMs — read
 directly via the Figma REST API, no manual PDF-export detour. It exposes
-three tools:
+four tools:
 
 - **ingest_board** — reads a FigJam/Figma file, clusters its content
   spatially, verifies and labels each cluster with a vision model, and
@@ -11,6 +11,8 @@ three tools:
   the underlying clusters for an ingested board, optionally scoped to a topic.
 - **answer_from_board** — answers a free-form question about an ingested
   board, citing the clusters the answer was derived from.
+- **diagnose_llm_config** — runs small text + vision JSON checks against the
+  active model setup and reports actionable failures.
 
 ## How it works
 
@@ -46,21 +48,27 @@ Fill in `.env`:
 to **Settings → Security → Personal access tokens**, generate a token. (Can
 also be passed per-call via the `figmaAccessToken` input on `ingest_board`.)
 
-**`LLM_BASE_URL` / `LLM_API_KEY` / `LLM_VISION_MODEL` / `LLM_TEXT_MODEL`** —
-any OpenAI-compatible endpoint. Free options:
+**`LLM_BASE_URL` / `LLM_API_KEY` / `LLM_MODEL_PRESET`** — any
+OpenAI-compatible endpoint. Free options:
 
 - **OpenRouter** (default in `.env.example`): get a key at
-  [openrouter.ai/keys](https://openrouter.ai/keys). The preconfigured
-  `openrouter/free` model id is OpenRouter's Free Models Router, which
-  auto-routes to a live free model that supports image input — individual
-  `:free` models come and go, the router doesn't. Free tier (~20 req/min,
-  200/day) comfortably covers occasional board scans.
+  [openrouter.ai/keys](https://openrouter.ai/keys). The default
+  `student-free` preset uses explicit free models for each role:
+  `google/gemma-4-26b-a4b-it:free` for vision and
+  `qwen/qwen3-next-80b-a3b-instruct:free` plus
+  `nvidia/nemotron-nano-9b-v2:free` for text/Q&A. `openrouter/free` remains
+  a last-resort fallback, not the primary model.
 - **GitHub Models**: free with any GitHub account — create a token at
   [github.com/marketplace/models](https://github.com/marketplace/models),
   set `LLM_BASE_URL=https://models.github.ai/inference`.
 
-The same model can serve both the vision and text roles; the two variables
-exist so they're easy to split later.
+Optional overrides:
+
+- `LLM_VISION_MODELS` — comma-separated vision model candidates.
+- `LLM_TEXT_MODELS` — comma-separated text/Q&A candidates.
+- `LLM_FAST_TEXT_MODELS` — comma-separated small/fast text candidates.
+- Legacy `LLM_VISION_MODEL` / `LLM_TEXT_MODEL` still work as first-candidate
+  overrides.
 
 ## Run
 
@@ -92,12 +100,18 @@ The server now keeps provider calls bounded by default:
 - `FIGMA_REQUEST_TIMEOUT_MS=15000`
 - `LLM_REQUEST_TIMEOUT_MS=20000`
 - `LLM_RATE_LIMIT_RETRIES=1`
+- `LLM_ANSWER_MAX_OUTPUT_TOKENS=800`
 - `INGEST_BOARD_VISION_BUDGET_MS=35000`
+- `FIGMA_SCREENSHOT_DOWNLOAD_CONCURRENCY=3`
 
-When the vision budget runs out, remaining clusters are still cached using a
-text-based fallback summary. If you need full vision interpretation for every
-cluster, raise your MCP client's request timeout first, then increase the
-values above in `.env`.
+`ingest_board` defaults to `ingestMode: "balanced"`: text-rich clusters use
+deterministic summaries, while image-heavy or low-text clusters use vision
+within the budget. `max_speed` skips vision; `max_quality` attempts vision for
+every cluster. Finished ingests are persisted under `.cache/figjam-mcp/`, keyed
+by file state, node hash, model preset, document hint, and ingest mode.
+
+Run `diagnose_llm_config` after changing model env vars. It checks text JSON,
+vision JSON, and fallback setup without ingesting a board.
 
 ## Usage example
 

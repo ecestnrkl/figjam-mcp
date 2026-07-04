@@ -7,6 +7,11 @@ import { readIntEnv } from "./env.js";
 
 const FIGMA_API_BASE = "https://api.figma.com/v1";
 const FIGMA_REQUEST_TIMEOUT_MS = readIntEnv("FIGMA_REQUEST_TIMEOUT_MS", 15000, 1000);
+const SCREENSHOT_DOWNLOAD_CONCURRENCY = readIntEnv(
+  "FIGMA_SCREENSHOT_DOWNLOAD_CONCURRENCY",
+  3,
+  1,
+);
 
 async function figmaFetch(path: string, token: string): Promise<Response> {
   let response: Response;
@@ -118,7 +123,7 @@ export async function fetchScreenshot(
     throw new Error(`Figma image render returned no URLs for node IDs: ${idsParam}`);
   }
 
-  return Promise.all(urls.map((url) => downloadImage(url)));
+  return mapWithConcurrency(urls, SCREENSHOT_DOWNLOAD_CONCURRENCY, downloadImage);
 }
 
 /** Downloads a single rendered PNG from Figma's CDN into a Buffer. */
@@ -150,4 +155,30 @@ function isTimeoutError(error: unknown): boolean {
     error instanceof DOMException && error.name === "TimeoutError" ||
     error instanceof Error && error.name === "AbortError"
   );
+}
+
+async function mapWithConcurrency<T, R>(
+  values: T[],
+  concurrency: number,
+  mapper: (value: T) => Promise<R>,
+): Promise<R[]> {
+  const results: R[] = [];
+  let nextIndex = 0;
+
+  async function worker(): Promise<void> {
+    for (;;) {
+      const index = nextIndex++;
+      if (index >= values.length) {
+        return;
+      }
+      results[index] = await mapper(values[index]!);
+    }
+  }
+
+  const workers = Array.from(
+    { length: Math.min(concurrency, values.length) },
+    () => worker(),
+  );
+  await Promise.all(workers);
+  return results;
 }
