@@ -1,11 +1,12 @@
 import type { IngestBoardInput, IngestBoardOutput } from "../schemas/ingestBoard.js";
-import type { NormalizedNode, RefinedCluster } from "../types.js";
+import type { Cluster, NormalizedNode, RefinedCluster } from "../types.js";
 import { fetchFileTree, fetchScreenshot } from "../lib/figmaApi.js";
 import { flattenNodeTree } from "../lib/nodeTree.js";
 import { geometricPreCluster } from "../lib/spatialCluster.js";
 import { refineClusterWithVision } from "../lib/visionInterpreter.js";
 import { mapToDoubleDiamond } from "../lib/docStructureMapper.js";
 import { setBoard } from "../lib/cache.js";
+import { readIntEnv } from "../lib/env.js";
 
 /**
  * Max node screenshots sent to the vision model per cluster. Nodes with
@@ -14,6 +15,14 @@ import { setBoard } from "../lib/cache.js";
  * the model via the prompt, so capping only limits redundant pixels.
  */
 const MAX_SCREENSHOTS_PER_CLUSTER = 6;
+
+/**
+ * MCP UI clients often time out a tool call before slow Figma/LLM providers do.
+ * Keep the expensive vision phase inside a local budget and fall back to a
+ * deterministic text summary for remaining clusters.
+ */
+const VISION_BUDGET_MS = readIntEnv("INGEST_BOARD_VISION_BUDGET_MS", 35000, 0);
+const MIN_VISION_SLOT_MS = readIntEnv("INGEST_BOARD_MIN_VISION_SLOT_MS", 10000, 0);
 
 /**
  * ingest_board — full pipeline: fetch the Figma file, flatten + filter the
@@ -25,6 +34,7 @@ const MAX_SCREENSHOTS_PER_CLUSTER = 6;
  * repeated ingest_board call simply refreshes it.
  */
 export async function ingestBoard(input: IngestBoardInput): Promise<IngestBoardOutput> {
+  const startedAt = Date.now();
   const fileKey = parseFigmaFileKey(input.figmaFileUrl);
   const token = input.figmaAccessToken ?? process.env.FIGMA_ACCESS_TOKEN;
   if (!token) {
@@ -41,22 +51,36 @@ export async function ingestBoard(input: IngestBoardInput): Promise<IngestBoardO
     throw new Error(`Board ${fileKey} contains no content nodes to ingest`);
   }
 
-  // Refine clusters strictly one at a time: each iteration is one Figma
-  // render call + one vision call, which stays well inside free-tier LLM
-  // rate limits (~20 req/min) even for large boards.
+  // Refine clusters one at a time while the MCP-safe vision budget allows it;
+  // remaining clusters still get deterministic text summaries and are cached.
   const nodesById = new Map(nodes.map((node) => [node.id, node]));
   const refined: RefinedCluster[] = [];
+  let textFallbackCount = 0;
   for (const cluster of clusters) {
     const clusterNodes = cluster.nodeIds
       .map((id) => nodesById.get(id))
       .filter((node): node is NormalizedNode => node !== undefined);
 
-    const screenshots = await fetchScreenshot(
-      fileKey,
-      pickScreenshotNodes(clusterNodes),
-      token,
-    );
-    refined.push(await refineClusterWithVision(cluster, screenshots, clusterNodes));
+    if (!hasVisionBudget(startedAt)) {
+      refined.push(refineClusterFromText(cluster, clusterNodes));
+      textFallbackCount++;
+      continue;
+    }
+
+    try {
+      const screenshots = await fetchScreenshot(
+        fileKey,
+        pickScreenshotNodes(clusterNodes),
+        token,
+      );
+      refined.push(await refineClusterWithVision(cluster, screenshots, clusterNodes));
+    } catch (error) {
+      console.error(
+        `Vision refinement failed for ${cluster.id}; using text fallback: ${errorMessage(error)}`,
+      );
+      refined.push(refineClusterFromText(cluster, clusterNodes));
+      textFallbackCount++;
+    }
   }
 
   const finalClusters =
@@ -73,12 +97,16 @@ export async function ingestBoard(input: IngestBoardInput): Promise<IngestBoardO
 
   const labels = finalClusters.map((c) => `"${c.label}"`);
   const shownLabels = labels.slice(0, 8).join(", ") + (labels.length > 8 ? ", …" : "");
+  const fallbackNote =
+    textFallbackCount > 0
+      ? ` ${textFallbackCount} cluster${textFallbackCount === 1 ? "" : "s"} used text fallback because vision processing timed out, failed, or exceeded the MCP-safe budget.`
+      : "";
   return {
     boardId: fileKey,
     clusterCount: finalClusters.length,
     summary:
       `Ingested board ${fileKey}: ${finalClusters.length} clusters — ${shownLabels} ` +
-      `(docStructureHint=${input.docStructureHint}).`,
+      `(docStructureHint=${input.docStructureHint}).${fallbackNote}`,
   };
 }
 
@@ -120,4 +148,85 @@ function pickScreenshotNodes(clusterNodes: NormalizedNode[]): string[] {
     return imageDiff !== 0 ? imageDiff : b.width * b.height - a.width * a.height;
   });
   return ranked.slice(0, MAX_SCREENSHOTS_PER_CLUSTER).map((node) => node.id);
+}
+
+function hasVisionBudget(startedAt: number): boolean {
+  return VISION_BUDGET_MS > 0 && Date.now() - startedAt + MIN_VISION_SLOT_MS <= VISION_BUDGET_MS;
+}
+
+function refineClusterFromText(cluster: Cluster, clusterNodes: NormalizedNode[]): RefinedCluster {
+  const textSnippets = clusterNodes
+    .map((node) => node.text?.trim())
+    .filter((text): text is string => Boolean(text));
+  const imageCount = clusterNodes.filter((node) => node.imageRef).length;
+
+  return {
+    ...cluster,
+    label: fallbackLabel(cluster.id, textSnippets, clusterNodes),
+    summary: fallbackSummary(clusterNodes.length, textSnippets, imageCount),
+    confirmedNodeIds: [...cluster.nodeIds],
+  };
+}
+
+function fallbackLabel(
+  clusterId: string,
+  textSnippets: string[],
+  clusterNodes: NormalizedNode[],
+): string {
+  const fromText = textSnippets.find((text) => text.length > 0);
+  if (fromText) {
+    return compactLabel(fromText);
+  }
+
+  const fromName = clusterNodes
+    .map((node) => node.name.trim())
+    .find((name) => name && !isGenericNodeName(name));
+  return fromName ? compactLabel(fromName) : `Cluster ${clusterId.replace(/^cluster_/, "")}`;
+}
+
+function fallbackSummary(
+  nodeCount: number,
+  textSnippets: string[],
+  imageCount: number,
+): string {
+  const textCount = textSnippets.length;
+  const parts = [
+    `Cluster contains ${nodeCount} board element${nodeCount === 1 ? "" : "s"} with ${textCount} extracted text item${textCount === 1 ? "" : "s"}.`,
+  ];
+
+  const highlights = textSnippets.slice(0, 5).map((text) => `"${truncate(text, 120)}"`);
+  if (highlights.length > 0) {
+    parts.push(`Extracted text highlights: ${highlights.join("; ")}.`);
+  } else {
+    parts.push("No readable text was extracted from this cluster.");
+  }
+
+  if (imageCount > 0) {
+    parts.push(
+      `It includes ${imageCount} image element${imageCount === 1 ? "" : "s"} that were not visually described because timeout-safe fallback was used.`,
+    );
+  }
+
+  parts.push("The source node IDs are retained for follow-up context.");
+  return parts.join(" ");
+}
+
+function compactLabel(text: string): string {
+  const normalized = text.replace(/\s+/g, " ").replace(/^["']|["']$/g, "").trim();
+  const words = normalized.split(" ").filter(Boolean).slice(0, 6).join(" ");
+  return truncate(words || normalized, 60);
+}
+
+function isGenericNodeName(name: string): boolean {
+  return /^(sticky|text|rectangle|ellipse|shape|connector|section|group|frame|table)( \d+)?$/i.test(
+    name,
+  );
+}
+
+function truncate(text: string, maxLength: number): string {
+  return text.length <= maxLength ? text : `${text.slice(0, maxLength - 3)}...`;
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }

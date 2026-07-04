@@ -1,4 +1,5 @@
 import OpenAI from "openai";
+import { readIntEnv } from "./env.js";
 
 /**
  * Shared LLM access for visionInterpreter.ts and answerFromBoard.ts.
@@ -29,6 +30,8 @@ export function getLlmClient(): OpenAI {
   client ??= new OpenAI({
     baseURL: requireEnv("LLM_BASE_URL"),
     apiKey: requireEnv("LLM_API_KEY"),
+    timeout: LLM_REQUEST_TIMEOUT_MS,
+    maxRetries: LLM_SDK_MAX_RETRIES,
   });
   return client;
 }
@@ -42,7 +45,17 @@ export function getTextModel(): string {
 }
 
 /** Max extra attempts after a 429 before giving up (free-tier limits reset per minute). */
-const MAX_RATE_LIMIT_RETRIES = 4;
+const MAX_RATE_LIMIT_RETRIES = readIntEnv("LLM_RATE_LIMIT_RETRIES", 1, 0);
+
+/** Cap provider Retry-After delays so MCP clients receive a response before their own timeout. */
+const MAX_RATE_LIMIT_BACKOFF_MS = readIntEnv("LLM_RATE_LIMIT_MAX_BACKOFF_MS", 5000, 0);
+
+/**
+ * The OpenAI SDK defaults to 10 minutes and retries timeouts twice. MCP UI
+ * clients usually give up much earlier, so keep LLM calls bounded here.
+ */
+const LLM_REQUEST_TIMEOUT_MS = readIntEnv("LLM_REQUEST_TIMEOUT_MS", 20000, 1000);
+const LLM_SDK_MAX_RETRIES = readIntEnv("LLM_SDK_MAX_RETRIES", 0, 0);
 
 /**
  * Output token budget. This must cover BOTH the JSON answer AND any hidden
@@ -53,7 +66,7 @@ const MAX_RATE_LIMIT_RETRIES = 4;
  * produced — surfacing as a confusing "did not return valid JSON" on a reply
  * that starts with prose like "The user wants me to analyze…".
  */
-const MAX_OUTPUT_TOKENS = 4096;
+const MAX_OUTPUT_TOKENS = readIntEnv("LLM_MAX_OUTPUT_TOKENS", 14096, 1);
 
 /**
  * Runs a chat completion that must yield a JSON object.
@@ -140,6 +153,12 @@ async function createCompletion(
     try {
       completion = await llm.chat.completions.create(params);
     } catch (error) {
+      if (isLlmTimeout(error)) {
+        throw new Error(
+          `LLM request timed out after ${Math.round(LLM_REQUEST_TIMEOUT_MS / 1000)}s. ` +
+            "Use a faster model, lower LLM_MAX_OUTPUT_TOKENS, or increase LLM_REQUEST_TIMEOUT_MS/client timeout.",
+        );
+      }
       if (!(error instanceof OpenAI.RateLimitError) || attempt >= MAX_RATE_LIMIT_RETRIES) {
         throw error;
       }
@@ -190,17 +209,25 @@ function isRateLimit(error: NonNullable<EmbeddedErrorEnvelope["error"]>): boolea
 
 /** Logs a retry notice and waits before the next attempt. */
 async function backoff(waitMs: number, attempt: number): Promise<void> {
+  const cappedWaitMs = Math.min(waitMs, MAX_RATE_LIMIT_BACKOFF_MS);
   console.error(
-    `LLM rate limited — retrying in ${Math.round(waitMs / 1000)}s ` +
+    `LLM rate limited — retrying in ${Math.round(cappedWaitMs / 1000)}s ` +
       `(attempt ${attempt + 1}/${MAX_RATE_LIMIT_RETRIES})…`,
   );
-  await sleep(waitMs);
+  await sleep(cappedWaitMs);
 }
 
 /** Retry-After header (seconds) if the provider sent one, else exponential backoff from 2s. */
 function retryDelayMs(error: InstanceType<typeof OpenAI.RateLimitError>, attempt: number): number {
   const retryAfter = Number(error.headers?.get("retry-after"));
   return Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter * 1000 : 2 ** attempt * 2000;
+}
+
+function isLlmTimeout(error: unknown): boolean {
+  return (
+    error instanceof OpenAI.APIConnectionTimeoutError ||
+    (error instanceof Error && error.name === "APIConnectionTimeoutError")
+  );
 }
 
 function sleep(ms: number): Promise<void> {

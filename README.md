@@ -81,6 +81,24 @@ npx @modelcontextprotocol/inspector npx tsx src/index.ts
 > expects there. Either invoke `tsx` directly as above, or add `--silent`:
 > `npx @modelcontextprotocol/inspector npm run dev --silent`.
 
+### MCP UI timeouts
+
+`ingest_board` can be slow because it calls Figma and a vision LLM for board
+clusters. If the MCP UI shows `MCP error -32001: Request timed out`, the client
+gave up before those external calls finished.
+
+The server now keeps provider calls bounded by default:
+
+- `FIGMA_REQUEST_TIMEOUT_MS=15000`
+- `LLM_REQUEST_TIMEOUT_MS=20000`
+- `LLM_RATE_LIMIT_RETRIES=1`
+- `INGEST_BOARD_VISION_BUDGET_MS=35000`
+
+When the vision budget runs out, remaining clusters are still cached using a
+text-based fallback summary. If you need full vision interpretation for every
+cluster, raise your MCP client's request timeout first, then increase the
+values above in `.env`.
+
 ## Usage example
 
 Paste in a Figma board link and ingest it:

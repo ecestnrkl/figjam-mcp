@@ -3,12 +3,26 @@
  * All three functions use the passed-in token as the "X-Figma-Token" header.
  */
 
+import { readIntEnv } from "./env.js";
+
 const FIGMA_API_BASE = "https://api.figma.com/v1";
+const FIGMA_REQUEST_TIMEOUT_MS = readIntEnv("FIGMA_REQUEST_TIMEOUT_MS", 15000, 1000);
 
 async function figmaFetch(path: string, token: string): Promise<Response> {
-  const response = await fetch(`${FIGMA_API_BASE}${path}`, {
-    headers: { "X-Figma-Token": token },
-  });
+  let response: Response;
+  try {
+    response = await fetch(`${FIGMA_API_BASE}${path}`, {
+      headers: { "X-Figma-Token": token },
+      signal: AbortSignal.timeout(FIGMA_REQUEST_TIMEOUT_MS),
+    });
+  } catch (error) {
+    if (isTimeoutError(error)) {
+      throw new Error(
+        `Figma API request timed out after ${Math.round(FIGMA_REQUEST_TIMEOUT_MS / 1000)}s: ${path}`,
+      );
+    }
+    throw error;
+  }
 
   if (!response.ok) {
     throw new Error(describeFigmaError(response, path));
@@ -109,7 +123,19 @@ export async function fetchScreenshot(
 
 /** Downloads a single rendered PNG from Figma's CDN into a Buffer. */
 async function downloadImage(url: string): Promise<Buffer> {
-  const imageResponse = await fetch(url);
+  let imageResponse: Response;
+  try {
+    imageResponse = await fetch(url, {
+      signal: AbortSignal.timeout(FIGMA_REQUEST_TIMEOUT_MS),
+    });
+  } catch (error) {
+    if (isTimeoutError(error)) {
+      throw new Error(
+        `Figma screenshot download timed out after ${Math.round(FIGMA_REQUEST_TIMEOUT_MS / 1000)}s`,
+      );
+    }
+    throw error;
+  }
   if (!imageResponse.ok) {
     throw new Error(
       `Failed to download rendered screenshot (${imageResponse.status} ${imageResponse.statusText})`,
@@ -117,4 +143,11 @@ async function downloadImage(url: string): Promise<Buffer> {
   }
   const arrayBuffer = await imageResponse.arrayBuffer();
   return Buffer.from(arrayBuffer);
+}
+
+function isTimeoutError(error: unknown): boolean {
+  return (
+    error instanceof DOMException && error.name === "TimeoutError" ||
+    error instanceof Error && error.name === "AbortError"
+  );
 }
