@@ -1,5 +1,5 @@
 import type { DiagnoseLlmConfigOutput } from "../schemas/diagnoseLlmConfig.js";
-import { chatJson, getTextModels, getVisionModels } from "../lib/llmClient.js";
+import { chatJson, getFastTextModels, getTextModels, getVisionModels } from "../lib/llmClient.js";
 import { describeModelConfig } from "../lib/modelRegistry.js";
 
 const DIAG_SCHEMA = {
@@ -20,6 +20,11 @@ export async function diagnoseLlmConfig(): Promise<DiagnoseLlmConfigOutput> {
 
   checks.push(
     await runCheck("text_json", getTextModels(), [
+      { role: "user", content: 'Reply with {"ok": true}.' },
+    ]),
+  );
+  checks.push(
+    await runCheck("fast_text_json", getFastTextModels(), [
       { role: "user", content: 'Reply with {"ok": true}.' },
     ]),
   );

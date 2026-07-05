@@ -10,32 +10,57 @@ export interface ModelConfig {
   providerRequireParameters: boolean;
 }
 
-const STUDENT_FREE_MODELS = {
-  visionModels: ["google/gemma-4-26b-a4b-it:free", "openrouter/free"],
-  textModels: [
-    "qwen/qwen3-next-80b-a3b-instruct:free",
-    "nvidia/nemotron-nano-9b-v2:free",
-    "openrouter/free",
-  ],
-  fastTextModels: ["nvidia/nemotron-nano-9b-v2:free", "liquid/lfm-2.5-1.2b-instruct:free"],
+interface RoleModelDefaults {
+  visionModels: string[];
+  textModels: string[];
+  fastTextModels: string[];
+}
+
+const MODEL_PRESETS: Record<string, RoleModelDefaults> = {
+  "student-free": {
+    visionModels: ["google/gemma-4-26b-a4b-it:free", "openrouter/free"],
+    textModels: [
+      "qwen/qwen3-next-80b-a3b-instruct:free",
+      "nvidia/nemotron-nano-9b-v2:free",
+      "openrouter/free",
+    ],
+    fastTextModels: ["nvidia/nemotron-nano-9b-v2:free", "liquid/lfm-2.5-1.2b-instruct:free"],
+  },
 };
 
+const DEFAULT_MODEL_PRESET = "student-free";
+
+const SUPPORTED_MODEL_PRESETS = Object.keys(MODEL_PRESETS);
+
+const LEGACY_VISION_MODEL_ENV = "LLM_VISION_MODEL";
+const LEGACY_TEXT_MODEL_ENV = "LLM_TEXT_MODEL";
+
+const MODEL_LIST_ENV = {
+  vision: "LLM_VISION_MODELS",
+  text: "LLM_TEXT_MODELS",
+  fastText: "LLM_FAST_TEXT_MODELS",
+} as const;
+
+const PROVIDER_REQUIRE_PARAMETERS_ENV = "LLM_PROVIDER_REQUIRE_PARAMETERS";
+
+const MODEL_PRESET_ENV = "LLM_MODEL_PRESET";
+
 export function getModelConfig(): ModelConfig {
-  const preset = process.env.LLM_MODEL_PRESET?.trim() || "student-free";
-  const defaults = preset === "student-free" ? STUDENT_FREE_MODELS : STUDENT_FREE_MODELS;
+  const preset = readModelPreset();
+  const defaults = MODEL_PRESETS[preset]!;
 
   return {
     preset,
     visionModels: withLegacyOverride(
-      "LLM_VISION_MODEL",
-      readModelList("LLM_VISION_MODELS", defaults.visionModels),
+      LEGACY_VISION_MODEL_ENV,
+      readModelList(MODEL_LIST_ENV.vision, defaults.visionModels),
     ),
     textModels: withLegacyOverride(
-      "LLM_TEXT_MODEL",
-      readModelList("LLM_TEXT_MODELS", defaults.textModels),
+      LEGACY_TEXT_MODEL_ENV,
+      readModelList(MODEL_LIST_ENV.text, defaults.textModels),
     ),
-    fastTextModels: readModelList("LLM_FAST_TEXT_MODELS", defaults.fastTextModels),
-    providerRequireParameters: readBoolEnv("LLM_PROVIDER_REQUIRE_PARAMETERS", true),
+    fastTextModels: readModelList(MODEL_LIST_ENV.fastText, defaults.fastTextModels),
+    providerRequireParameters: readBoolEnv(PROVIDER_REQUIRE_PARAMETERS_ENV, true),
   };
 }
 
@@ -65,6 +90,16 @@ export function describeModelConfig(): ModelConfig {
   return getModelConfig();
 }
 
+function readModelPreset(): string {
+  const preset = process.env[MODEL_PRESET_ENV]?.trim() || DEFAULT_MODEL_PRESET;
+  if (!MODEL_PRESETS[preset]) {
+    throw new Error(
+      `${MODEL_PRESET_ENV} must be one of: ${SUPPORTED_MODEL_PRESETS.join(", ")}`,
+    );
+  }
+  return preset;
+}
+
 function readModelList(name: string, fallback: string[]): string[] {
   const raw = process.env[name]?.trim();
   if (!raw) {
@@ -74,7 +109,7 @@ function readModelList(name: string, fallback: string[]): string[] {
     .split(",")
     .map((model) => model.trim())
     .filter(Boolean);
-  return values.length > 0 ? values : [...fallback];
+  return values.length > 0 ? unique(values) : [...fallback];
 }
 
 function withLegacyOverride(name: string, models: string[]): string[] {
@@ -82,5 +117,9 @@ function withLegacyOverride(name: string, models: string[]): string[] {
   if (!legacy) {
     return models;
   }
-  return [legacy, ...models.filter((model) => model !== legacy)];
+  return unique([legacy, ...models]);
+}
+
+function unique(models: string[]): string[] {
+  return [...new Set(models)];
 }

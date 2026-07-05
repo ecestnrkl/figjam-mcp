@@ -88,6 +88,28 @@ describe("chatJson", () => {
     expect(createMock.mock.calls[1]?.[0]).toMatchObject({ model: "good-model" });
   });
 
+  it("falls back to the next model when the first model returns empty content", async () => {
+    createMock
+      .mockResolvedValueOnce(okCompletion(""))
+      .mockResolvedValueOnce(okCompletion('{"ok":true}'));
+
+    await expect(chatJson(["empty-model", "good-model"], MESSAGES)).resolves.toEqual({ ok: true });
+    expect(createMock.mock.calls[0]?.[0]).toMatchObject({ model: "empty-model" });
+    expect(createMock.mock.calls[1]?.[0]).toMatchObject({ model: "good-model" });
+  });
+
+  it("falls back to the next model on OpenRouter provider 429 envelopes", async () => {
+    createMock
+      .mockResolvedValueOnce({ error: { message: "429 Provider returned error" } })
+      .mockResolvedValueOnce(okCompletion('{"ok":true}'));
+
+    await expect(chatJson(["rate-limited-model", "good-model"], MESSAGES)).resolves.toEqual({
+      ok: true,
+    });
+    expect(createMock.mock.calls[0]?.[0]).toMatchObject({ model: "rate-limited-model" });
+    expect(createMock.mock.calls[1]?.[0]).toMatchObject({ model: "good-model" });
+  });
+
   it("surfaces a clear error when a 200 body is an error envelope (no choices)", async () => {
     createMock.mockResolvedValueOnce({ error: { message: "No endpoints found for model" } });
 

@@ -64,6 +64,7 @@ OpenAI-compatible endpoint. Free options:
 
 Optional overrides:
 
+- `LLM_MODEL_PRESET` — currently supported: `student-free`.
 - `LLM_VISION_MODELS` — comma-separated vision model candidates.
 - `LLM_TEXT_MODELS` — comma-separated text/Q&A candidates.
 - `LLM_FAST_TEXT_MODELS` — comma-separated small/fast text candidates.
@@ -111,7 +112,7 @@ every cluster. Finished ingests are persisted under `.cache/figjam-mcp/`, keyed
 by file state, node hash, model preset, document hint, and ingest mode.
 
 Run `diagnose_llm_config` after changing model env vars. It checks text JSON,
-vision JSON, and fallback setup without ingesting a board.
+fast text JSON, vision JSON, and fallback setup without ingesting a board.
 
 ## Usage example
 

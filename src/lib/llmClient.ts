@@ -30,7 +30,6 @@ export interface ChatJsonOptions {
   maxOutputTokens?: number;
   schemaName?: string;
   jsonSchema?: JsonSchema;
-  requireStructuredOutputs?: boolean;
   onModelUsed?: (model: string) => void;
 }
 
@@ -232,7 +231,7 @@ function shouldTryNextModel(error: unknown): boolean {
     return error.status === 429 || error.status >= 500 || isUnsupportedParamError(error);
   }
   if (error instanceof Error) {
-    return /rate limit|no endpoints|no choices|timed out|unsupported|response contained/i.test(
+    return /429|provider returned error|rate limit|no endpoints|empty response|no choices|timed out|unsupported|response contained/i.test(
       error.message,
     );
   }
