@@ -1,5 +1,9 @@
 # figjam-context-mcp
 
+![figjam-context-mcp pipeline: a FigJam board read via the Figma API, clustered by geometry, refined with vision, and turned into LLM-ready context](docs/pipeline.gif)
+
+*Illustrative overview of the ingest pipeline — not a screen recording.*
+
 MCP server that turns a FigJam board into queryable context for LLMs — read
 directly via the Figma REST API, no manual PDF-export detour. It exposes
 four tools:
