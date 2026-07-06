@@ -99,6 +99,7 @@ gave up before those external calls finished.
 The server now keeps provider calls bounded by default:
 
 - `FIGMA_REQUEST_TIMEOUT_MS=15000`
+- `FIGMA_FILE_REQUEST_TIMEOUT_MS=60000`
 - `LLM_REQUEST_TIMEOUT_MS=20000`
 - `LLM_RATE_LIMIT_RETRIES=1`
 - `LLM_ANSWER_MAX_OUTPUT_TOKENS=800`

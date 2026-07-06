@@ -7,24 +7,27 @@ import { readIntEnv } from "./env.js";
 
 const FIGMA_API_BASE = "https://api.figma.com/v1";
 const FIGMA_REQUEST_TIMEOUT_MS = readIntEnv("FIGMA_REQUEST_TIMEOUT_MS", 15000, 1000);
+const FIGMA_FILE_REQUEST_TIMEOUT_MS = readIntEnv("FIGMA_FILE_REQUEST_TIMEOUT_MS", 60000, 1000);
 const SCREENSHOT_DOWNLOAD_CONCURRENCY = readIntEnv(
   "FIGMA_SCREENSHOT_DOWNLOAD_CONCURRENCY",
   3,
   1,
 );
 
-async function figmaFetch(path: string, token: string): Promise<Response> {
+async function figmaFetch(
+  path: string,
+  token: string,
+  timeoutMs = FIGMA_REQUEST_TIMEOUT_MS,
+): Promise<Response> {
   let response: Response;
   try {
     response = await fetch(`${FIGMA_API_BASE}${path}`, {
       headers: { "X-Figma-Token": token },
-      signal: AbortSignal.timeout(FIGMA_REQUEST_TIMEOUT_MS),
+      signal: AbortSignal.timeout(timeoutMs),
     });
   } catch (error) {
     if (isTimeoutError(error)) {
-      throw new Error(
-        `Figma API request timed out after ${Math.round(FIGMA_REQUEST_TIMEOUT_MS / 1000)}s: ${path}`,
-      );
+      throw figmaTimeoutError("Figma API request", timeoutMs, path);
     }
     throw error;
   }
@@ -62,8 +65,9 @@ function describeFigmaError(response: Response, path: string): string {
  * NormalizedNode[] happens in nodeTree.ts#flattenNodeTree.
  */
 export async function fetchFileTree(fileKey: string, token: string): Promise<unknown> {
-  const response = await figmaFetch(`/files/${fileKey}`, token);
-  return response.json();
+  const path = `/files/${fileKey}`;
+  const response = await figmaFetch(path, token, FIGMA_FILE_REQUEST_TIMEOUT_MS);
+  return readJsonResponse(response, path, FIGMA_FILE_REQUEST_TIMEOUT_MS);
 }
 
 /**
@@ -76,8 +80,13 @@ export async function fetchImageRefs(
   fileKey: string,
   token: string,
 ): Promise<Record<string, string>> {
-  const response = await figmaFetch(`/files/${fileKey}/images`, token);
-  const data = (await response.json()) as { images?: Record<string, string> };
+  const path = `/files/${fileKey}/images`;
+  const response = await figmaFetch(path, token);
+  const data = await readJsonResponse<{ images?: Record<string, string> }>(
+    response,
+    path,
+    FIGMA_REQUEST_TIMEOUT_MS,
+  );
   return data.images ?? {};
 }
 
@@ -102,14 +111,12 @@ export async function fetchScreenshot(
   }
 
   const idsParam = nodeIds.join(",");
-  const renderResponse = await figmaFetch(
-    `/images/${fileKey}?ids=${encodeURIComponent(idsParam)}&format=png`,
-    token,
-  );
-  const renderData = (await renderResponse.json()) as {
+  const renderPath = `/images/${fileKey}?ids=${encodeURIComponent(idsParam)}&format=png`;
+  const renderResponse = await figmaFetch(renderPath, token);
+  const renderData = await readJsonResponse<{
     images?: Record<string, string | null>;
     err?: string | null;
-  };
+  }>(renderResponse, renderPath, FIGMA_REQUEST_TIMEOUT_MS);
 
   if (renderData.err) {
     throw new Error(`Figma image render error: ${renderData.err}`);
@@ -128,11 +135,17 @@ export async function fetchScreenshot(
 
 /** Downloads a single rendered PNG from Figma's CDN into a Buffer. */
 async function downloadImage(url: string): Promise<Buffer> {
-  let imageResponse: Response;
   try {
-    imageResponse = await fetch(url, {
+    const imageResponse = await fetch(url, {
       signal: AbortSignal.timeout(FIGMA_REQUEST_TIMEOUT_MS),
     });
+    if (!imageResponse.ok) {
+      throw new Error(
+        `Failed to download rendered screenshot (${imageResponse.status} ${imageResponse.statusText})`,
+      );
+    }
+    const arrayBuffer = await imageResponse.arrayBuffer();
+    return Buffer.from(arrayBuffer);
   } catch (error) {
     if (isTimeoutError(error)) {
       throw new Error(
@@ -141,19 +154,42 @@ async function downloadImage(url: string): Promise<Buffer> {
     }
     throw error;
   }
-  if (!imageResponse.ok) {
-    throw new Error(
-      `Failed to download rendered screenshot (${imageResponse.status} ${imageResponse.statusText})`,
-    );
-  }
-  const arrayBuffer = await imageResponse.arrayBuffer();
-  return Buffer.from(arrayBuffer);
 }
 
 function isTimeoutError(error: unknown): boolean {
   return (
     error instanceof DOMException && error.name === "TimeoutError" ||
     error instanceof Error && error.name === "AbortError"
+  );
+}
+
+async function readJsonResponse<T>(
+  response: Response,
+  path: string,
+  timeoutMs: number,
+): Promise<T> {
+  try {
+    return (await response.json()) as T;
+  } catch (error) {
+    if (isTimeoutError(error)) {
+      throw figmaTimeoutError("Figma API response body", timeoutMs, path);
+    }
+    throw error;
+  }
+}
+
+function figmaTimeoutError(operation: string, timeoutMs: number, path: string): Error {
+  if (path.startsWith("/files/") && !path.endsWith("/images")) {
+    return new Error(
+      `${operation} timed out after ${Math.round(timeoutMs / 1000)}s: ${path}. ` +
+        "Increase FIGMA_FILE_REQUEST_TIMEOUT_MS if the board is large. " +
+        "If your MCP client times out first, increase the client request timeout too.",
+    );
+  }
+
+  return new Error(
+    `${operation} timed out after ${Math.round(timeoutMs / 1000)}s: ${path}. ` +
+      'Increase FIGMA_REQUEST_TIMEOUT_MS or use ingestMode "max_speed" to avoid screenshot/vision work.',
   );
 }
 
