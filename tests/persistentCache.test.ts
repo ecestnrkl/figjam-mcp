@@ -70,4 +70,65 @@ describe("persistentCache", () => {
       hashNormalizedNodes([node("1:1", "B")]),
     );
   });
+
+  it("restores the latest board for a file key via the pointer", async () => {
+    process.env.FIGJAM_MCP_CACHE_DIR = await mkdtemp(path.join(tmpdir(), "figjam-cache-"));
+    const { readLatestBoard, writeCachedBoard, writeLatestBoardPointer } = await import(
+      "../src/lib/persistentCache.js"
+    );
+
+    await expect(readLatestBoard("file-b")).resolves.toBeUndefined();
+
+    const board: BoardData = {
+      boardId: "file-b",
+      fileKey: "file-b",
+      docStructureHint: "freeform",
+      nodes: [],
+      clusters: [],
+      createdAt: 1,
+    };
+    await writeCachedBoard("some-cache-key", board);
+    await writeLatestBoardPointer("file-b", "some-cache-key");
+
+    await expect(readLatestBoard("file-b")).resolves.toMatchObject({ boardId: "file-b" });
+  });
+
+  it("getBoardOrRestore falls back to the persisted board after a restart", async () => {
+    process.env.FIGJAM_MCP_CACHE_DIR = await mkdtemp(path.join(tmpdir(), "figjam-cache-"));
+    const { writeCachedBoard, writeLatestBoardPointer } = await import(
+      "../src/lib/persistentCache.js"
+    );
+
+    const board: BoardData = {
+      boardId: "file-c",
+      fileKey: "file-c",
+      docStructureHint: "freeform",
+      nodes: [],
+      clusters: [
+        {
+          id: "cluster_1",
+          label: "Restored",
+          summary: "Restored summary.",
+          nodeIds: ["1:1"],
+          confirmedNodeIds: ["1:1"],
+          boundingBox: { x: 0, y: 0, width: 100, height: 100 },
+          summarySource: "vision_llm",
+        },
+      ],
+      createdAt: 1,
+    };
+    await writeCachedBoard("restart-cache-key", board);
+    await writeLatestBoardPointer("file-c", "restart-cache-key");
+
+    // Fresh import = empty in-memory map, like after a server restart.
+    const { getBoardOrRestore } = await import("../src/lib/cache.js");
+
+    const restored = await getBoardOrRestore("file-c");
+    expect(restored?.clusters[0]).toMatchObject({
+      label: "Restored",
+      summarySource: "cache",
+    });
+
+    await expect(getBoardOrRestore("missing-file")).resolves.toBeUndefined();
+  });
 });

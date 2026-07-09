@@ -18,9 +18,16 @@ export const ingestBoardInputShape = {
       "Figma personal access token; falls back to FIGMA_ACCESS_TOKEN env var if omitted",
     ),
   docStructureHint: z
-    .enum(["double_diamond", "freeform"])
+    .enum(["freeform", "double_diamond", "lean_canvas", "retro", "user_journey"])
     .default("freeform")
-    .describe("How to interpret the board's structure when mapping clusters to phases"),
+    .describe("Built-in framework used to map clusters to phases"),
+  customPhases: z
+    .array(z.string().min(1))
+    .max(12)
+    .optional()
+    .describe(
+      "Free-form phase names to map clusters onto (e.g. [\"Ideen\", \"Feedback\", \"Offene Fragen\"]); overrides docStructureHint",
+    ),
   ingestMode: z
     .enum(["balanced", "max_quality", "max_speed"])
     .default("balanced")
@@ -33,6 +40,12 @@ export type IngestBoardInput = z.infer<typeof ingestBoardInputSchema>;
 export const ingestBoardOutputShape = {
   boardId: z.string(),
   clusterCount: z.number().int().nonnegative(),
+  relationCount: z
+    .number()
+    .int()
+    .nonnegative()
+    .optional()
+    .describe("Directed cluster-to-cluster relations derived from connector arrows"),
   summary: z.string(),
   qualityReport: z
     .object({

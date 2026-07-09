@@ -6,11 +6,19 @@ import { getModelConfigSignature } from "./modelRegistry.js";
 
 const CACHE_DIR = process.env.FIGJAM_MCP_CACHE_DIR ?? path.join(process.cwd(), ".cache", "figjam-mcp");
 
+/**
+ * Bumped whenever the persisted BoardData shape or the node hash inputs
+ * change incompatibly, so stale entries miss cleanly instead of loading
+ * with missing fields. v2: connector edges + cluster relations + phases.
+ */
+const CACHE_SCHEMA_VERSION = 2;
+
 export interface BoardCacheIdentity {
   fileKey: string;
   figmaLastModified?: string;
   nodeHash: string;
   docStructureHint: DocStructureHint;
+  customPhases?: string[];
   ingestMode: IngestMode;
 }
 
@@ -33,6 +41,8 @@ export function hashNormalizedNodes(nodes: NormalizedNode[]): string {
       imageRef: node.imageRef,
       text: node.text,
       parentId: node.parentId,
+      connectorStartId: node.connectorStartId,
+      connectorEndId: node.connectorEndId,
     }))
     .sort((a, b) => a.id.localeCompare(b.id));
   return hash(JSON.stringify(stable));
@@ -42,7 +52,9 @@ export function buildBoardCacheKey(identity: BoardCacheIdentity): string {
   return hash(
     JSON.stringify({
       ...identity,
+      schemaVersion: CACHE_SCHEMA_VERSION,
       figmaLastModified: identity.figmaLastModified ?? "unknown",
+      customPhases: identity.customPhases ?? [],
       modelConfig: getModelConfigSignature(),
     }),
   );
@@ -68,6 +80,44 @@ export async function writeCachedBoard(cacheKey: string, board: BoardData): Prom
   } catch (error) {
     console.error(`Persistent cache write failed for ${cacheKey}: ${errorMessage(error)}`);
   }
+}
+
+/**
+ * Records which cache entry is the most recent ingest for a file, so tools
+ * can restore a board after a server restart without re-ingesting.
+ * (Entries themselves are keyed by content/config hash — the pointer is the
+ * only way back from a bare fileKey.)
+ */
+export async function writeLatestBoardPointer(fileKey: string, cacheKey: string): Promise<void> {
+  try {
+    await mkdir(CACHE_DIR, { recursive: true });
+    await writeFile(latestPointerPath(fileKey), `${JSON.stringify({ cacheKey })}\n`, "utf8");
+  } catch (error) {
+    console.error(`Latest-board pointer write failed for ${fileKey}: ${errorMessage(error)}`);
+  }
+}
+
+/** Loads the most recently ingested BoardData for a file, if persisted. */
+export async function readLatestBoard(fileKey: string): Promise<BoardData | undefined> {
+  try {
+    const raw = await readFile(latestPointerPath(fileKey), "utf8");
+    const pointer = JSON.parse(raw) as { cacheKey?: unknown };
+    if (typeof pointer.cacheKey !== "string" || !pointer.cacheKey) {
+      return undefined;
+    }
+    return await readCachedBoard(pointer.cacheKey);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      console.error(`Latest-board pointer read failed for ${fileKey}: ${errorMessage(error)}`);
+    }
+    return undefined;
+  }
+}
+
+function latestPointerPath(fileKey: string): string {
+  // File keys are alphanumeric (enforced by parseFigmaFileKey), but sanitize
+  // defensively — this value ends up in a filename.
+  return path.join(CACHE_DIR, `latest-${fileKey.replace(/[^A-Za-z0-9_-]/g, "_")}.json`);
 }
 
 function cachePath(cacheKey: string): string {

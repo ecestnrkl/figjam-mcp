@@ -23,9 +23,23 @@ export const getBoardContextInputShape = {
 export const getBoardContextInputSchema = z.object(getBoardContextInputShape);
 export type GetBoardContextInput = z.infer<typeof getBoardContextInputSchema>;
 
+export const clusterRelationContextShape = {
+  from: z.string().describe("Label of the source cluster"),
+  to: z.string().describe("Label of the target cluster"),
+  label: z.string().optional().describe("Connector label(s), when the arrows are annotated"),
+  edgeCount: z.number().int().positive(),
+};
+
+export const clusterRelationContextSchema = z.object(clusterRelationContextShape);
+export type ClusterRelationContext = z.infer<typeof clusterRelationContextSchema>;
+
 export const getBoardContextOutputShape = {
   contextText: z.string(),
   clusters: z.array(clusterContextSchema),
+  relations: z
+    .array(clusterRelationContextSchema)
+    .optional()
+    .describe("Cluster-to-cluster relations derived from connector arrows"),
 };
 
 export const getBoardContextOutputSchema = z.object(getBoardContextOutputShape);

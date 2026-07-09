@@ -2,7 +2,8 @@ import type {
   AnswerFromBoardInput,
   AnswerFromBoardOutput,
 } from "../schemas/answerFromBoard.js";
-import { getBoard } from "../lib/cache.js";
+import { getBoardOrRestore } from "../lib/cache.js";
+import { formatClusterRelations } from "../lib/connectorGraph.js";
 import { chatJson, getTextModels, LlmInvalidJsonError } from "../lib/llmClient.js";
 import { readIntEnv } from "../lib/env.js";
 import type { RefinedCluster } from "../types.js";
@@ -25,29 +26,55 @@ const STOPWORDS = new Set([
 ]);
 
 /**
- * answer_from_board — answers a free-form question about an ingested board.
+ * Unambiguous language markers for the extractive fallback. Deliberately
+ * excludes words both languages share ("was", "in", "man", "hat" …) — only
+ * words that clearly signal one language count, plus umlauts/ß as a strong
+ * German signal.
+ */
+const GERMAN_MARKERS = new Set([
+  "aber", "auch", "beim", "das", "dem", "den", "der", "doch", "ein", "eine",
+  "einen", "es", "geht", "gehts", "gibt", "ist", "im", "nicht", "oder",
+  "projekt", "sind", "und", "warum", "welche", "welcher", "wer", "wie",
+  "wieso", "wo", "worum", "zum", "zur", "zusammenfassung", "überblick",
+]);
+
+const ENGLISH_MARKERS = new Set([
+  "about", "are", "can", "did", "does", "how", "is", "it", "main", "of",
+  "overview", "project", "should", "summary", "the", "there", "this", "to",
+  "what", "when", "where", "which", "who", "why",
+]);
+
+/**
+ * answer_from_board — answers a free-form question about an ingested board
+ * (restoring the last persisted ingest after a server restart).
  *
  * Boards are small, so no vector retrieval: the full cluster context
- * (label, phase, summary per cluster) plus the question go into a single
- * text completion. The model replies with JSON so the cluster labels it
- * used can be surfaced as `citedClusters`.
+ * (label, phase, summary per cluster) plus the connector-derived relations
+ * between clusters and the question go into a single text completion. The
+ * model replies with JSON so the cluster labels it used can be surfaced as
+ * `citedClusters`.
  */
 export async function answerFromBoard(
   input: AnswerFromBoardInput,
 ): Promise<AnswerFromBoardOutput> {
-  const board = getBoard(input.boardId);
+  const board = await getBoardOrRestore(input.boardId);
   if (!board) {
     throw new Error(
-      `Board "${input.boardId}" not found — run ingest_board first (the boardId is the Figma file key).`,
+      `Board "${input.boardId}" not found in memory or on-disk cache — run ingest_board first (the boardId is the Figma file key).`,
     );
   }
 
-  const context = board.clusters
+  const clusterContext = board.clusters
     .map(
       (cluster) =>
         `- ${cluster.label}${cluster.phase ? ` (${cluster.phase})` : ""}: ${cluster.summary}`,
     )
     .join("\n");
+  const relationLines = formatClusterRelations(board.clusterRelations ?? [], board.clusters);
+  const context =
+    relationLines.length > 0
+      ? `${clusterContext}\n\nConnections between clusters (from connector arrows):\n${relationLines.join("\n")}`
+      : clusterContext;
 
   let reply: unknown;
   try {
@@ -58,7 +85,7 @@ export async function answerFromBoard(
           role: "system",
           content:
             "You answer questions about a FigJam whiteboard using ONLY the provided cluster context. " +
-            "Answer concisely; do not invent information. If the context does not contain the answer, say so. " +
+            "Answer concisely and in the language of the question; do not invent information. If the context does not contain the answer, say so. " +
             "Do not explain your reasoning. Do not use markdown. " +
             'Reply with JSON only, exactly this shape: {"answer": string, "citedClusters": string[]} ' +
             "where citedClusters lists the labels of the clusters you based the answer on.",
@@ -184,10 +211,27 @@ function isOverviewQuestion(question: string): boolean {
   );
 }
 
+/**
+ * Score-based language guess for the extractive fallback: umlauts/ß are a
+ * strong German signal, then unambiguous marker words are counted per
+ * language. Ties (or no signal) default to English — safer for an
+ * international default than the old keyword regex, which classified e.g.
+ * "What was the outcome?" as German because of "was".
+ */
 function isLikelyGerman(question: string): boolean {
-  return /\b(worum|was|projekt|geht|ueberblick|überblick|zusammenfassung|warum|wie)\b/i.test(
-    question,
-  );
+  const words = question
+    .toLowerCase()
+    .split(/[^\p{L}\p{N}]+/u)
+    .filter(Boolean);
+
+  let germanScore = /[äöüß]/i.test(question) ? 2 : 0;
+  let englishScore = 0;
+  for (const word of words) {
+    if (GERMAN_MARKERS.has(word)) germanScore++;
+    if (ENGLISH_MARKERS.has(word)) englishScore++;
+  }
+
+  return germanScore > englishScore;
 }
 
 function firstSentence(text: string): string {

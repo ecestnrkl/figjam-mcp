@@ -8,6 +8,8 @@ interface RawFigmaNode {
   rotation?: number;
   characters?: string;
   fills?: Array<{ type?: string; imageRef?: string }>;
+  connectorStart?: { endpointNodeId?: string };
+  connectorEnd?: { endpointNodeId?: string };
   children?: RawFigmaNode[];
 }
 
@@ -61,6 +63,8 @@ function toNormalizedNode(node: RawFigmaNode, parentId: string | undefined): Nor
     imageRef: extractImageRef(node),
     text: node.characters,
     parentId,
+    connectorStartId: node.connectorStart?.endpointNodeId,
+    connectorEndId: node.connectorEnd?.endpointNodeId,
   };
 }
 

@@ -7,12 +7,16 @@ const {
   refineClusterWithVisionMock,
   readCachedBoardMock,
   writeCachedBoardMock,
+  writeLatestBoardPointerMock,
+  readLatestBoardMock,
 } = vi.hoisted(() => ({
   fetchFileTreeMock: vi.fn(),
   fetchScreenshotMock: vi.fn(),
   refineClusterWithVisionMock: vi.fn(),
   readCachedBoardMock: vi.fn(),
   writeCachedBoardMock: vi.fn(),
+  writeLatestBoardPointerMock: vi.fn(),
+  readLatestBoardMock: vi.fn(),
 }));
 
 vi.mock("../src/lib/figmaApi.js", () => ({
@@ -30,6 +34,8 @@ vi.mock("../src/lib/persistentCache.js", () => ({
   buildBoardCacheKey: () => "cache-key",
   readCachedBoard: readCachedBoardMock,
   writeCachedBoard: writeCachedBoardMock,
+  writeLatestBoardPointer: writeLatestBoardPointerMock,
+  readLatestBoard: readLatestBoardMock,
 }));
 
 const { ingestBoard } = await import("../src/tools/ingestBoard.js");
@@ -60,6 +66,15 @@ function rawTree() {
               type: "SHAPE_WITH_TEXT",
               absoluteBoundingBox: { x: 1000, y: 0, width: 100, height: 100 },
               fills: [{ type: "IMAGE", imageRef: "image-ref" }],
+            },
+            {
+              id: "1:3",
+              name: "Connector",
+              type: "CONNECTOR",
+              absoluteBoundingBox: { x: 100, y: 40, width: 900, height: 20 },
+              characters: "leads to",
+              connectorStart: { endpointNodeId: "1:1" },
+              connectorEnd: { endpointNodeId: "1:2" },
             },
           ],
         },
@@ -105,6 +120,8 @@ beforeEach(() => {
   );
   readCachedBoardMock.mockResolvedValue(undefined);
   writeCachedBoardMock.mockResolvedValue(undefined);
+  writeLatestBoardPointerMock.mockResolvedValue(undefined);
+  readLatestBoardMock.mockResolvedValue(undefined);
 });
 
 afterEach(() => {
@@ -163,5 +180,66 @@ describe("ingestBoard", () => {
     expect(fetchScreenshotMock).not.toHaveBeenCalled();
     expect(refineClusterWithVisionMock).not.toHaveBeenCalled();
     expect(output.qualityReport?.cachedClusters).toBe(1);
+  });
+
+  it("extracts connector arrows as cluster relations", async () => {
+    const output = await ingestBoard({
+      figmaFileUrl: "https://www.figma.com/board/AbC123/Test",
+      docStructureHint: "freeform",
+      ingestMode: "max_speed",
+    });
+
+    expect(output.relationCount).toBe(1);
+
+    const persisted = writeCachedBoardMock.mock.calls[0]?.[1] as BoardData;
+    expect(persisted.connectorEdges).toEqual([
+      { connectorId: "1:3", fromNodeId: "1:1", toNodeId: "1:2", label: "leads to" },
+    ]);
+    expect(persisted.clusterRelations).toHaveLength(1);
+    expect(persisted.clusterRelations![0]).toMatchObject({
+      labels: ["leads to"],
+      edgeCount: 1,
+    });
+    expect(writeLatestBoardPointerMock).toHaveBeenCalledWith("AbC123", "cache-key");
+  });
+
+  it("keeps cluster order stable when vision calls finish out of order", async () => {
+    refineClusterWithVisionMock.mockImplementation(
+      async (cluster: Cluster, _screenshots: Buffer[], _nodes: NormalizedNode[]) => {
+        // First cluster finishes last — order in the output must not change.
+        await new Promise((resolve) =>
+          setTimeout(resolve, cluster.id === "cluster_1" ? 30 : 1),
+        );
+        return {
+          ...cluster,
+          label: `Vision ${cluster.id}`,
+          summary: "Vision summary.",
+          confirmedNodeIds: [...cluster.nodeIds],
+          summarySource: "vision_llm" as const,
+          modelId: "vision-model",
+        };
+      },
+    );
+
+    const output = await ingestBoard({
+      figmaFileUrl: "https://www.figma.com/board/AbC123/Test",
+      docStructureHint: "freeform",
+      ingestMode: "max_quality",
+    });
+
+    expect(output.summary).toContain('"Vision cluster_1", "Vision cluster_2"');
+  });
+
+  it("maps clusters onto custom phases", async () => {
+    const output = await ingestBoard({
+      figmaFileUrl: "https://www.figma.com/board/AbC123/Test",
+      docStructureHint: "freeform",
+      customPhases: ["Research Notes", "Screenshots"],
+      ingestMode: "max_speed",
+    });
+
+    expect(output.clusterCount).toBe(2);
+    const persisted = writeCachedBoardMock.mock.calls[0]?.[1] as BoardData;
+    expect(persisted.clusters.every((cluster) => cluster.phase !== undefined)).toBe(true);
   });
 });

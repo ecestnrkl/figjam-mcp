@@ -4,7 +4,8 @@ import { fetchFileTree, fetchScreenshot } from "../lib/figmaApi.js";
 import { flattenNodeTree } from "../lib/nodeTree.js";
 import { geometricPreCluster } from "../lib/spatialCluster.js";
 import { refineClusterWithVision } from "../lib/visionInterpreter.js";
-import { mapToDoubleDiamond } from "../lib/docStructureMapper.js";
+import { mapClustersToPhases } from "../lib/docStructureMapper.js";
+import { buildClusterRelations, extractConnectorEdges } from "../lib/connectorGraph.js";
 import { setBoard } from "../lib/cache.js";
 import { readIntEnv } from "../lib/env.js";
 import { describeModelConfig } from "../lib/modelRegistry.js";
@@ -14,6 +15,7 @@ import {
   hashNormalizedNodes,
   readCachedBoard,
   writeCachedBoard,
+  writeLatestBoardPointer,
 } from "../lib/persistentCache.js";
 
 /**
@@ -31,6 +33,14 @@ const MAX_SCREENSHOTS_PER_CLUSTER = 6;
  */
 const VISION_BUDGET_MS = readIntEnv("INGEST_BOARD_VISION_BUDGET_MS", 35000, 0);
 const MIN_VISION_SLOT_MS = readIntEnv("INGEST_BOARD_MIN_VISION_SLOT_MS", 10000, 0);
+
+/**
+ * How many clusters are refined with vision concurrently. Screenshot
+ * download and the LLM call dominate wall-clock time, so 2–3 in flight cuts
+ * ingest latency roughly proportionally while staying inside free-tier
+ * provider rate limits.
+ */
+const VISION_CONCURRENCY = readIntEnv("INGEST_BOARD_VISION_CONCURRENCY", 3, 1);
 
 /**
  * ingest_board — full pipeline: fetch the Figma file, flatten + filter the
@@ -54,6 +64,7 @@ export async function ingestBoard(input: IngestBoardInput): Promise<IngestBoardO
 
   const rawTree = await fetchFileTree(fileKey, token);
   const nodes = flattenNodeTree(rawTree);
+  const connectorEdges = extractConnectorEdges(nodes);
   const figmaLastModified = extractFigmaLastModified(rawTree);
   const nodeHash = hashNormalizedNodes(nodes);
   const cacheKey = buildBoardCacheKey({
@@ -61,6 +72,7 @@ export async function ingestBoard(input: IngestBoardInput): Promise<IngestBoardO
     figmaLastModified,
     nodeHash,
     docStructureHint: input.docStructureHint,
+    customPhases: input.customPhases,
     ingestMode,
   });
   const cached = await readCachedBoard(cacheKey);
@@ -76,9 +88,11 @@ export async function ingestBoard(input: IngestBoardInput): Promise<IngestBoardO
       createdAt: Date.now(),
       qualityReport,
     });
+    await writeLatestBoardPointer(fileKey, cacheKey);
     return {
       boardId: fileKey,
       clusterCount: clusters.length,
+      relationCount: cached.clusterRelations?.length ?? 0,
       qualityReport,
       summary: buildSummary(fileKey, clusters, input.docStructureHint, qualityReport),
     };
@@ -90,51 +104,71 @@ export async function ingestBoard(input: IngestBoardInput): Promise<IngestBoardO
     throw new Error(`Board ${fileKey} contains no content nodes to ingest`);
   }
 
-  // Refine clusters one at a time while the MCP-safe vision budget allows it;
-  // remaining clusters still get deterministic text summaries and are cached.
+  // Refine clusters while the MCP-safe vision budget allows it; remaining
+  // clusters still get deterministic text summaries and are cached. Vision
+  // candidates run through a small concurrent worker pool (screenshot fetch
+  // + LLM call dominate latency); results land at their original index so
+  // cluster order stays stable regardless of completion order.
   const nodesById = new Map(nodes.map((node) => [node.id, node]));
-  const refined: RefinedCluster[] = [];
-  let fallbackCount = 0;
-  for (const cluster of clusters) {
-    const clusterNodes = cluster.nodeIds
+  const clusterNodesOf = (cluster: Cluster): NormalizedNode[] =>
+    cluster.nodeIds
       .map((id) => nodesById.get(id))
       .filter((node): node is NormalizedNode => node !== undefined);
 
-    if (!shouldUseVision(clusterNodes, ingestMode)) {
-      refined.push(refineClusterFromText(cluster, clusterNodes));
-      continue;
+  const refined: RefinedCluster[] = new Array(clusters.length);
+  const visionQueue: number[] = [];
+  clusters.forEach((cluster, index) => {
+    const clusterNodes = clusterNodesOf(cluster);
+    if (shouldUseVision(clusterNodes, ingestMode)) {
+      visionQueue.push(index);
+    } else {
+      refined[index] = refineClusterFromText(cluster, clusterNodes);
     }
+  });
 
-    if (!hasVisionBudget(startedAt)) {
-      refined.push(refineClusterFromText(cluster, clusterNodes));
-      fallbackCount++;
-      continue;
+  let fallbackCount = 0;
+  let queueCursor = 0;
+  const visionWorker = async (): Promise<void> => {
+    while (queueCursor < visionQueue.length) {
+      const index = visionQueue[queueCursor++]!;
+      const cluster = clusters[index]!;
+      const clusterNodes = clusterNodesOf(cluster);
+
+      if (!hasVisionBudget(startedAt)) {
+        refined[index] = refineClusterFromText(cluster, clusterNodes);
+        fallbackCount++;
+        continue;
+      }
+
+      try {
+        const screenshots = await fetchScreenshot(
+          fileKey,
+          pickScreenshotNodes(clusterNodes),
+          token,
+        );
+        refined[index] = await refineClusterWithVision(cluster, screenshots, clusterNodes);
+      } catch (error) {
+        console.error(
+          `Vision refinement failed for ${cluster.id}; using text fallback: ${errorMessage(error)}`,
+        );
+        refined[index] = refineClusterFromText(cluster, clusterNodes);
+        fallbackCount++;
+      }
     }
+  };
+  await Promise.all(
+    Array.from({ length: Math.min(VISION_CONCURRENCY, visionQueue.length) }, visionWorker),
+  );
 
-    try {
-      const screenshots = await fetchScreenshot(
-        fileKey,
-        pickScreenshotNodes(clusterNodes),
-        token,
-      );
-      refined.push(await refineClusterWithVision(cluster, screenshots, clusterNodes));
-    } catch (error) {
-      console.error(
-        `Vision refinement failed for ${cluster.id}; using text fallback: ${errorMessage(error)}`,
-      );
-      refined.push(refineClusterFromText(cluster, clusterNodes));
-      fallbackCount++;
-    }
-  }
-
-  const finalClusters =
-    input.docStructureHint === "double_diamond" ? mapToDoubleDiamond(refined) : refined;
+  const finalClusters = mapClustersToPhases(refined, input.docStructureHint, input.customPhases);
+  const clusterRelations = buildClusterRelations(connectorEdges, finalClusters);
   const qualityReport = { ...buildQualityReport(finalClusters, 0), fallbackCount };
 
   const boardData = {
     boardId: fileKey,
     fileKey,
     docStructureHint: input.docStructureHint,
+    customPhases: input.customPhases,
     ingestMode,
     cacheKey,
     figmaLastModified,
@@ -143,14 +177,18 @@ export async function ingestBoard(input: IngestBoardInput): Promise<IngestBoardO
     qualityReport,
     nodes,
     clusters: finalClusters,
+    connectorEdges,
+    clusterRelations,
     createdAt: Date.now(),
   };
   setBoard(fileKey, boardData);
   await writeCachedBoard(cacheKey, boardData);
+  await writeLatestBoardPointer(fileKey, cacheKey);
 
   return {
     boardId: fileKey,
     clusterCount: finalClusters.length,
+    relationCount: clusterRelations.length,
     qualityReport,
     summary: buildSummary(fileKey, finalClusters, input.docStructureHint, qualityReport),
   };

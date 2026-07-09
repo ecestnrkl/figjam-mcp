@@ -9,14 +9,20 @@ directly via the Figma REST API, no manual PDF-export detour. It exposes
 four tools:
 
 - **ingest_board** — reads a FigJam/Figma file, clusters its content
-  spatially, verifies and labels each cluster with a vision model, and
-  caches the result under a `boardId` (= the Figma file key).
-- **get_board_context** — returns a compact, paste-ready context block plus
-  the underlying clusters for an ingested board, optionally scoped to a topic.
+  spatially, verifies and labels each cluster with a vision model, extracts
+  connector arrows as cluster-to-cluster relations, and caches the result
+  under a `boardId` (= the Figma file key).
+- **get_board_context** — returns a compact, paste-ready context block
+  (clusters + connector relations) for an ingested board, optionally scoped
+  to a topic.
 - **answer_from_board** — answers a free-form question about an ingested
   board, citing the clusters the answer was derived from.
 - **diagnose_llm_config** — runs small text + vision JSON checks against the
   active model setup and reports actionable failures.
+
+Ingested boards survive server restarts: `get_board_context` and
+`answer_from_board` transparently restore the last finished ingest from
+`.cache/figjam-mcp/` when the in-memory store is empty.
 
 ## How it works
 
@@ -25,19 +31,28 @@ embedded screenshots, no reading order. The pipeline therefore combines
 geometry with vision:
 
 1. `fetchFileTree` + `flattenNodeTree` — pull the raw node tree and flatten
-   it into normalized nodes (position, size, rotation, text, image refs),
-   dropping empty structural noise.
+   it into normalized nodes (position, size, rotation, text, image refs,
+   connector endpoints), dropping empty structural noise.
 2. `geometricPreCluster` — rotation-aware distance clustering into coarse
-   groups.
-3. `refineClusterWithVision` — per cluster, node screenshots + extracted
+   groups. Neighbor search runs over a spatial grid (near-linear instead of
+   O(n²)), and the gap threshold adapts to the board's density (median
+   nearest-neighbor gap) so dense and airy boards both cluster sensibly.
+3. `extractConnectorEdges` + `buildClusterRelations` — connector arrows are
+   excluded from geometric clustering (they deliberately span groups) but
+   captured as a graph: "cluster A → cluster B (label)". These relations are
+   included in `get_board_context` output and the `answer_from_board`
+   prompt — arrows are the board's semantic structure.
+4. `refineClusterWithVision` — per cluster, node screenshots + extracted
    text go to a vision model in one request; it confirms which nodes belong
    together, labels the group, describes embedded images, and writes a 3–5
-   sentence summary.
-4. `mapToDoubleDiamond` (optional, `docStructureHint: "double_diamond"`) —
-   assigns each cluster to Discover / Define / Develop / Deliver (or
-   "unclear").
-5. Results are cached in-memory per file key; `get_board_context` and
-   `answer_from_board` read from the cache.
+   sentence summary. Clusters are refined concurrently
+   (`INGEST_BOARD_VISION_CONCURRENCY`, default 3) within the vision budget.
+5. `mapClustersToPhases` (optional) — assigns each cluster to a phase of the
+   chosen framework: `double_diamond`, `lean_canvas`, `retro`,
+   `user_journey`, or a free-form `customPhases` list (or "unclear").
+6. Results are cached in-memory AND persisted per file key;
+   `get_board_context` and `answer_from_board` read from the cache and
+   restore from disk after a restart.
 
 ## Setup
 
@@ -108,6 +123,7 @@ The server now keeps provider calls bounded by default:
 - `LLM_RATE_LIMIT_RETRIES=1`
 - `LLM_ANSWER_MAX_OUTPUT_TOKENS=800`
 - `INGEST_BOARD_VISION_BUDGET_MS=35000`
+- `INGEST_BOARD_VISION_CONCURRENCY=3`
 - `FIGMA_SCREENSHOT_DOWNLOAD_CONCURRENCY=3`
 
 `ingest_board` defaults to `ingestMode: "balanced"`: text-rich clusters use
@@ -129,8 +145,16 @@ Paste in a Figma board link and ingest it:
   "figmaFileUrl": "https://www.figma.com/board/AbC123XyZ456/Semester-Project-Research",
   "docStructureHint": "double_diamond"
 }
-// → { "boardId": "AbC123XyZ456", "clusterCount": 5,
+// → { "boardId": "AbC123XyZ456", "clusterCount": 5, "relationCount": 3,
 //     "summary": "Ingested board AbC123XyZ456: 5 clusters — \"User interview quotes\", \"Problem framing\", …" }
+```
+
+Instead of a built-in framework (`double_diamond`, `lean_canvas`, `retro`,
+`user_journey`) you can pass your own phase names — clusters are then mapped
+onto them by keyword match:
+
+```jsonc
+{ "figmaFileUrl": "…", "customPhases": ["Ideen", "Feedback", "Offene Fragen"] }
 ```
 
 The `boardId` is the file key itself — re-running `ingest_board` on the same
@@ -147,6 +171,9 @@ topic:
 // Sticky notes with verbatim quotes from six student interviews about exam
 // stress. Two embedded screenshots show survey results (bar charts of study
 // habits). Main pain points: unclear requirements and late feedback. …
+//
+// ## Connections between clusters (from connector arrows)
+// - "User interview quotes" → "Problem framing" — "informs"
 ```
 
 The `contextText` block is deliberately token-lean — paste it straight into

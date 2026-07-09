@@ -88,4 +88,41 @@ describe("answerFromBoard", () => {
     expect(result.answer).toContain("User research");
     expect(result.citedClusters).toEqual(["User research", "Prototype concept"]);
   });
+
+  it("answers the extractive fallback in English for English questions", async () => {
+    setBoard("answer-fallback-en", board("answer-fallback-en"));
+    chatJsonMock.mockRejectedValueOnce(
+      new InvalidJsonErrorMock("LLM did not return valid JSON"),
+    );
+
+    const result = await answerFromBoard({
+      boardId: "answer-fallback-en",
+      // "was" alone must not flip this to German anymore.
+      question: "What was the main pain point?",
+    });
+
+    expect(result.answer).toContain("Based on the board");
+    expect(result.answer).not.toContain("Das Projekt");
+  });
+
+  it("passes connector-derived cluster relations to the model", async () => {
+    const data = board("answer-relations");
+    data.clusterRelations = [
+      {
+        fromClusterId: "cluster_1",
+        toClusterId: "cluster_2",
+        labels: ["informs"],
+        edgeCount: 2,
+      },
+    ];
+    setBoard("answer-relations", data);
+    chatJsonMock.mockResolvedValueOnce({ answer: "ok", citedClusters: [] });
+
+    await answerFromBoard({ boardId: "answer-relations", question: "How do the parts relate?" });
+
+    const messages = chatJsonMock.mock.calls[0]?.[1] as Array<{ role: string; content: string }>;
+    const userMessage = messages.find((message) => message.role === "user");
+    expect(userMessage?.content).toContain("Connections between clusters");
+    expect(userMessage?.content).toContain('"User research" → "Prototype concept" — "informs" (2 connectors)');
+  });
 });

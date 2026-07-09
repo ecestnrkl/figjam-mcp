@@ -31,7 +31,7 @@ import { diagnoseLlmConfig } from "./tools/diagnoseLlmConfig.js";
 export function createServer(): McpServer {
   const server = new McpServer({
     name: "figjam-context-mcp",
-    version: "0.1.0",
+    version: "0.2.0",
   });
 
   server.registerTool(
@@ -39,7 +39,7 @@ export function createServer(): McpServer {
     {
       title: "Ingest FigJam Board",
       description:
-        "Reads a FigJam/Figma file, clusters its content, and caches it under a boardId for later get_board_context / answer_from_board calls.",
+        "Reads a FigJam/Figma file, clusters its content, extracts connector-arrow relations, and caches it under a boardId for later get_board_context / answer_from_board calls. Clusters can be mapped to built-in framework phases (double_diamond, lean_canvas, retro, user_journey) or free-form customPhases.",
       inputSchema: ingestBoardInputShape,
       outputSchema: ingestBoardOutputShape,
     },
