@@ -32,6 +32,12 @@ export const ingestBoardInputShape = {
     .enum(["balanced", "max_quality", "max_speed"])
     .default("balanced")
     .describe("How aggressively to use vision LLM calls during ingest"),
+  forceFullIngest: z
+    .boolean()
+    .optional()
+    .describe(
+      "Skip all caching and incremental reuse — re-refine every cluster from scratch (e.g. after changing models). Default: false",
+    ),
 };
 
 export const ingestBoardInputSchema = z.object(ingestBoardInputShape);
@@ -54,6 +60,7 @@ export const ingestBoardOutputShape = {
       deterministicClusters: z.number().int().nonnegative(),
       visionClusters: z.number().int().nonnegative(),
       fallbackCount: z.number().int().nonnegative(),
+      reusedClusters: z.number().int().nonnegative().optional(),
     })
     .optional(),
 };

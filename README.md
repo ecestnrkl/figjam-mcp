@@ -17,12 +17,21 @@ four tools:
   to a topic.
 - **answer_from_board** — answers a free-form question about an ingested
   board, citing the clusters the answer was derived from.
+- **diff_board** — compares two ingest snapshots of the same board and
+  reports what changed: new/removed/modified clusters, edited nodes, and
+  connector changes ("what came in since the last workshop?").
 - **diagnose_llm_config** — runs small text + vision JSON checks against the
   active model setup and reports actionable failures.
 
 Ingested boards survive server restarts: `get_board_context` and
 `answer_from_board` transparently restore the last finished ingest from
 `.cache/figjam-mcp/` when the in-memory store is empty.
+
+Re-ingests are incremental: every cluster's member content is hashed, and
+clusters that didn't change simply reuse their previous label/summary — only
+new or edited clusters hit the vision model. Re-ingesting a mostly unchanged
+board is therefore almost free. Pass `forceFullIngest: true` to bypass all
+caching and reuse (e.g. after switching models).
 
 ## How it works
 
@@ -185,6 +194,28 @@ a documentation-writing chat (e.g. for a semester report). Or ask directly:
 // → { "answer": "Unclear requirements and late feedback …",
 //     "citedClusters": ["User interview quotes", "Problem framing"] }
 ```
+
+After the board evolved (say, workshop 2), ingest again — unchanged clusters
+are reused, so this is fast — and diff the snapshots:
+
+```jsonc
+// tool: diff_board
+{ "boardId": "AbC123XyZ456" }
+// → summaryText:
+// FigJam board AbC123XyZ456 — changes from 2026-07-03T14:02:11Z to 2026-07-10T09:41:52Z:
+//
+// New clusters (1):
+// - "Feedback round 2": Sticky notes with feedback from the second usability test.
+// Modified clusters (1):
+// - "User interview quotes": +3 nodes, 1 edited
+// Connections: +1 / -0
+// - new: "Feedback round 2" → "Problem framing" — "confirms"
+// Nodes: +9 added / -0 removed / 1 edited.
+// Unchanged clusters: 4.
+```
+
+`compareTo` selects an older baseline (2 = two ingests back, …); the history
+keeps the last 20 distinct board states per file.
 
 ## Scripts
 

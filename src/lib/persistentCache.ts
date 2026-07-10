@@ -27,6 +27,25 @@ export function extractFigmaLastModified(rawFigmaJson: unknown): string | undefi
   return typeof value === "string" && value.trim() ? value : undefined;
 }
 
+/**
+ * Content hash of one cluster's member nodes, used to decide whether a
+ * previous refinement (label/summary) is still valid. Position, size, and
+ * rotation are deliberately excluded: moving a group around the canvas does
+ * not change what it says, so its summary stays reusable. Node ids ARE
+ * included — membership changes must produce a different hash.
+ */
+export function hashClusterNodes(nodes: NormalizedNode[]): string {
+  const stable = nodes
+    .map((node) => ({
+      id: node.id,
+      type: node.type,
+      text: node.text?.trim() || undefined,
+      imageRef: node.imageRef,
+    }))
+    .sort((a, b) => a.id.localeCompare(b.id));
+  return hash(JSON.stringify(stable));
+}
+
 export function hashNormalizedNodes(nodes: NormalizedNode[]): string {
   const stable = nodes
     .map((node) => ({
@@ -112,6 +131,64 @@ export async function readLatestBoard(fileKey: string): Promise<BoardData | unde
     }
     return undefined;
   }
+}
+
+/** One entry in a board's ingest history (newest last). */
+export interface BoardHistoryEntry {
+  cacheKey: string;
+  nodeHash: string;
+  createdAt: number;
+}
+
+/** Max snapshots remembered per board; older entries are dropped. */
+const HISTORY_LIMIT = 20;
+
+/**
+ * Appends a snapshot to the board's ingest history so diff_board can compare
+ * board states over time. Re-ingests of an unchanged board (same cacheKey as
+ * the newest entry) are skipped — the history only records distinct states.
+ */
+export async function writeBoardHistoryEntry(
+  fileKey: string,
+  entry: BoardHistoryEntry,
+): Promise<void> {
+  try {
+    const history = await readBoardHistory(fileKey);
+    if (history.at(-1)?.cacheKey === entry.cacheKey) {
+      return;
+    }
+    history.push(entry);
+    const capped = history.slice(-HISTORY_LIMIT);
+    await mkdir(CACHE_DIR, { recursive: true });
+    await writeFile(historyPath(fileKey), `${JSON.stringify(capped, null, 2)}\n`, "utf8");
+  } catch (error) {
+    console.error(`Board history write failed for ${fileKey}: ${errorMessage(error)}`);
+  }
+}
+
+/** Reads a board's ingest history (oldest first, [] when none exists). */
+export async function readBoardHistory(fileKey: string): Promise<BoardHistoryEntry[]> {
+  try {
+    const raw = await readFile(historyPath(fileKey), "utf8");
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed)
+      ? parsed.filter(
+          (entry): entry is BoardHistoryEntry =>
+            typeof entry?.cacheKey === "string" &&
+            typeof entry?.nodeHash === "string" &&
+            typeof entry?.createdAt === "number",
+        )
+      : [];
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      console.error(`Board history read failed for ${fileKey}: ${errorMessage(error)}`);
+    }
+    return [];
+  }
+}
+
+function historyPath(fileKey: string): string {
+  return path.join(CACHE_DIR, `history-${fileKey.replace(/[^A-Za-z0-9_-]/g, "_")}.json`);
 }
 
 function latestPointerPath(fileKey: string): string {

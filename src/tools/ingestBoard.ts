@@ -12,8 +12,11 @@ import { describeModelConfig } from "../lib/modelRegistry.js";
 import {
   buildBoardCacheKey,
   extractFigmaLastModified,
+  hashClusterNodes,
   hashNormalizedNodes,
   readCachedBoard,
+  readLatestBoard,
+  writeBoardHistoryEntry,
   writeCachedBoard,
   writeLatestBoardPointer,
 } from "../lib/persistentCache.js";
@@ -75,7 +78,7 @@ export async function ingestBoard(input: IngestBoardInput): Promise<IngestBoardO
     customPhases: input.customPhases,
     ingestMode,
   });
-  const cached = await readCachedBoard(cacheKey);
+  const cached = input.forceFullIngest ? undefined : await readCachedBoard(cacheKey);
   if (cached) {
     const clusters = cached.clusters.map((cluster) => ({
       ...cluster,
@@ -89,6 +92,7 @@ export async function ingestBoard(input: IngestBoardInput): Promise<IngestBoardO
       qualityReport,
     });
     await writeLatestBoardPointer(fileKey, cacheKey);
+    await writeBoardHistoryEntry(fileKey, { cacheKey, nodeHash, createdAt: Date.now() });
     return {
       boardId: fileKey,
       clusterCount: clusters.length,
@@ -97,6 +101,13 @@ export async function ingestBoard(input: IngestBoardInput): Promise<IngestBoardO
       summary: buildSummary(fileKey, clusters, input.docStructureHint, qualityReport),
     };
   }
+
+  // Incremental reuse: index the previous ingest's refinements by cluster
+  // content hash. Clusters whose member content is unchanged skip the
+  // expensive vision step entirely and keep their label/summary.
+  const reuseIndex = input.forceFullIngest
+    ? new Map<string, RefinedCluster>()
+    : await buildReuseIndex(fileKey);
 
   const clusters = geometricPreCluster(selectClusterableNodes(nodes));
 
@@ -117,12 +128,22 @@ export async function ingestBoard(input: IngestBoardInput): Promise<IngestBoardO
 
   const refined: RefinedCluster[] = new Array(clusters.length);
   const visionQueue: number[] = [];
+  let reusedCount = 0;
   clusters.forEach((cluster, index) => {
     const clusterNodes = clusterNodesOf(cluster);
+    const contentHash = hashClusterNodes(clusterNodes);
+
+    const previous = reuseIndex.get(contentHash);
+    if (previous && canReusePrevious(previous, clusterNodes, ingestMode)) {
+      refined[index] = reuseCluster(cluster, previous, contentHash);
+      reusedCount++;
+      return;
+    }
+
     if (shouldUseVision(clusterNodes, ingestMode)) {
       visionQueue.push(index);
     } else {
-      refined[index] = refineClusterFromText(cluster, clusterNodes);
+      refined[index] = { ...refineClusterFromText(cluster, clusterNodes), contentHash };
     }
   });
 
@@ -133,9 +154,10 @@ export async function ingestBoard(input: IngestBoardInput): Promise<IngestBoardO
       const index = visionQueue[queueCursor++]!;
       const cluster = clusters[index]!;
       const clusterNodes = clusterNodesOf(cluster);
+      const contentHash = hashClusterNodes(clusterNodes);
 
       if (!hasVisionBudget(startedAt)) {
-        refined[index] = refineClusterFromText(cluster, clusterNodes);
+        refined[index] = { ...refineClusterFromText(cluster, clusterNodes), contentHash };
         fallbackCount++;
         continue;
       }
@@ -146,12 +168,15 @@ export async function ingestBoard(input: IngestBoardInput): Promise<IngestBoardO
           pickScreenshotNodes(clusterNodes),
           token,
         );
-        refined[index] = await refineClusterWithVision(cluster, screenshots, clusterNodes);
+        refined[index] = {
+          ...(await refineClusterWithVision(cluster, screenshots, clusterNodes)),
+          contentHash,
+        };
       } catch (error) {
         console.error(
           `Vision refinement failed for ${cluster.id}; using text fallback: ${errorMessage(error)}`,
         );
-        refined[index] = refineClusterFromText(cluster, clusterNodes);
+        refined[index] = { ...refineClusterFromText(cluster, clusterNodes), contentHash };
         fallbackCount++;
       }
     }
@@ -162,7 +187,11 @@ export async function ingestBoard(input: IngestBoardInput): Promise<IngestBoardO
 
   const finalClusters = mapClustersToPhases(refined, input.docStructureHint, input.customPhases);
   const clusterRelations = buildClusterRelations(connectorEdges, finalClusters);
-  const qualityReport = { ...buildQualityReport(finalClusters, 0), fallbackCount };
+  const qualityReport = {
+    ...buildQualityReport(finalClusters, 0),
+    fallbackCount,
+    reusedClusters: reusedCount,
+  };
 
   const boardData = {
     boardId: fileKey,
@@ -184,6 +213,7 @@ export async function ingestBoard(input: IngestBoardInput): Promise<IngestBoardO
   setBoard(fileKey, boardData);
   await writeCachedBoard(cacheKey, boardData);
   await writeLatestBoardPointer(fileKey, cacheKey);
+  await writeBoardHistoryEntry(fileKey, { cacheKey, nodeHash, createdAt: boardData.createdAt });
 
   return {
     boardId: fileKey,
@@ -251,6 +281,69 @@ function shouldUseVision(clusterNodes: NormalizedNode[], ingestMode: IngestMode)
     .filter(Boolean)
     .join(" ");
   return clusterNodes.some((node) => node.imageRef) || text.length < 40;
+}
+
+/**
+ * Indexes the previous ingest's refined clusters by the content hash of
+ * their member nodes. Hashes are recomputed from the previous board's node
+ * list (rather than trusting stored contentHash values), so boards ingested
+ * by older versions work too.
+ */
+async function buildReuseIndex(fileKey: string): Promise<Map<string, RefinedCluster>> {
+  const previous = await readLatestBoard(fileKey);
+  if (!previous) {
+    return new Map();
+  }
+
+  const nodesById = new Map(previous.nodes.map((node) => [node.id, node]));
+  const index = new Map<string, RefinedCluster>();
+  for (const cluster of previous.clusters) {
+    const clusterNodes = cluster.nodeIds
+      .map((id) => nodesById.get(id))
+      .filter((node): node is NormalizedNode => node !== undefined);
+    if (clusterNodes.length === cluster.nodeIds.length && clusterNodes.length > 0) {
+      index.set(hashClusterNodes(clusterNodes), cluster);
+    }
+  }
+  return index;
+}
+
+/**
+ * A previous refinement is reused when it is at least as good as what this
+ * ingest would produce for the cluster:
+ * - vision summaries are always kept (except max_quality re-runs get the
+ *   chance to upgrade non-vision leftovers),
+ * - deterministic summaries are only kept when this ingest would also skip
+ *   vision — otherwise the cluster gets its overdue vision refinement.
+ */
+function canReusePrevious(
+  previous: RefinedCluster,
+  clusterNodes: NormalizedNode[],
+  ingestMode: IngestMode,
+): boolean {
+  if (previous.summarySource === "vision_llm") {
+    return true;
+  }
+  return !shouldUseVision(clusterNodes, ingestMode);
+}
+
+/** Carries a previous refinement over to the freshly clustered geometry. */
+function reuseCluster(
+  cluster: Cluster,
+  previous: RefinedCluster,
+  contentHash: string,
+): RefinedCluster {
+  const valid = new Set(cluster.nodeIds);
+  const confirmed = previous.confirmedNodeIds.filter((id) => valid.has(id));
+  return {
+    ...cluster,
+    label: previous.label,
+    summary: previous.summary,
+    confirmedNodeIds: confirmed.length > 0 ? confirmed : [...cluster.nodeIds],
+    summarySource: previous.summarySource,
+    modelId: previous.modelId,
+    contentHash,
+  };
 }
 
 function refineClusterFromText(cluster: Cluster, clusterNodes: NormalizedNode[]): RefinedCluster {
@@ -366,8 +459,12 @@ function buildSummary(
       : "";
   const cacheNote =
     qualityReport.cachedClusters > 0 ? ` Loaded ${qualityReport.cachedClusters} clusters from cache.` : "";
+  const reuseNote =
+    (qualityReport.reusedClusters ?? 0) > 0
+      ? ` Reused ${qualityReport.reusedClusters} unchanged cluster${qualityReport.reusedClusters === 1 ? "" : "s"} from the previous ingest.`
+      : "";
   return (
     `Ingested board ${fileKey}: ${clusters.length} clusters - ${shownLabels} ` +
-    `(docStructureHint=${docStructureHint}).${cacheNote}${fallbackNote}`
+    `(docStructureHint=${docStructureHint}).${cacheNote}${reuseNote}${fallbackNote}`
   );
 }

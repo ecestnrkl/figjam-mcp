@@ -93,6 +93,36 @@ describe("persistentCache", () => {
     await expect(readLatestBoard("file-b")).resolves.toMatchObject({ boardId: "file-b" });
   });
 
+  it("appends, dedupes, and caps the board history", async () => {
+    process.env.FIGJAM_MCP_CACHE_DIR = await mkdtemp(path.join(tmpdir(), "figjam-cache-"));
+    const { readBoardHistory, writeBoardHistoryEntry } = await import(
+      "../src/lib/persistentCache.js"
+    );
+
+    await expect(readBoardHistory("file-h")).resolves.toEqual([]);
+
+    await writeBoardHistoryEntry("file-h", { cacheKey: "k1", nodeHash: "h1", createdAt: 1 });
+    await writeBoardHistoryEntry("file-h", { cacheKey: "k2", nodeHash: "h2", createdAt: 2 });
+    // Same cacheKey as the newest entry → deduped.
+    await writeBoardHistoryEntry("file-h", { cacheKey: "k2", nodeHash: "h2", createdAt: 3 });
+
+    const history = await readBoardHistory("file-h");
+    expect(history.map((entry) => entry.cacheKey)).toEqual(["k1", "k2"]);
+
+    // 25 distinct snapshots → capped to the newest 20.
+    for (let i = 0; i < 25; i++) {
+      await writeBoardHistoryEntry("file-cap", {
+        cacheKey: `k${i}`,
+        nodeHash: `h${i}`,
+        createdAt: i,
+      });
+    }
+    const capped = await readBoardHistory("file-cap");
+    expect(capped).toHaveLength(20);
+    expect(capped[0]?.cacheKey).toBe("k5");
+    expect(capped.at(-1)?.cacheKey).toBe("k24");
+  });
+
   it("getBoardOrRestore falls back to the persisted board after a restart", async () => {
     process.env.FIGJAM_MCP_CACHE_DIR = await mkdtemp(path.join(tmpdir(), "figjam-cache-"));
     const { writeCachedBoard, writeLatestBoardPointer } = await import(

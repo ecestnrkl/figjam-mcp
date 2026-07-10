@@ -80,6 +80,11 @@ export interface RefinedCluster extends Cluster {
   phase?: string;
   summarySource?: SummarySource;
   modelId?: string;
+  /**
+   * Hash of the member nodes' semantic content (see hashClusterNodes).
+   * Lets a later ingest reuse this cluster's refinement when unchanged.
+   */
+  contentHash?: string;
 }
 
 export interface IngestQualityReport {
@@ -88,6 +93,8 @@ export interface IngestQualityReport {
   deterministicClusters: number;
   visionClusters: number;
   fallbackCount: number;
+  /** Clusters whose refinement was reused from the previous ingest. */
+  reusedClusters?: number;
 }
 
 /** Everything ingest_board produces and later tools read back via cache.ts. */

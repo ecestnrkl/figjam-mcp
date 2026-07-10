@@ -15,10 +15,12 @@ import {
   diagnoseLlmConfigInputShape,
   diagnoseLlmConfigOutputShape,
 } from "./schemas/diagnoseLlmConfig.js";
+import { diffBoardInputShape, diffBoardOutputShape } from "./schemas/diffBoard.js";
 import { ingestBoard } from "./tools/ingestBoard.js";
 import { getBoardContext } from "./tools/getBoardContext.js";
 import { answerFromBoard } from "./tools/answerFromBoard.js";
 import { diagnoseLlmConfig } from "./tools/diagnoseLlmConfig.js";
+import { diffBoard } from "./tools/diffBoard.js";
 
 /**
  * Builds the MCP server and registers all tools.
@@ -31,7 +33,7 @@ import { diagnoseLlmConfig } from "./tools/diagnoseLlmConfig.js";
 export function createServer(): McpServer {
   const server = new McpServer({
     name: "figjam-context-mcp",
-    version: "0.2.0",
+    version: "0.3.0",
   });
 
   server.registerTool(
@@ -83,6 +85,24 @@ export function createServer(): McpServer {
       const output = await answerFromBoard(input);
       return {
         content: [{ type: "text" as const, text: output.answer }],
+        structuredContent: output,
+      };
+    },
+  );
+
+  server.registerTool(
+    "diff_board",
+    {
+      title: "Diff Board Snapshots",
+      description:
+        "Compares the two most recent ingest snapshots of a board (or further back via compareTo) and reports new, removed, and modified clusters, node changes, and connector changes. Run ingest_board first to capture the current board state.",
+      inputSchema: diffBoardInputShape,
+      outputSchema: diffBoardOutputShape,
+    },
+    async (input) => {
+      const output = await diffBoard(input);
+      return {
+        content: [{ type: "text" as const, text: output.summaryText }],
         structuredContent: output,
       };
     },

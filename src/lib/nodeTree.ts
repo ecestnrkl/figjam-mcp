@@ -14,7 +14,7 @@ interface RawFigmaNode {
 }
 
 /** Container types that carry no content of their own — only their children do. */
-const STRUCTURAL_TYPES = new Set(["DOCUMENT", "CANVAS", "PAGE", "FRAME", "GROUP", "SECTION"]);
+export const STRUCTURAL_TYPES = new Set(["DOCUMENT", "CANVAS", "PAGE", "FRAME", "GROUP", "SECTION"]);
 
 /**
  * Types whose children are internal plumbing, not separate board content —
