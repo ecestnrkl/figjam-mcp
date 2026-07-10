@@ -4,6 +4,13 @@
   "description": "MCP server that turns a FigJam board into queryable context for LLMs",
   "type": "module",
   "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist",
+    "README.md",
+    ".env.example",
+    "docs/pipeline.gif"
+  ],
   "bin": {
     "figjam-context-mcp": "dist/index.js"
   },
@@ -11,10 +18,19 @@
     "node": ">=18"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "clean": "node scripts/clean.mjs",
+    "build": "npm run clean && tsc -p tsconfig.json",
+    "postbuild": "node scripts/postbuild.mjs",
     "dev": "tsx watch src/index.ts",
     "start": "node dist/index.js",
-    "test": "vitest run"
+    "typecheck:src": "tsc -p tsconfig.json --noEmit",
+    "typecheck:tests": "tsc -p tsconfig.tests.json",
+    "typecheck": "npm run typecheck:src && npm run typecheck:tests",
+    "test": "vitest run",
+    "check": "npm run typecheck && npm test && npm run build && npm run package:check",
+    "package:check": "node scripts/check-package.mjs",
+    "package:smoke": "node scripts/package-smoke.mjs",
+    "prepack": "npm run check"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.11.0",

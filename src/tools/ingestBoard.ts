@@ -1,4 +1,5 @@
 import type { IngestBoardInput, IngestBoardOutput } from "../schemas/ingestBoard.js";
+import { extractFigmaFileKeyFromUrl } from "../schemas/common.js";
 import type { Cluster, IngestMode, IngestQualityReport, NormalizedNode, RefinedCluster } from "../types.js";
 import { fetchFileTree, fetchScreenshot } from "../lib/figmaApi.js";
 import { flattenNodeTree } from "../lib/nodeTree.js";
@@ -58,7 +59,7 @@ export async function ingestBoard(input: IngestBoardInput): Promise<IngestBoardO
   const startedAt = Date.now();
   const ingestMode = input.ingestMode ?? "balanced";
   const fileKey = parseFigmaFileKey(input.figmaFileUrl);
-  const token = input.figmaAccessToken ?? process.env.FIGMA_ACCESS_TOKEN;
+  const token = input.figmaAccessToken?.trim() || process.env.FIGMA_ACCESS_TOKEN?.trim();
   if (!token) {
     throw new Error(
       "No Figma access token — pass figmaAccessToken or set FIGMA_ACCESS_TOKEN in .env",
@@ -229,13 +230,14 @@ export async function ingestBoard(input: IngestBoardInput): Promise<IngestBoardO
  * https://www.figma.com/board/AbC123xyz/My-Board?node-id=…  →  AbC123xyz
  */
 export function parseFigmaFileKey(url: string): string {
-  const match = /figma\.com\/(?:file|design|board|proto)\/([A-Za-z0-9]+)/.exec(url);
-  if (!match?.[1]) {
+  const fileKey = extractFigmaFileKeyFromUrl(url);
+  if (!fileKey) {
     throw new Error(
-      `Invalid Figma URL "${url}" — expected https://www.figma.com/(file|design|board)/<file_key>/… (check the Figma file URL)`,
+      "Invalid Figma URL — expected an HTTPS figma.com URL with path " +
+        "/(file|design|board|proto)/<file_key>[/name] (check the Figma file URL)",
     );
   }
-  return match[1];
+  return fileKey;
 }
 
 /**

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { figmaFileKeySchema, questionSchema } from "./common.js";
 
 /**
  * answer_from_board — answers a free-form question about a previously
@@ -6,8 +7,8 @@ import { z } from "zod";
  */
 
 export const answerFromBoardInputShape = {
-  boardId: z.string(),
-  question: z.string(),
+  boardId: figmaFileKeySchema.describe("The Figma file key returned by ingest_board"),
+  question: questionSchema,
 };
 
 export const answerFromBoardInputSchema = z.object(answerFromBoardInputShape);

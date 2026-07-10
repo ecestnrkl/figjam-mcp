@@ -49,7 +49,7 @@ vi.mock("../src/lib/persistentCache.js", () => ({
   writeBoardHistoryEntry: writeBoardHistoryEntryMock,
 }));
 
-const { ingestBoard } = await import("../src/tools/ingestBoard.js");
+const { ingestBoard, parseFigmaFileKey } = await import("../src/tools/ingestBoard.js");
 
 function rawTree() {
   return {
@@ -142,6 +142,41 @@ afterEach(() => {
 });
 
 describe("ingestBoard", () => {
+  it("parses only canonical Figma hosts and paths", () => {
+    expect(
+      parseFigmaFileKey("  https://workspace.figma.com/board/AbC123/Test?node-id=1-2  "),
+    ).toBe("AbC123");
+    expect(() =>
+      parseFigmaFileKey("https://example.com/path/figma.com/board/AbC123/Test"),
+    ).toThrow(/Invalid Figma URL/);
+    expect(() =>
+      parseFigmaFileKey("https://figma.com.evil.example/board/AbC123/Test"),
+    ).toThrow(/Invalid Figma URL/);
+  });
+
+  it("trims an explicit Figma token before using it", async () => {
+    await ingestBoard({
+      figmaFileUrl: "https://www.figma.com/board/AbC123/Test",
+      figmaAccessToken: "  explicit-token  ",
+      docStructureHint: "freeform",
+      ingestMode: "max_speed",
+    });
+
+    expect(fetchFileTreeMock).toHaveBeenCalledWith("AbC123", "explicit-token");
+  });
+
+  it("trims the Figma token read from the environment", async () => {
+    process.env.FIGMA_ACCESS_TOKEN = "  environment-token  ";
+
+    await ingestBoard({
+      figmaFileUrl: "https://www.figma.com/board/AbC123/Test",
+      docStructureHint: "freeform",
+      ingestMode: "max_speed",
+    });
+
+    expect(fetchFileTreeMock).toHaveBeenCalledWith("AbC123", "environment-token");
+  });
+
   it("balanced mode uses vision only for image/low-text clusters", async () => {
     const output = await ingestBoard({
       figmaFileUrl: "https://www.figma.com/board/AbC123/Test",

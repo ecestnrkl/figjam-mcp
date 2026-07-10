@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { figmaFileKeySchema } from "./common.js";
 
 /**
  * diff_board — compares the two most recent ingest snapshots of a board
@@ -7,7 +8,7 @@ import { z } from "zod";
  */
 
 export const diffBoardInputShape = {
-  boardId: z.string().describe("The Figma file key, as returned by ingest_board"),
+  boardId: figmaFileKeySchema.describe("The Figma file key, as returned by ingest_board"),
   compareTo: z
     .number()
     .int()
@@ -23,7 +24,7 @@ export const diffBoardInputSchema = z.object(diffBoardInputShape);
 export type DiffBoardInput = z.infer<typeof diffBoardInputSchema>;
 
 export const diffBoardOutputShape = {
-  boardId: z.string(),
+  boardId: figmaFileKeySchema,
   baselineCreatedAt: z.string().describe("ISO timestamp of the baseline ingest"),
   currentCreatedAt: z.string().describe("ISO timestamp of the latest ingest"),
   summaryText: z.string().describe("Paste-ready human/LLM-readable change report"),

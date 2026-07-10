@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { figmaFileKeySchema, topicSchema } from "./common.js";
 
 /**
  * get_board_context — returns a text summary plus the underlying clusters
@@ -16,8 +17,8 @@ export const clusterContextSchema = z.object(clusterContextShape);
 export type ClusterContext = z.infer<typeof clusterContextSchema>;
 
 export const getBoardContextInputShape = {
-  boardId: z.string(),
-  topic: z.string().optional().describe("Optional topic to focus the context on"),
+  boardId: figmaFileKeySchema.describe("The Figma file key returned by ingest_board"),
+  topic: topicSchema.optional().describe("Optional topic to focus the context on"),
 };
 
 export const getBoardContextInputSchema = z.object(getBoardContextInputShape);

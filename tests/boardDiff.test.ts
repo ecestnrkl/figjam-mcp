@@ -141,6 +141,68 @@ describe("diffBoards", () => {
     expect(diff.summaryText).toContain("Connections: +1 / -0");
   });
 
+  it("counts identical parallel connector arrows as a multiset", () => {
+    const nodes = [node("a", "Idea"), node("b", "Action")];
+    const clusters = [
+      cluster("cluster_1", "Ideas", ["a"]),
+      cluster("cluster_2", "Actions", ["b"]),
+    ];
+    const connector = (connectorId: string) => ({
+      connectorId,
+      fromNodeId: "a",
+      toNodeId: "b",
+      label: "supports",
+    });
+    const baseline = {
+      ...board(nodes, clusters, 1),
+      connectorEdges: [connector("old-1"), connector("old-2")],
+    };
+    const oneRemoved = {
+      ...board(nodes, clusters, 2),
+      connectorEdges: [connector("new-1")],
+    };
+    const oneAdded = {
+      ...board(nodes, clusters, 3),
+      connectorEdges: [connector("new-1"), connector("new-2"), connector("new-3")],
+    };
+
+    const removedDiff = diffBoards(baseline, oneRemoved);
+    expect(removedDiff.stats.removedConnections).toBe(1);
+    expect(removedDiff.removedConnections).toEqual([
+      '"Ideas" → "Actions" — "supports"',
+    ]);
+
+    const addedDiff = diffBoards(baseline, oneAdded);
+    expect(addedDiff.stats.addedConnections).toBe(1);
+    expect(addedDiff.addedConnections).toEqual([
+      '"Ideas" → "Actions" — "supports"',
+    ]);
+  });
+
+  it("ignores connector id replacement when the semantic multiset is unchanged", () => {
+    const nodes = [node("a", "Idea"), node("b", "Action")];
+    const clusters = [
+      cluster("cluster_1", "Ideas", ["a"]),
+      cluster("cluster_2", "Actions", ["b"]),
+    ];
+    const baseline = {
+      ...board(nodes, clusters, 1),
+      connectorEdges: [
+        { connectorId: "old", fromNodeId: "a", toNodeId: "b", label: "supports" },
+      ],
+    };
+    const current = {
+      ...board(nodes, clusters, 2),
+      connectorEdges: [
+        { connectorId: "new", fromNodeId: "a", toNodeId: "b", label: "supports" },
+      ],
+    };
+
+    const diff = diffBoards(baseline, current);
+    expect(diff.stats.addedConnections).toBe(0);
+    expect(diff.stats.removedConnections).toBe(0);
+  });
+
   it("treats position-only moves as unchanged", () => {
     const baseline = board(
       [node("a", "Sticky")],

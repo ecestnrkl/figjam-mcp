@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { figmaFileKeySchema, figmaFileUrlSchema } from "./common.js";
 
 /**
  * ingest_board — reads a FigJam/Figma file, clusters its nodes, and caches
@@ -7,12 +8,12 @@ import { z } from "zod";
  */
 
 export const ingestBoardInputShape = {
-  figmaFileUrl: z
-    .string()
-    .url()
-    .describe("URL of the FigJam/Figma file to ingest"),
+  figmaFileUrl: figmaFileUrlSchema.describe("URL of the FigJam/Figma file to ingest"),
   figmaAccessToken: z
     .string()
+    .trim()
+    .min(1, "figmaAccessToken must not be empty")
+    .max(512, "figmaAccessToken is too long")
     .optional()
     .describe(
       "Figma personal access token; falls back to FIGMA_ACCESS_TOKEN env var if omitted",
@@ -22,8 +23,31 @@ export const ingestBoardInputShape = {
     .default("freeform")
     .describe("Built-in framework used to map clusters to phases"),
   customPhases: z
-    .array(z.string().min(1))
+    .array(
+      z
+        .string()
+        .trim()
+        .min(1, "custom phase names must not be empty")
+        .max(80, "custom phase names must be at most 80 characters"),
+    )
+    .min(1, "customPhases must contain at least one phase when provided")
     .max(12)
+    .superRefine((phases, context) => {
+      const seen = new Map<string, number>();
+      phases.forEach((phase, index) => {
+        const canonical = phase.normalize("NFKC").toLowerCase();
+        const previousIndex = seen.get(canonical);
+        if (previousIndex !== undefined) {
+          context.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: [index],
+            message: `custom phase names must be unique (duplicates phase ${previousIndex + 1})`,
+          });
+        } else {
+          seen.set(canonical, index);
+        }
+      });
+    })
     .optional()
     .describe(
       "Free-form phase names to map clusters onto (e.g. [\"Ideen\", \"Feedback\", \"Offene Fragen\"]); overrides docStructureHint",
@@ -44,7 +68,7 @@ export const ingestBoardInputSchema = z.object(ingestBoardInputShape);
 export type IngestBoardInput = z.infer<typeof ingestBoardInputSchema>;
 
 export const ingestBoardOutputShape = {
-  boardId: z.string(),
+  boardId: figmaFileKeySchema,
   clusterCount: z.number().int().nonnegative(),
   relationCount: z
     .number()

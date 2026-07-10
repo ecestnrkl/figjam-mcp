@@ -198,20 +198,44 @@ interface ConnectionDiffInternal {
   removed: string[];
 }
 
-/** Diffs connector edges as (from, to, label) tuples across the snapshots. */
+/**
+ * Diffs connector edges as a multiset of (from, to, label) tuples.
+ *
+ * Connector IDs are deliberately ignored: replacing an arrow without changing
+ * its meaning is not a semantic board change. Multiplicity still matters,
+ * though — removing one of two parallel arrows must be reported.
+ */
 function diffConnections(baseline: BoardData, current: BoardData): ConnectionDiffInternal {
-  const key = (edge: ConnectorEdge): string =>
-    `${edge.fromNodeId}->${edge.toNodeId}::${edge.label ?? ""}`;
-  const baselineEdges = new Map((baseline.connectorEdges ?? []).map((e) => [key(e), e]));
-  const currentEdges = new Map((current.connectorEdges ?? []).map((e) => [key(e), e]));
+  const baselineEdges = groupEdgesByMeaning(baseline.connectorEdges ?? []);
+  const currentEdges = groupEdgesByMeaning(current.connectorEdges ?? []);
+  const keys = new Set([...baselineEdges.keys(), ...currentEdges.keys()]);
+  const added: string[] = [];
+  const removed: string[] = [];
 
-  const added = [...currentEdges.entries()]
-    .filter(([k]) => !baselineEdges.has(k))
-    .map(([, edge]) => formatEdge(edge, current));
-  const removed = [...baselineEdges.entries()]
-    .filter(([k]) => !currentEdges.has(k))
-    .map(([, edge]) => formatEdge(edge, baseline));
+  for (const key of keys) {
+    const before = baselineEdges.get(key) ?? [];
+    const after = currentEdges.get(key) ?? [];
+
+    for (let index = before.length; index < after.length; index++) {
+      added.push(formatEdge(after[index]!, current));
+    }
+    for (let index = after.length; index < before.length; index++) {
+      removed.push(formatEdge(before[index]!, baseline));
+    }
+  }
+
   return { added, removed };
+}
+
+function groupEdgesByMeaning(edges: ConnectorEdge[]): Map<string, ConnectorEdge[]> {
+  const grouped = new Map<string, ConnectorEdge[]>();
+  for (const edge of edges) {
+    const key = JSON.stringify([edge.fromNodeId, edge.toNodeId, edge.label ?? ""]);
+    const matches = grouped.get(key) ?? [];
+    matches.push(edge);
+    grouped.set(key, matches);
+  }
+  return grouped;
 }
 
 /** Renders one edge with the owning clusters' labels (from its own snapshot). */

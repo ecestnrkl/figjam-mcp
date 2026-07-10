@@ -6,7 +6,7 @@
 
 MCP server that turns a FigJam board into queryable context for LLMs — read
 directly via the Figma REST API, no manual PDF-export detour. It exposes
-four tools:
+five tools:
 
 - **ingest_board** — reads a FigJam/Figma file, clusters its content
   spatially, verifies and labels each cluster with a vision model, extracts
@@ -113,7 +113,7 @@ npx @modelcontextprotocol/inspector npx tsx src/index.ts
 ```
 
 > **Note:** don't pass plain `npm run dev` to the Inspector (or any MCP
-> client) — npm prints a `> figjam-context-mcp@0.1.0 dev` banner to stdout
+> client) — npm prints a lifecycle banner to stdout
 > before the server starts, which corrupts the JSON-RPC stream the client
 > expects there. Either invoke `tsx` directly as above, or add `--silent`:
 > `npx @modelcontextprotocol/inspector npm run dev --silent`.
@@ -141,8 +141,9 @@ within the budget. `max_speed` skips vision; `max_quality` attempts vision for
 every cluster. Finished ingests are persisted under `.cache/figjam-mcp/`, keyed
 by file state, node hash, model preset, document hint, and ingest mode.
 
-Run `diagnose_llm_config` after changing model env vars. It checks text JSON,
-fast text JSON, vision JSON, and fallback setup without ingesting a board.
+Run `diagnose_llm_config` after changing model env vars. It verifies structured
+text replies with small arithmetic challenges and checks actual image
+understanding with a known color image, without ingesting a board.
 
 ## Usage example
 
@@ -220,9 +221,15 @@ keeps the last 20 distinct board states per file.
 ## Scripts
 
 - `npm run dev` — run the server with `tsx watch` (auto-restart on change).
-- `npm run build` — compile TypeScript to `dist/`.
+- `npm run build` — clean and compile TypeScript to `dist/`, preserving an executable CLI.
 - `npm start` — run the compiled server from `dist/`.
 - `npm test` — run the Vitest test suite.
+- `npm run typecheck` — type-check both source and tests without emitting files.
+- `npm run check` — type-check, test, build, and validate the package metadata/binary.
+- `npm run package:smoke` — pack the npm tarball, execute its CLI, and verify MCP initialization/tool discovery.
+
+Publishing runs the same checks automatically through `prepack`; CI exercises
+that complete package path on the minimum supported Node version and an LTS line.
 
 ## Project layout
 
