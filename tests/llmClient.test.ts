@@ -53,6 +53,26 @@ describe("chatJson", () => {
     await expect(chatJson("test-model", MESSAGES)).resolves.toEqual({ answer: 42 });
   });
 
+  it("forwards caller cancellation and stops before trying another model", async () => {
+    const controller = new AbortController();
+    createMock.mockImplementationOnce(
+      (_params: unknown, requestOptions?: { signal?: AbortSignal }) =>
+        new Promise<never>((_resolve, reject) => {
+          const signal = requestOptions?.signal;
+          signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+        }),
+    );
+
+    const promise = chatJson(["first-model", "second-model"], MESSAGES, {
+      signal: controller.signal,
+    });
+    controller.abort(new Error("vision deadline reached"));
+
+    await expect(promise).rejects.toThrow("vision deadline reached");
+    expect(createMock).toHaveBeenCalledTimes(1);
+    expect(createMock.mock.calls[0]?.[1]).toMatchObject({ signal: controller.signal });
+  });
+
   it("uses strict json_schema and OpenRouter parameter requirements when a schema is supplied", async () => {
     createMock.mockResolvedValueOnce(okCompletion('{"answer":42}'));
 

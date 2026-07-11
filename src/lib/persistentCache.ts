@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { BoardData, DocStructureHint, IngestMode, NormalizedNode } from "../types.js";
 import { getModelConfigSignature } from "./modelRegistry.js";
@@ -10,8 +10,17 @@ const CACHE_DIR = process.env.FIGJAM_MCP_CACHE_DIR ?? path.join(process.cwd(), "
  * Bumped whenever the persisted BoardData shape or the node hash inputs
  * change incompatibly, so stale entries miss cleanly instead of loading
  * with missing fields. v2: connector edges + cluster relations + phases.
+ * v3: bounded spatial clusters and prompt-safe refinement semantics.
  */
-const CACHE_SCHEMA_VERSION = 2;
+const CACHE_SCHEMA_VERSION = 3;
+
+/**
+ * Serializes every in-process mutation of cache reference metadata. History
+ * retention scans all boards' history/latest files before deleting a snapshot,
+ * so a per-board lock would still allow another board to add a reference in
+ * the scan-to-unlink window.
+ */
+let referenceMutationQueue: Promise<void> = Promise.resolve();
 
 export interface BoardCacheIdentity {
   fileKey: string;
@@ -95,7 +104,7 @@ export async function readCachedBoard(cacheKey: string): Promise<BoardData | und
 export async function writeCachedBoard(cacheKey: string, board: BoardData): Promise<void> {
   try {
     await mkdir(CACHE_DIR, { recursive: true });
-    await writeFile(cachePath(cacheKey), `${JSON.stringify(board, null, 2)}\n`, "utf8");
+    await writeFile(cachePath(cacheKey), `${JSON.stringify(board)}\n`, "utf8");
   } catch (error) {
     console.error(`Persistent cache write failed for ${cacheKey}: ${errorMessage(error)}`);
   }
@@ -108,20 +117,30 @@ export async function writeCachedBoard(cacheKey: string, board: BoardData): Prom
  * only way back from a bare fileKey.)
  */
 export async function writeLatestBoardPointer(fileKey: string, cacheKey: string): Promise<void> {
-  try {
-    await mkdir(CACHE_DIR, { recursive: true });
-    await writeFile(latestPointerPath(fileKey), `${JSON.stringify({ cacheKey })}\n`, "utf8");
-  } catch (error) {
-    console.error(`Latest-board pointer write failed for ${fileKey}: ${errorMessage(error)}`);
-  }
+  await serializeReferenceMutation(async () => {
+    try {
+      await mkdir(CACHE_DIR, { recursive: true });
+      await writeFile(
+        latestPointerPath(fileKey),
+        `${JSON.stringify({ cacheKey, schemaVersion: CACHE_SCHEMA_VERSION })}\n`,
+        "utf8",
+      );
+    } catch (error) {
+      console.error(`Latest-board pointer write failed for ${fileKey}: ${errorMessage(error)}`);
+    }
+  });
 }
 
 /** Loads the most recently ingested BoardData for a file, if persisted. */
 export async function readLatestBoard(fileKey: string): Promise<BoardData | undefined> {
   try {
     const raw = await readFile(latestPointerPath(fileKey), "utf8");
-    const pointer = JSON.parse(raw) as { cacheKey?: unknown };
-    if (typeof pointer.cacheKey !== "string" || !pointer.cacheKey) {
+    const pointer = JSON.parse(raw) as { cacheKey?: unknown; schemaVersion?: unknown };
+    if (
+      pointer.schemaVersion !== CACHE_SCHEMA_VERSION ||
+      typeof pointer.cacheKey !== "string" ||
+      !pointer.cacheKey
+    ) {
       return undefined;
     }
     return await readCachedBoard(pointer.cacheKey);
@@ -152,6 +171,16 @@ export async function writeBoardHistoryEntry(
   fileKey: string,
   entry: BoardHistoryEntry,
 ): Promise<void> {
+  await serializeReferenceMutation(() => writeBoardHistoryEntryLocked(fileKey, entry));
+}
+
+async function writeBoardHistoryEntryLocked(
+  fileKey: string,
+  entry: BoardHistoryEntry,
+): Promise<void> {
+  let droppedCacheKeys: string[] = [];
+  let retainedCacheKeys = new Set<string>();
+
   try {
     const history = await readBoardHistory(fileKey);
     if (history.at(-1)?.cacheKey === entry.cacheKey) {
@@ -159,10 +188,24 @@ export async function writeBoardHistoryEntry(
     }
     history.push(entry);
     const capped = history.slice(-HISTORY_LIMIT);
+    retainedCacheKeys = new Set(capped.map((historyEntry) => historyEntry.cacheKey));
+    droppedCacheKeys = [
+      ...new Set(
+        history
+          .slice(0, -HISTORY_LIMIT)
+          .map((historyEntry) => historyEntry.cacheKey)
+          .filter((cacheKey) => !retainedCacheKeys.has(cacheKey)),
+      ),
+    ];
     await mkdir(CACHE_DIR, { recursive: true });
-    await writeFile(historyPath(fileKey), `${JSON.stringify(capped, null, 2)}\n`, "utf8");
+    await writeFile(historyPath(fileKey), `${JSON.stringify(capped)}\n`, "utf8");
   } catch (error) {
     console.error(`Board history write failed for ${fileKey}: ${errorMessage(error)}`);
+    return;
+  }
+
+  if (droppedCacheKeys.length > 0) {
+    await garbageCollectSnapshots(fileKey, droppedCacheKeys, retainedCacheKeys);
   }
 }
 
@@ -199,6 +242,129 @@ function latestPointerPath(fileKey: string): string {
 
 function cachePath(cacheKey: string): string {
   return path.join(CACHE_DIR, `${cacheKey}.json`);
+}
+
+/**
+ * Deletes only snapshots dropped from this board's capped history. Reference
+ * metadata is checked globally because cache keys can be shared or manually
+ * restored, and the snapshot's own fileKey is checked before unlinking so a
+ * damaged history file cannot delete another board's data.
+ */
+async function garbageCollectSnapshots(
+  fileKey: string,
+  droppedCacheKeys: string[],
+  retainedCacheKeys: ReadonlySet<string>,
+): Promise<void> {
+  for (const cacheKey of droppedCacheKeys) {
+    if (retainedCacheKeys.has(cacheKey) || !isSafeCacheKey(cacheKey)) {
+      continue;
+    }
+
+    const snapshotFile = cachePath(cacheKey);
+    try {
+      const raw = await readFile(snapshotFile, "utf8");
+      const snapshot = JSON.parse(raw) as { fileKey?: unknown };
+      if (snapshot.fileKey !== fileKey) {
+        continue;
+      }
+
+      // Re-scan directly before unlink. All reference writers in this module
+      // share referenceMutationQueue, closing the in-process scan-to-delete
+      // race while still failing closed on malformed/external metadata.
+      const referencedCacheKeys = await readAllSnapshotReferences(fileKey);
+      if (!referencedCacheKeys || referencedCacheKeys.has(cacheKey)) {
+        continue;
+      }
+      await unlink(snapshotFile);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+        console.error(
+          `Snapshot cleanup failed for board ${fileKey}, cache ${cacheKey}: ${errorMessage(error)}`,
+        );
+      }
+    }
+  }
+}
+
+/**
+ * Returns every cache key referenced by a history or latest pointer. If any
+ * reference file cannot be interpreted, fail closed and leave snapshots in
+ * place rather than risking deletion of live data.
+ */
+async function readAllSnapshotReferences(fileKey: string): Promise<Set<string> | undefined> {
+  let names: string[];
+  try {
+    names = await readdir(CACHE_DIR);
+  } catch (error) {
+    console.error(`Snapshot cleanup skipped for board ${fileKey}: ${errorMessage(error)}`);
+    return undefined;
+  }
+
+  const referenceNames = names.filter(
+    (name) =>
+      (name.startsWith("history-") || name.startsWith("latest-")) && name.endsWith(".json"),
+  );
+  const references = new Set<string>();
+
+  for (const name of referenceNames) {
+    try {
+      const parsed = JSON.parse(await readFile(path.join(CACHE_DIR, name), "utf8")) as unknown;
+      if (name.startsWith("latest-")) {
+        const pointer = parsed as {
+          cacheKey?: unknown;
+          schemaVersion?: unknown;
+        } | null;
+        if (pointer?.schemaVersion === undefined) {
+          // Latest pointers written before schema binding are intentionally
+          // stale and no longer protect a snapshot from retention cleanup.
+          continue;
+        }
+        if (pointer.schemaVersion !== CACHE_SCHEMA_VERSION) {
+          if (typeof pointer.schemaVersion === "number") {
+            continue;
+          }
+          throw new Error("latest pointer has an invalid schemaVersion");
+        }
+        const cacheKey = pointer.cacheKey;
+        if (typeof cacheKey !== "string" || !cacheKey) {
+          throw new Error("latest pointer has no cacheKey");
+        }
+        references.add(cacheKey);
+        continue;
+      }
+
+      if (!Array.isArray(parsed)) {
+        throw new Error("history is not an array");
+      }
+      for (const historyEntry of parsed) {
+        const cacheKey = (historyEntry as { cacheKey?: unknown } | null)?.cacheKey;
+        if (typeof cacheKey !== "string" || !cacheKey) {
+          throw new Error("history contains an entry without a cacheKey");
+        }
+        references.add(cacheKey);
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        continue;
+      }
+      console.error(
+        `Snapshot cleanup skipped for board ${fileKey}; could not read ${name}: ${errorMessage(error)}`,
+      );
+      return undefined;
+    }
+  }
+
+  return references;
+}
+
+function isSafeCacheKey(cacheKey: string): boolean {
+  return /^[A-Za-z0-9_-]{1,128}$/.test(cacheKey);
+}
+
+function serializeReferenceMutation(operation: () => Promise<void>): Promise<void> {
+  const result = referenceMutationQueue.then(operation);
+  referenceMutationQueue = result.catch(() => undefined);
+  return result;
 }
 
 function hash(value: string): string {

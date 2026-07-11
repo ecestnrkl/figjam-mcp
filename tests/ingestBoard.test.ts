@@ -94,6 +94,45 @@ function rawTree() {
   };
 }
 
+function visionPriorityTree() {
+  return {
+    document: {
+      id: "0:0",
+      name: "Document",
+      type: "DOCUMENT",
+      children: [
+        {
+          id: "0:1",
+          name: "Page",
+          type: "CANVAS",
+          children: [
+            {
+              id: "1:1",
+              name: "Text-rich first on canvas",
+              type: "STICKY",
+              absoluteBoundingBox: { x: 0, y: 0, width: 100, height: 100 },
+              characters: "A detailed research note that already explains the cluster in text.",
+            },
+            {
+              id: "1:2",
+              name: "No extracted text",
+              type: "SHAPE_WITH_TEXT",
+              absoluteBoundingBox: { x: 1000, y: 0, width: 100, height: 100 },
+            },
+            {
+              id: "1:3",
+              name: "Image last on canvas",
+              type: "SHAPE_WITH_TEXT",
+              absoluteBoundingBox: { x: 2000, y: 0, width: 100, height: 100 },
+              fills: [{ type: "IMAGE", imageRef: "priority-image-ref" }],
+            },
+          ],
+        },
+      ],
+    },
+  };
+}
+
 function cachedBoard(): BoardData {
   return {
     boardId: "AbC123",
@@ -137,6 +176,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.clearAllMocks();
   delete process.env.FIGMA_ACCESS_TOKEN;
 });
@@ -213,6 +253,102 @@ describe("ingestBoard", () => {
 
     expect(refineClusterWithVisionMock).toHaveBeenCalledTimes(2);
     expect(output.qualityReport?.visionClusters).toBe(2);
+  });
+
+  it("prioritizes image and low-text vision candidates over canvas order", async () => {
+    fetchFileTreeMock.mockResolvedValueOnce(visionPriorityTree());
+
+    await ingestBoard({
+      figmaFileUrl: "https://www.figma.com/board/AbC123/Test",
+      docStructureHint: "freeform",
+      ingestMode: "max_quality",
+    });
+
+    expect(fetchScreenshotMock.mock.calls.map((call) => call[1])).toEqual([
+      ["1:3"],
+      ["1:2"],
+      ["1:1"],
+    ]);
+  });
+
+  it("starts the vision deadline after Figma fetch and re-checks it after screenshots", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-11T12:00:00Z"));
+    fetchFileTreeMock.mockImplementationOnce(async () => {
+      // File download time is outside the dedicated vision-phase budget.
+      vi.setSystemTime(Date.now() + 60_000);
+      return rawTree();
+    });
+    fetchScreenshotMock.mockImplementationOnce(async () => {
+      // The screenshot request itself crosses the 35 s vision deadline.
+      vi.setSystemTime(Date.now() + 35_001);
+      return [Buffer.from("png")];
+    });
+
+    const output = await ingestBoard({
+      figmaFileUrl: "https://www.figma.com/board/AbC123/Test",
+      docStructureHint: "freeform",
+      ingestMode: "balanced",
+    });
+
+    // The screenshot starts, proving the earlier Figma fetch did not consume
+    // the vision budget; the LLM does not start after that budget expires.
+    expect(fetchScreenshotMock).toHaveBeenCalledTimes(1);
+    expect(refineClusterWithVisionMock).not.toHaveBeenCalled();
+    expect(output.qualityReport).toMatchObject({ fallbackCount: 1, visionClusters: 0 });
+  });
+
+  it("returns at the hard vision deadline when a provider never settles", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-11T12:00:00Z"));
+    const signals: AbortSignal[] = [];
+    refineClusterWithVisionMock.mockImplementation((...args: unknown[]) => {
+      const signal = args[3] as AbortSignal;
+      signals.push(signal);
+      return new Promise<never>((_resolve, reject) => {
+        signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+      });
+    });
+
+    const ingest = ingestBoard({
+      figmaFileUrl: "https://www.figma.com/board/AbC123/Test",
+      docStructureHint: "freeform",
+      ingestMode: "max_quality",
+    });
+    await vi.advanceTimersByTimeAsync(35_001);
+    const output = await ingest;
+
+    expect(refineClusterWithVisionMock).toHaveBeenCalledTimes(2);
+    expect(signals).toHaveLength(2);
+    expect(signals.every((signal) => signal.aborted)).toBe(true);
+    expect(output.qualityReport).toMatchObject({ fallbackCount: 2, visionClusters: 0 });
+  });
+
+  it("aborts hanging screenshot requests at the hard vision deadline", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-11T12:00:00Z"));
+    const signals: AbortSignal[] = [];
+    fetchScreenshotMock.mockImplementation((...args: unknown[]) => {
+      const signal = args[3] as AbortSignal;
+      signals.push(signal);
+      return new Promise<never>((_resolve, reject) => {
+        signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+      });
+    });
+
+    const ingest = ingestBoard({
+      figmaFileUrl: "https://www.figma.com/board/AbC123/Test",
+      docStructureHint: "freeform",
+      ingestMode: "max_quality",
+    });
+    await vi.advanceTimersByTimeAsync(35_001);
+    const output = await ingest;
+
+    expect(fetchScreenshotMock).toHaveBeenCalledTimes(2);
+    expect(signals).toHaveLength(2);
+    expect(signals.every((signal) => signal.aborted)).toBe(true);
+    expect(refineClusterWithVisionMock).not.toHaveBeenCalled();
+    expect(output.qualityReport).toMatchObject({ fallbackCount: 2, visionClusters: 0 });
   });
 
   it("loads unchanged boards from persistent cache", async () => {

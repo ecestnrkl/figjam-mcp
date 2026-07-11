@@ -25,8 +25,8 @@ import {
 /**
  * Max node screenshots sent to the vision model per cluster. Nodes with
  * image fills are prioritized (their content is invisible in extracted
- * text), then the largest remaining nodes. Text of ALL nodes still reaches
- * the model via the prompt, so capping only limits redundant pixels.
+ * text), then the largest remaining nodes. The text inventory has its own
+ * hard node/character bounds in visionInterpreter.ts.
  */
 const MAX_SCREENSHOTS_PER_CLUSTER = 6;
 
@@ -56,7 +56,6 @@ const VISION_CONCURRENCY = readIntEnv("INGEST_BOARD_VISION_CONCURRENCY", 3, 1);
  * repeated ingest_board call simply refreshes it.
  */
 export async function ingestBoard(input: IngestBoardInput): Promise<IngestBoardOutput> {
-  const startedAt = Date.now();
   const ingestMode = input.ingestMode ?? "balanced";
   const fileKey = parseFigmaFileKey(input.figmaFileUrl);
   const token = input.figmaAccessToken?.trim() || process.env.FIGMA_ACCESS_TOKEN?.trim();
@@ -126,12 +125,13 @@ export async function ingestBoard(input: IngestBoardInput): Promise<IngestBoardO
     cluster.nodeIds
       .map((id) => nodesById.get(id))
       .filter((node): node is NormalizedNode => node !== undefined);
+  const clusterNodesByIndex = clusters.map(clusterNodesOf);
 
   const refined: RefinedCluster[] = new Array(clusters.length);
   const visionQueue: number[] = [];
   let reusedCount = 0;
   clusters.forEach((cluster, index) => {
-    const clusterNodes = clusterNodesOf(cluster);
+    const clusterNodes = clusterNodesByIndex[index]!;
     const contentHash = hashClusterNodes(clusterNodes);
 
     const previous = reuseIndex.get(contentHash);
@@ -148,35 +148,69 @@ export async function ingestBoard(input: IngestBoardInput): Promise<IngestBoardO
     }
   });
 
+  // The queue is deliberately independent of canvas order. Image-backed
+  // clusters carry information that cannot be recovered from the Figma text
+  // tree, while low-text clusters benefit more from visual interpretation
+  // than already well-described ones. Stable tie-breakers keep the result
+  // deterministic across runs.
+  const visionPriorities = clusters.map((cluster, index) =>
+    buildVisionPriority(cluster, clusterNodesByIndex[index]!),
+  );
+  visionQueue.sort((left, right) =>
+    compareVisionPriority(visionPriorities[left]!, visionPriorities[right]!),
+  );
+
+  // Start the budget when the vision phase actually begins. Slow Figma file
+  // downloads and geometric clustering must not consume time intended for
+  // screenshots and visual interpretation.
+  const visionDeadline = Date.now() + VISION_BUDGET_MS;
+
   let fallbackCount = 0;
   let queueCursor = 0;
   const visionWorker = async (): Promise<void> => {
     while (queueCursor < visionQueue.length) {
       const index = visionQueue[queueCursor++]!;
       const cluster = clusters[index]!;
-      const clusterNodes = clusterNodesOf(cluster);
+      const clusterNodes = clusterNodesByIndex[index]!;
       const contentHash = hashClusterNodes(clusterNodes);
 
-      if (!hasVisionBudget(startedAt)) {
+      if (!hasVisionBudget(visionDeadline)) {
         refined[index] = { ...refineClusterFromText(cluster, clusterNodes), contentHash };
         fallbackCount++;
         continue;
       }
 
       try {
-        const screenshots = await fetchScreenshot(
-          fileKey,
-          pickScreenshotNodes(clusterNodes),
-          token,
+        const screenshots = await withinVisionDeadline(
+          (signal) =>
+            fetchScreenshot(fileKey, pickScreenshotNodes(clusterNodes), token, signal),
+          visionDeadline,
+        );
+
+        // Screenshot rendering/downloading can itself consume the remaining
+        // budget. Re-check before the expensive LLM request so no new model
+        // work starts once the phase deadline (or minimum useful slot) has
+        // elapsed.
+        if (!hasVisionBudget(visionDeadline)) {
+          refined[index] = { ...refineClusterFromText(cluster, clusterNodes), contentHash };
+          fallbackCount++;
+          continue;
+        }
+
+        const visionRefinement = await withinVisionDeadline(
+          (signal) => refineClusterWithVision(cluster, screenshots, clusterNodes, signal),
+          visionDeadline,
         );
         refined[index] = {
-          ...(await refineClusterWithVision(cluster, screenshots, clusterNodes)),
+          ...visionRefinement,
           contentHash,
         };
       } catch (error) {
-        console.error(
-          `Vision refinement failed for ${cluster.id}; using text fallback: ${errorMessage(error)}`,
-        );
+        if (!(error instanceof VisionDeadlineExceededError)) {
+          console.error(
+            `Vision refinement failed for ${cluster.id}; using text fallback: ${errorMessage(error)}`,
+          );
+        }
         refined[index] = { ...refineClusterFromText(cluster, clusterNodes), contentHash };
         fallbackCount++;
       }
@@ -261,13 +295,105 @@ function selectClusterableNodes(nodes: NormalizedNode[]): NormalizedNode[] {
 function pickScreenshotNodes(clusterNodes: NormalizedNode[]): string[] {
   const ranked = [...clusterNodes].sort((a, b) => {
     const imageDiff = Number(Boolean(b.imageRef)) - Number(Boolean(a.imageRef));
-    return imageDiff !== 0 ? imageDiff : b.width * b.height - a.width * a.height;
+    if (imageDiff !== 0) {
+      return imageDiff;
+    }
+    const areaDiff = b.width * b.height - a.width * a.height;
+    return areaDiff !== 0 ? areaDiff : compareStrings(a.id, b.id);
   });
   return ranked.slice(0, MAX_SCREENSHOTS_PER_CLUSTER).map((node) => node.id);
 }
 
-function hasVisionBudget(startedAt: number): boolean {
-  return VISION_BUDGET_MS > 0 && Date.now() - startedAt + MIN_VISION_SLOT_MS <= VISION_BUDGET_MS;
+function hasVisionBudget(deadline: number): boolean {
+  if (VISION_BUDGET_MS <= 0) {
+    return false;
+  }
+  const now = Date.now();
+  return now < deadline && now + MIN_VISION_SLOT_MS <= deadline;
+}
+
+class VisionDeadlineExceededError extends Error {
+  constructor() {
+    super("Vision phase deadline exceeded");
+    this.name = "VisionDeadlineExceededError";
+  }
+}
+
+/**
+ * Bounds ingest latency and actively aborts the underlying request when the
+ * phase deadline is reached. Providers may still finish already-sent work,
+ * but the local HTTP request, retries, and backoff are cancelled.
+ */
+function withinVisionDeadline<T>(
+  operation: (signal: AbortSignal) => Promise<T>,
+  deadline: number,
+): Promise<T> {
+  const remainingMs = deadline - Date.now();
+  if (remainingMs <= 0) {
+    return Promise.reject(new VisionDeadlineExceededError());
+  }
+
+  return new Promise<T>((resolve, reject) => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => {
+      const error = new VisionDeadlineExceededError();
+      controller.abort(error);
+      reject(error);
+    }, remainingMs);
+    Promise.resolve()
+      .then(() => operation(controller.signal))
+      .then(
+        (value) => {
+          clearTimeout(timer);
+          resolve(value);
+        },
+        (error: unknown) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      );
+  });
+}
+
+interface VisionPriority {
+  clusterId: string;
+  imageCount: number;
+  textLength: number;
+}
+
+function buildVisionPriority(cluster: Cluster, nodes: NormalizedNode[]): VisionPriority {
+  return {
+    clusterId: cluster.id,
+    imageCount: nodes.filter((node) => Boolean(node.imageRef)).length,
+    textLength: totalExtractedTextLength(nodes),
+  };
+}
+
+function compareVisionPriority(left: VisionPriority, right: VisionPriority): number {
+  const imagePresenceDiff = Number(right.imageCount > 0) - Number(left.imageCount > 0);
+  if (imagePresenceDiff !== 0) {
+    return imagePresenceDiff;
+  }
+
+  const textLengthDiff = left.textLength - right.textLength;
+  if (textLengthDiff !== 0) {
+    return textLengthDiff;
+  }
+
+  const imageCountDiff = right.imageCount - left.imageCount;
+  if (imageCountDiff !== 0) {
+    return imageCountDiff;
+  }
+
+  return compareStrings(left.clusterId, right.clusterId);
+}
+
+function totalExtractedTextLength(nodes: NormalizedNode[]): number {
+  return nodes.reduce((total, node) => total + (node.text?.trim().length ?? 0), 0);
+}
+
+function compareStrings(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
 }
 
 function shouldUseVision(clusterNodes: NormalizedNode[], ingestMode: IngestMode): boolean {
@@ -278,11 +404,10 @@ function shouldUseVision(clusterNodes: NormalizedNode[], ingestMode: IngestMode)
     return true;
   }
 
-  const text = clusterNodes
-    .map((node) => node.text?.trim() ?? "")
-    .filter(Boolean)
-    .join(" ");
-  return clusterNodes.some((node) => node.imageRef) || text.length < 40;
+  return (
+    clusterNodes.some((node) => node.imageRef) ||
+    totalExtractedTextLength(clusterNodes) < 40
+  );
 }
 
 /**

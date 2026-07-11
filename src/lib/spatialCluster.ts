@@ -22,6 +22,16 @@ const ADAPTIVE_FACTOR = 3;
 /** Max nodes sampled for the nearest-neighbor median (keeps it cheap). */
 const ADAPTIVE_SAMPLE_LIMIT = 150;
 
+/** Prevents one transitive single-linkage chain from becoming an unbounded LLM unit. */
+const DEFAULT_MAX_CLUSTER_SIZE = 250;
+
+/**
+ * A very large background shape can cover hundreds of thousands of grid cells.
+ * Such footprints use a bounded pairwise overflow path instead of expanding
+ * memory in proportion to canvas area.
+ */
+const DEFAULT_MAX_GRID_CELLS_PER_NODE = 4096;
+
 export interface GeometricClusterOptions {
   /**
    * Max euclidean gap between node footprints to join a cluster (canvas px).
@@ -35,6 +45,10 @@ export interface GeometricClusterOptions {
    * least MIN_ADAPTIVE_NODES nodes.
    */
   adaptiveGapThreshold?: boolean;
+  /** Maximum members in one returned cluster; larger groups are spatially bisected. */
+  maxClusterSize?: number;
+  /** Maximum spatial-hash cells occupied by one node before using the overflow path. */
+  maxGridCellsPerNode?: number;
 }
 
 /** A node's spatial footprint used for distance checks. */
@@ -51,7 +65,9 @@ interface Footprint {
  * Groups NormalizedNode entries into spatial clusters purely by geometry
  * (single-linkage: a node joins a cluster if it is within the gap threshold
  * of ANY node already in it), before any vision-based refinement is applied
- * in visionInterpreter.ts.
+ * in visionInterpreter.ts. Connected components above maxClusterSize are
+ * spatially bisected so one bridge/background node cannot create an unbounded
+ * downstream LLM unit.
  *
  * Rotation handling: Figma reports `x/y/width/height` as the axis-aligned
  * bounding box (AABB), which over-approximates rotated nodes — a thin sticky
@@ -66,9 +82,9 @@ interface Footprint {
  * into a uniform grid (spatial hash). Each footprint's bounds — inflated by
  * half the gap threshold — are inserted into every cell they cover; two
  * footprints within the threshold necessarily share a cell, so only
- * cell-local pairs need the exact gap check. Near-linear on real boards,
- * and degenerates to the old pairwise behavior only if everything lands in
- * one cell.
+ * cell-local pairs need the exact gap check. Footprints covering too many
+ * cells use a bounded pairwise overflow path instead. This stays near-linear
+ * on real boards and makes work depend on node count rather than canvas area.
  *
  * Returns coarse cluster candidates (IDs + bounding boxes only); labels and
  * summaries are added later by the vision step.
@@ -87,6 +103,17 @@ export function geometricPreCluster(
     (options.adaptiveGapThreshold === false
       ? DEFAULT_GAP_THRESHOLD
       : adaptiveGapThreshold(footprints));
+  if (!Number.isFinite(gapThreshold) || gapThreshold < 0) {
+    throw new Error("geometricPreCluster: gapThreshold must be a finite number >= 0");
+  }
+  const maxClusterSize = positiveIntegerOption(
+    "maxClusterSize",
+    options.maxClusterSize ?? DEFAULT_MAX_CLUSTER_SIZE,
+  );
+  const maxGridCellsPerNode = positiveIntegerOption(
+    "maxGridCellsPerNode",
+    options.maxGridCellsPerNode ?? DEFAULT_MAX_GRID_CELLS_PER_NODE,
+  );
 
   // Union-find over node indices; union any pair within the gap threshold.
   const parent = footprints.map((_, i) => i);
@@ -106,7 +133,12 @@ export function geometricPreCluster(
     parent[find(a)] = find(b);
   };
 
-  for (const cellMembers of buildGrid(footprints, gapThreshold).values()) {
+  const { cells, overflowIndices } = buildGrid(
+    footprints,
+    gapThreshold,
+    maxGridCellsPerNode,
+  );
+  for (const cellMembers of cells.values()) {
     for (let a = 0; a < cellMembers.length; a++) {
       for (let b = a + 1; b < cellMembers.length; b++) {
         const i = cellMembers[a]!;
@@ -121,6 +153,20 @@ export function geometricPreCluster(
     }
   }
 
+  // Oversized footprints are compared by node count rather than canvas area.
+  // Pairs where both sides overflow are visited only once.
+  const overflowSet = new Set(overflowIndices);
+  for (const i of overflowIndices) {
+    for (let j = 0; j < footprints.length; j++) {
+      if (i === j || (overflowSet.has(j) && j < i) || find(i) === find(j)) {
+        continue;
+      }
+      if (footprintGap(footprints[i]!, footprints[j]!) <= gapThreshold) {
+        union(i, j);
+      }
+    }
+  }
+
   // Collect members per root.
   const groups = new Map<number, NormalizedNode[]>();
   footprints.forEach((fp, i) => {
@@ -131,7 +177,9 @@ export function geometricPreCluster(
   });
 
   // Stable "reading order" (top-left first) for deterministic cluster IDs.
-  const clusters = [...groups.values()].map(toCluster);
+  const clusters = [...groups.values()].flatMap((members) =>
+    splitOversizedGroup(members, maxClusterSize).map(toCluster),
+  );
   clusters.sort((a, b) => a.boundingBox.y - b.boundingBox.y || a.boundingBox.x - b.boundingBox.x);
   clusters.forEach((cluster, index) => {
     cluster.id = `cluster_${index + 1}`;
@@ -181,12 +229,23 @@ function adaptiveGapThreshold(footprints: Footprint[]): number {
  * Spatial hash: maps "cellX:cellY" → indices of all footprints whose
  * threshold-inflated bounds touch that cell. Rotated footprints use the
  * union of their AABB and disc bounds, since the disc of a thin rotated
- * node can poke out of its AABB.
+ * node can poke out of its AABB. Footprints above the per-node cell cap are
+ * returned via overflowIndices for bounded pairwise comparison.
  */
-function buildGrid(footprints: Footprint[], gapThreshold: number): Map<string, number[]> {
+interface GridIndex {
+  cells: Map<string, number[]>;
+  overflowIndices: number[];
+}
+
+function buildGrid(
+  footprints: Footprint[],
+  gapThreshold: number,
+  maxGridCellsPerNode: number,
+): GridIndex {
   const cellSize = Math.max(128, gapThreshold);
   const inflate = gapThreshold / 2;
-  const grid = new Map<string, number[]>();
+  const cells = new Map<string, number[]>();
+  const overflowIndices: number[] = [];
 
   footprints.forEach((fp, index) => {
     const { node } = fp;
@@ -205,28 +264,54 @@ function buildGrid(footprints: Footprint[], gapThreshold: number): Map<string, n
     const lastCellX = Math.floor((maxX + inflate) / cellSize);
     const firstCellY = Math.floor((minY - inflate) / cellSize);
     const lastCellY = Math.floor((maxY + inflate) / cellSize);
+    const columns = lastCellX - firstCellX + 1;
+    const rows = lastCellY - firstCellY + 1;
+    const cellCount = columns * rows;
+    if (
+      !Number.isSafeInteger(firstCellX) ||
+      !Number.isSafeInteger(lastCellX) ||
+      !Number.isSafeInteger(firstCellY) ||
+      !Number.isSafeInteger(lastCellY) ||
+      !Number.isSafeInteger(cellCount) ||
+      cellCount > maxGridCellsPerNode
+    ) {
+      overflowIndices.push(index);
+      return;
+    }
+
     for (let cx = firstCellX; cx <= lastCellX; cx++) {
       for (let cy = firstCellY; cy <= lastCellY; cy++) {
         const key = `${cx}:${cy}`;
-        const members = grid.get(key) ?? [];
+        const members = cells.get(key) ?? [];
         members.push(index);
-        grid.set(key, members);
+        cells.set(key, members);
       }
     }
   });
 
-  return grid;
+  return { cells, overflowIndices };
 }
 
 /** Builds the distance-check footprint for a node (see module JSDoc). */
 function toFootprint(node: NormalizedNode): Footprint {
-  return {
+  const geometry = [node.x, node.y, node.width, node.height, node.rotation];
+  if (geometry.some((value) => !Number.isFinite(value)) || node.width < 0 || node.height < 0) {
+    throw new Error(
+      `geometricPreCluster: node ${node.id} has invalid non-finite or negative geometry`,
+    );
+  }
+
+  const footprint = {
     node,
     centerX: node.x + node.width / 2,
     centerY: node.y + node.height / 2,
     radius: (node.width + node.height) / 4,
     rotated: Math.abs(node.rotation) > 1e-6,
   };
+  if (![footprint.centerX, footprint.centerY, footprint.radius].every(Number.isFinite)) {
+    throw new Error(`geometricPreCluster: node ${node.id} geometry exceeds numeric limits`);
+  }
+  return footprint;
 }
 
 /** Euclidean gap between two footprints (0 when they touch/overlap). */
@@ -253,14 +338,58 @@ function footprintGap(a: Footprint, b: Footprint): number {
 
 /** Wraps a member list into a Cluster with the union bounding box. */
 function toCluster(members: NormalizedNode[]): Cluster {
-  const minX = Math.min(...members.map((n) => n.x));
-  const minY = Math.min(...members.map((n) => n.y));
-  const maxX = Math.max(...members.map((n) => n.x + n.width));
-  const maxY = Math.max(...members.map((n) => n.y + n.height));
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const node of members) {
+    minX = Math.min(minX, node.x);
+    minY = Math.min(minY, node.y);
+    maxX = Math.max(maxX, node.x + node.width);
+    maxY = Math.max(maxY, node.y + node.height);
+  }
 
   return {
     id: "cluster_0", // reassigned after sorting in geometricPreCluster
     nodeIds: members.map((n) => n.id),
     boundingBox: { x: minX, y: minY, width: maxX - minX, height: maxY - minY },
   };
+}
+
+/** Recursively bisects a connected component along its longest spatial axis. */
+function splitOversizedGroup(
+  members: NormalizedNode[],
+  maxClusterSize: number,
+): NormalizedNode[][] {
+  const pending: NormalizedNode[][] = [members];
+  const result: NormalizedNode[][] = [];
+
+  while (pending.length > 0) {
+    const group = pending.pop()!;
+    if (group.length <= maxClusterSize) {
+      result.push(group);
+      continue;
+    }
+
+    const bounds = toCluster(group).boundingBox;
+    const splitOnX = bounds.width >= bounds.height;
+    const sorted = [...group].sort((a, b) => {
+      const primaryA = splitOnX ? a.x + a.width / 2 : a.y + a.height / 2;
+      const primaryB = splitOnX ? b.x + b.width / 2 : b.y + b.height / 2;
+      const secondaryA = splitOnX ? a.y + a.height / 2 : a.x + a.width / 2;
+      const secondaryB = splitOnX ? b.y + b.height / 2 : b.x + b.width / 2;
+      return primaryA - primaryB || secondaryA - secondaryB || a.id.localeCompare(b.id);
+    });
+    const midpoint = Math.ceil(sorted.length / 2);
+    pending.push(sorted.slice(midpoint), sorted.slice(0, midpoint));
+  }
+
+  return result;
+}
+
+function positiveIntegerOption(name: string, value: number): number {
+  if (!Number.isSafeInteger(value) || value < 1) {
+    throw new Error(`geometricPreCluster: ${name} must be a positive safe integer`);
+  }
+  return value;
 }

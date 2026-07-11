@@ -18,14 +18,18 @@ async function figmaFetch(
   path: string,
   token: string,
   timeoutMs = FIGMA_REQUEST_TIMEOUT_MS,
+  externalSignal?: AbortSignal,
 ): Promise<Response> {
   let response: Response;
   try {
     response = await fetch(`${FIGMA_API_BASE}${path}`, {
       headers: { "X-Figma-Token": token },
-      signal: AbortSignal.timeout(timeoutMs),
+      signal: combineAbortSignals(AbortSignal.timeout(timeoutMs), externalSignal),
     });
   } catch (error) {
+    if (externalSignal?.aborted) {
+      throw externalSignal.reason ?? error;
+    }
     if (isTimeoutError(error)) {
       throw figmaTimeoutError("Figma API request", timeoutMs, path);
     }
@@ -105,6 +109,7 @@ export async function fetchScreenshot(
   fileKey: string,
   nodeIds: string[],
   token: string,
+  signal?: AbortSignal,
 ): Promise<Buffer[]> {
   if (nodeIds.length === 0) {
     throw new Error("fetchScreenshot: nodeIds must not be empty");
@@ -112,7 +117,7 @@ export async function fetchScreenshot(
 
   const idsParam = nodeIds.join(",");
   const renderPath = `/images/${fileKey}?ids=${encodeURIComponent(idsParam)}&format=png`;
-  const renderResponse = await figmaFetch(renderPath, token);
+  const renderResponse = await figmaFetch(renderPath, token, FIGMA_REQUEST_TIMEOUT_MS, signal);
   const renderData = await readJsonResponse<{
     images?: Record<string, string | null>;
     err?: string | null;
@@ -130,14 +135,19 @@ export async function fetchScreenshot(
     throw new Error(`Figma image render returned no URLs for node IDs: ${idsParam}`);
   }
 
-  return mapWithConcurrency(urls, SCREENSHOT_DOWNLOAD_CONCURRENCY, downloadImage);
+  return mapWithConcurrency(urls, SCREENSHOT_DOWNLOAD_CONCURRENCY, (url) =>
+    downloadImage(url, signal),
+  );
 }
 
 /** Downloads a single rendered PNG from Figma's CDN into a Buffer. */
-async function downloadImage(url: string): Promise<Buffer> {
+async function downloadImage(url: string, externalSignal?: AbortSignal): Promise<Buffer> {
   try {
     const imageResponse = await fetch(url, {
-      signal: AbortSignal.timeout(FIGMA_REQUEST_TIMEOUT_MS),
+      signal: combineAbortSignals(
+        AbortSignal.timeout(FIGMA_REQUEST_TIMEOUT_MS),
+        externalSignal,
+      ),
     });
     if (!imageResponse.ok) {
       throw new Error(
@@ -147,6 +157,9 @@ async function downloadImage(url: string): Promise<Buffer> {
     const arrayBuffer = await imageResponse.arrayBuffer();
     return Buffer.from(arrayBuffer);
   } catch (error) {
+    if (externalSignal?.aborted) {
+      throw externalSignal.reason ?? error;
+    }
     if (isTimeoutError(error)) {
       throw new Error(
         `Figma screenshot download timed out after ${Math.round(FIGMA_REQUEST_TIMEOUT_MS / 1000)}s`,
@@ -161,6 +174,26 @@ function isTimeoutError(error: unknown): boolean {
     error instanceof DOMException && error.name === "TimeoutError" ||
     error instanceof Error && error.name === "AbortError"
   );
+}
+
+/** Combines the request timeout with a caller-owned phase cancellation. */
+function combineAbortSignals(timeoutSignal: AbortSignal, externalSignal?: AbortSignal): AbortSignal {
+  if (!externalSignal) {
+    return timeoutSignal;
+  }
+  if (externalSignal.aborted) {
+    return externalSignal;
+  }
+
+  const controller = new AbortController();
+  const forwardAbort = (source: AbortSignal) => {
+    if (!controller.signal.aborted) {
+      controller.abort(source.reason);
+    }
+  };
+  timeoutSignal.addEventListener("abort", () => forwardAbort(timeoutSignal), { once: true });
+  externalSignal.addEventListener("abort", () => forwardAbort(externalSignal), { once: true });
+  return controller.signal;
 }
 
 async function readJsonResponse<T>(

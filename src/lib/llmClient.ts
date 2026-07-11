@@ -31,6 +31,8 @@ export interface ChatJsonOptions {
   schemaName?: string;
   jsonSchema?: JsonSchema;
   onModelUsed?: (model: string) => void;
+  /** Optional caller-owned cancellation, e.g. an ingest phase deadline. */
+  signal?: AbortSignal;
 }
 
 export type JsonSchema = Record<string, unknown>;
@@ -131,6 +133,9 @@ export async function chatJson(
       options.onModelUsed?.(candidate);
       return parsed;
     } catch (error) {
+      if (options.signal?.aborted) {
+        throw abortReason(options.signal, error);
+      }
       errors.push(error);
       if (candidate !== models.at(-1) && shouldTryNextModel(error)) {
         console.error(
@@ -162,7 +167,7 @@ async function createJsonCompletion(
   for (const responseFormat of formats) {
     try {
       const params = responseFormat ? { ...base, response_format: responseFormat } : base;
-      return await createCompletion(llm, withProviderRequirements(params));
+      return await createCompletion(llm, withProviderRequirements(params), options.signal);
     } catch (error) {
       if (!isUnsupportedParamError(error) || responseFormat === formats.at(-1)) {
         throw error;
@@ -170,7 +175,7 @@ async function createJsonCompletion(
     }
   }
 
-  return createCompletion(llm, base);
+  return createCompletion(llm, base, options.signal);
 }
 
 type ResponseFormat = NonNullable<OpenAI.ChatCompletionCreateParamsNonStreaming["response_format"]>;
@@ -269,12 +274,17 @@ interface EmbeddedErrorEnvelope {
 async function createCompletion(
   llm: OpenAI,
   params: OpenAI.ChatCompletionCreateParamsNonStreaming,
+  signal?: AbortSignal,
 ): Promise<OpenAI.ChatCompletion> {
   for (let attempt = 0; ; attempt++) {
+    throwIfAborted(signal);
     let completion: OpenAI.ChatCompletion;
     try {
-      completion = await llm.chat.completions.create(params);
+      completion = await llm.chat.completions.create(params, signal ? { signal } : undefined);
     } catch (error) {
+      if (signal?.aborted) {
+        throw abortReason(signal, error);
+      }
       if (isLlmTimeout(error)) {
         throw new Error(
           `LLM request timed out after ${Math.round(LLM_REQUEST_TIMEOUT_MS / 1000)}s. ` +
@@ -284,7 +294,7 @@ async function createCompletion(
       if (!(error instanceof OpenAI.RateLimitError) || attempt >= MAX_RATE_LIMIT_RETRIES) {
         throw error;
       }
-      await backoff(retryDelayMs(error, attempt), attempt);
+      await backoff(retryDelayMs(error, attempt), attempt, signal);
       continue;
     }
 
@@ -295,7 +305,7 @@ async function createCompletion(
       return completion;
     }
     if (isRateLimit(embedded) && attempt < MAX_RATE_LIMIT_RETRIES) {
-      await backoff(2 ** attempt * 2000, attempt);
+      await backoff(2 ** attempt * 2000, attempt, signal);
       continue;
     }
     throw new Error(`LLM request failed: ${embedded.message ?? "response contained no choices"}`);
@@ -330,13 +340,17 @@ function isRateLimit(error: NonNullable<EmbeddedErrorEnvelope["error"]>): boolea
 }
 
 /** Logs a retry notice and waits before the next attempt. */
-async function backoff(waitMs: number, attempt: number): Promise<void> {
+async function backoff(
+  waitMs: number,
+  attempt: number,
+  signal?: AbortSignal,
+): Promise<void> {
   const cappedWaitMs = Math.min(waitMs, MAX_RATE_LIMIT_BACKOFF_MS);
   console.error(
     `LLM rate limited — retrying in ${Math.round(cappedWaitMs / 1000)}s ` +
       `(attempt ${attempt + 1}/${MAX_RATE_LIMIT_RETRIES})…`,
   );
-  await sleep(cappedWaitMs);
+  await sleep(cappedWaitMs, signal);
 }
 
 /** Retry-After header (seconds) if the provider sent one, else exponential backoff from 2s. */
@@ -357,8 +371,29 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  throwIfAborted(signal);
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(abortReason(signal!));
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) {
+    throw abortReason(signal);
+  }
+}
+
+function abortReason(signal: AbortSignal, fallback?: unknown): unknown {
+  return signal.reason ?? fallback ?? new Error("LLM request aborted");
 }
 
 /** Parses a model reply into JSON, tolerating fences and surrounding prose. */

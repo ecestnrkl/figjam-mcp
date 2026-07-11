@@ -46,6 +46,8 @@ geometry with vision:
    groups. Neighbor search runs over a spatial grid (near-linear instead of
    O(n²)), and the gap threshold adapts to the board's density (median
    nearest-neighbor gap) so dense and airy boards both cluster sensibly.
+   Huge footprints use a bounded overflow path, and connected components over
+   250 nodes are spatially bisected before reaching an LLM.
 3. `extractConnectorEdges` + `buildClusterRelations` — connector arrows are
    excluded from geometric clustering (they deliberately span groups) but
    captured as a graph: "cluster A → cluster B (label)". These relations are
@@ -131,15 +133,27 @@ The server now keeps provider calls bounded by default:
 - `LLM_REQUEST_TIMEOUT_MS=20000`
 - `LLM_RATE_LIMIT_RETRIES=1`
 - `LLM_ANSWER_MAX_OUTPUT_TOKENS=800`
+- `LLM_VISION_MAX_OUTPUT_TOKENS=4096`
+- `LLM_ANSWER_TOP_K=6`
+- `LLM_ANSWER_PROMPT_MAX_CHARS=24000`
 - `INGEST_BOARD_VISION_BUDGET_MS=35000`
 - `INGEST_BOARD_VISION_CONCURRENCY=3`
 - `FIGMA_SCREENSHOT_DOWNLOAD_CONCURRENCY=3`
+- `FIGJAM_MCP_MEMORY_CACHE_MAX_BOARDS=10`
 
 `ingest_board` defaults to `ingestMode: "balanced"`: text-rich clusters use
 deterministic summaries, while image-heavy or low-text clusters use vision
 within the budget. `max_speed` skips vision; `max_quality` attempts vision for
 every cluster. Finished ingests are persisted under `.cache/figjam-mcp/`, keyed
 by file state, node hash, model preset, document hint, and ingest mode.
+
+Vision candidates are prioritized by information gain rather than canvas
+position. Each request has bounded node/text inventory, and the phase returns
+at its configured deadline even if a provider stalls. `answer_from_board`
+retrieves the most relevant clusters plus direct connector neighbours and keeps
+the complete prompt under its configured character budget. The in-memory cache
+uses LRU eviction; persisted history keeps 20 states and removes snapshots that
+become safely unreferenced.
 
 Run `diagnose_llm_config` after changing model env vars. It verifies structured
 text replies with small arithmetic challenges and checks actual image

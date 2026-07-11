@@ -73,6 +73,58 @@ describe("geometricPreCluster", () => {
     expect(geometricPreCluster(nodes, { gapThreshold: 400 })).toHaveLength(1);
   });
 
+  it("bounds spatial-grid expansion for very large footprints", () => {
+    const nodes = [
+      makeNode("large", 0, 0, 1000, 1000),
+      makeNode("near", 1100, 0, 100, 100),
+      makeNode("far", 5000, 0, 100, 100),
+    ];
+
+    const clusters = geometricPreCluster(nodes, {
+      gapThreshold: 160,
+      maxGridCellsPerNode: 4,
+    });
+
+    expect(clusters).toHaveLength(2);
+    expect(clusterOf(clusters, "large").nodeIds).toContain("near");
+    expect(clusterOf(clusters, "far").nodeIds).toEqual(["far"]);
+  });
+
+  it("spatially bisects oversized single-linkage clusters", () => {
+    const nodes = Array.from({ length: 11 }, (_, index) =>
+      makeNode(`n${index}`, index * 50, 0, 100, 100),
+    );
+
+    const clusters = geometricPreCluster(nodes, {
+      gapThreshold: 0,
+      maxClusterSize: 4,
+    });
+
+    expect(clusters.map((cluster) => cluster.nodeIds.length).sort((a, b) => a - b)).toEqual([
+      2,
+      3,
+      3,
+      3,
+    ]);
+    expect(clusters.flatMap((cluster) => cluster.nodeIds).sort()).toEqual(
+      nodes.map((node) => node.id).sort(),
+    );
+  });
+
+  it("rejects invalid geometry and unsafe bounding options", () => {
+    expect(() => geometricPreCluster([makeNode("bad", 0, 0, -1, 100)])).toThrow(
+      /invalid non-finite or negative geometry/,
+    );
+    expect(() =>
+      geometricPreCluster([makeNode("bad", Number.POSITIVE_INFINITY, 0)], {
+        gapThreshold: 160,
+      }),
+    ).toThrow(/invalid non-finite or negative geometry/);
+    expect(() => geometricPreCluster([makeNode("ok", 0, 0)], { maxClusterSize: 0 })).toThrow(
+      /maxClusterSize must be a positive safe integer/,
+    );
+  });
+
   it("matches a brute-force O(n²) reference on a random board", () => {
     // Deterministic PRNG so failures are reproducible.
     let seed = 42;
