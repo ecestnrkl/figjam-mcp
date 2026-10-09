@@ -43,6 +43,8 @@ describe("v4 persistence", () => {
     expect(history).toHaveLength(1);
     expect(history[0]).toMatchObject({ cacheKey: "another-model", createdAt: 1 });
   });
+  // Each publication flushes real files; shared Windows runners need more than
+  // the default five seconds for all 25 serialized publications.
   it("caps history and serializes concurrent publications without losing retained entries", async () => {
     const c = await import("../src/lib/persistentCache.js");
     await Promise.all(Array.from({ length: 25 }, (_, i) => c.persistBoard({ ...board(`Text${i}`), createdAt: i })));
@@ -50,7 +52,7 @@ describe("v4 persistence", () => {
     expect(history).toHaveLength(20);
     expect(history.map(e => e.cacheKey)).toEqual(Array.from({ length: 20 }, (_, i) => `key-Text${i + 5}`));
     expect((await c.readLatestBoard("AbC123"))?.nodes[0]?.text).toBe("Text24");
-  });
+  }, 25_000);
   it("preserves legacy data and asks for a new ingest instead of silently migrating", async () => {
     const old = JSON.stringify({ schemaVersion: 3, cacheKey: "old" });
     await writeFile(path.join(root, "latest-AbC123.json"), old);

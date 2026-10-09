@@ -49,7 +49,7 @@ try {
   const archives = (await readdir(temporary)).filter(name => name.endsWith(".tgz"));
   assert.equal(archives.length, 1, "Expected one npm tarball");
   const archive = join(temporary, archives[0]);
-  const listing = run("tar", ["-tzf", archive]).stdout.split("\n").filter(Boolean);
+  const listing = run("tar", ["-tzf", archive]).stdout.split(/\r?\n/).filter(Boolean);
   for (const file of ["package.json", "README.md", ".env.example", "LICENSE", "CHANGELOG.md", "SECURITY.md", "server.json", "docs/pipeline.gif", "dist/index.js", "dist/server.js"]) {
     assert(listing.includes(`package/${file}`), `Tarball is missing ${file}`);
   }
