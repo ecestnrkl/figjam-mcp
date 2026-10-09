@@ -7,14 +7,16 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { spawnSync } from "node:child_process";
 import { Client } from "@modelcontextprotocol/client";
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
+import { parseSmokeOptions, requireNewArtifactDirectory, retainVerifiedArtifact } from "./package-smoke-artifact.mjs";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
 const metadata = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
-const temporary = await mkdtemp(join(tmpdir(), "figjam-context-mcp-"));
 const npmCli = process.env.npm_execpath;
 assert(npmCli, "Run this check with npm run package:smoke");
-const longCheck = process.argv.includes("--long");
-assert(process.argv.slice(2).every(argument => argument === "--long"), "Supported option: --long");
+const { longCheck, artifactDir } = parseSmokeOptions(process.argv.slice(2));
+if (artifactDir) await requireNewArtifactDirectory(artifactDir);
+const temporary = await mkdtemp(join(tmpdir(), "figjam-context-mcp-"));
+let testedArtifact;
 
 async function ingestWithProgress(client, arguments_, label) {
   const transport = client.transport;
@@ -409,7 +411,13 @@ try {
     assert.equal(requests.filter(request => request === kind).length, count, `Unexpected ${kind} request count`);
   }
   assert.equal(requests.length, Object.values(expectedRequests).reduce((sum, count) => sum + count, 0), "Unexpected provider work was attempted");
-  console.log(`Verified ${metadata.name}@${metadata.version}: production-only install, executable, successful calls to all five tools, offline Figma/vision/answer/diagnostic fixtures, table cell search and single-node edit diff, persisted cache reuse, modern/legacy ingest progress followed by final responses, error handling${longCheck ? ", and a real >60-second ingest" : ""}`);
+  if (artifactDir) testedArtifact = { bytes: await readFile(archive), name: archives[0] };
 } finally {
   await rm(temporary, { recursive: true, force: true });
 }
+if (artifactDir) {
+  const artifact = await retainVerifiedArtifact(testedArtifact.bytes, testedArtifact.name, artifactDir);
+  console.log(`Retained tested tarball: ${artifact.archivePath}`);
+  console.log(`SHA-256: ${artifact.checksum}`);
+}
+console.log(`Verified ${metadata.name}@${metadata.version}: production-only install, executable, successful calls to all five tools, offline Figma/vision/answer/diagnostic fixtures, table cell search and single-node edit diff, persisted cache reuse, modern/legacy ingest progress followed by final responses, error handling${longCheck ? ", and a real >60-second ingest" : ""}`);
