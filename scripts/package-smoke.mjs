@@ -17,19 +17,53 @@ const longCheck = process.argv.includes("--long");
 assert(process.argv.slice(2).every(argument => argument === "--long"), "Supported option: --long");
 
 async function ingestWithProgress(client, arguments_, label) {
-  const events = [];
-  const result = await client.callTool({ name: "ingest_board", arguments: arguments_ }, {
-    timeout: 180_000,
-    maxTotalTimeout: 180_000,
-    resetTimeoutOnProgress: false,
-    onprogress: update => events.push(update),
-  });
-  assert(!result.isError, `${label}: ${JSON.stringify(result)}`);
-  assert.deepEqual(events.map(event => event.message), ["fetch", "extract", "cluster", "interpret", "persist", "complete"],
-    `${label}: a final response must arrive after all ingest progress phases`);
-  assert.deepEqual(events.map(event => event.progress), [0, 1, 2, 3, 4, 5]);
-  assert(events.every(event => event.total === 5));
-  return result;
+  const transport = client.transport;
+  assert(transport, `${label}: client must be connected`);
+  const originalOnMessage = transport.onmessage;
+  const originalSend = transport.send;
+  const requests = [];
+  const received = [];
+  // SDK 2.3.1 defers notification handlers to a microtask, but removes progress
+  // handlers synchronously on a response. If complete and the result share one
+  // stdio read, onprogress loses complete despite correct wire ordering. Observe
+  // the public transport boundary before SDK dispatch, keeping every assertion.
+  transport.send = function (message, ...options) {
+    if (message.method === "tools/call" && message.params?.name === "ingest_board") {
+      requests.push({ id: message.id, progressToken: message.params._meta?.progressToken });
+    }
+    return originalSend.call(this, message, ...options);
+  };
+  transport.onmessage = function (message, ...extra) {
+    if (message.method === "notifications/progress") received.push({ kind: "progress", params: message.params });
+    else if (requests.some(request => request.id === message.id) && ("result" in message || "error" in message)) {
+      received.push({ kind: "response", id: message.id });
+    }
+    return originalOnMessage?.call(this, message, ...extra);
+  };
+  try {
+    const result = await client.callTool({ name: "ingest_board", arguments: arguments_ }, {
+      timeout: 180_000,
+      maxTotalTimeout: 180_000,
+      resetTimeoutOnProgress: false,
+      onprogress: () => {}, // Request progress through the normal SDK path.
+    });
+    assert(!result.isError, `${label}: ${JSON.stringify(result)}`);
+    assert.equal(requests.length, 1, `${label}: expected one ingest request`);
+    assert.notEqual(requests[0].progressToken, undefined, `${label}: progress must be requested`);
+    const events = received.filter(message => message.kind === "progress").map(message => message.params);
+    assert(events.every(event => event.progressToken === requests[0].progressToken), `${label}: progress token must match the ingest request`);
+    assert.deepEqual(events.map(event => event.message), ["fetch", "extract", "cluster", "interpret", "persist", "complete"],
+      `${label}: a final response must arrive after all ingest progress phases`);
+    assert.deepEqual(events.map(event => event.progress), [0, 1, 2, 3, 4, 5]);
+    assert(events.every(event => event.total === 5));
+    assert.deepEqual(received.map(message => message.kind), ["progress", "progress", "progress", "progress", "progress", "progress", "response"],
+      `${label}: all six progress notifications must precede the final response`);
+    assert.equal(received.at(-1).id, requests[0].id, `${label}: final response must match the ingest request`);
+    return result;
+  } finally {
+    transport.onmessage = originalOnMessage;
+    transport.send = originalSend;
+  }
 }
 
 function run(command, args, options = {}) {

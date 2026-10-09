@@ -56,6 +56,22 @@ Darüber hinaus wurden keine konkreten verbleibenden Blocker gefunden.
 
 ## Verbleibende Grenzen und Freigabe
 
+Die erneute CI deckte außerdem einen Fehler im Prüfclient auf: Unter macOS/
+Node 22 fehlte dessen `onprogress`-Callback für `complete`, obwohl die finale
+Toolantwort erfolgreich ankam. Zwei unabhängige lokale Reproduktionen zeigen
+die Ursache im SDK-Client 2.3.1: Notifications werden als Microtask verarbeitet,
+Antworten synchron. Treffen `complete` und Ergebnis im selben stdio-Datenblock
+ein, entfernt die Antwort den Progresshandler vor dessen Aufruf. Ein Replay
+des echten gebauten Servers mit ausschließlich synthetischen Anbietern bestätigte
+die korrekte Nachrichtenfolge einschließlich `complete` vor dem Ergebnis.
+
+Die Paketprüfung erfasst deshalb Fortschritt unmittelbar an der öffentlichen
+Transportgrenze vor SDK-Dispatch. Alle sechs Phasen, Werte, Token-Zuordnung und
+die Reihenfolge vor dem Ergebnis bleiben geprüft. Der Server erhält keine
+künstliche Wartezeit; längeres Warten im Test würde die verworfene Notification
+nicht wiederherstellen. Dieser Befund erklärt eine fehlende Fortschrittsanzeige
+im SDK-Client, aber nicht den früheren Safari-Fehler einer verspäteten Toolantwort.
+
 Die Tabellen-Erweiterung ist begrenzt; sie beweist keine vollständige Auswertung
 beliebig großer Tabellen. Gültige Quellen und vorhandene Positionsangaben
 garantieren weiterhin keine semantisch richtige Modellantwort. Der ursprüngliche
