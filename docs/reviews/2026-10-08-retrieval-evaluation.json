@@ -1,0 +1,663 @@
+{
+  "evaluation": "20 synthetic lexical source-retrieval fixtures; not a real-board benchmark",
+  "mode": "offline",
+  "fixtures": 20,
+  "answerableFixtures": 18,
+  "unanswerableFixtures": 2,
+  "recallAt1": 1,
+  "recallAt3": 1,
+  "meanReciprocalRankAt3": 1,
+  "correctAbstentionRate": 1,
+  "coldRetrievalMs": {
+    "samples": 20,
+    "p50": 0.072,
+    "p95": 1.35,
+    "max": 3.923
+  },
+  "baselineProxy": {
+    "description": "Source-fact visibility in the former deterministic first-five-texts, 120-characters-per-text summary. These fixture nodes share one spatial area. Tables had no cell text. Uses current Unicode tokens to isolate information loss; does not reproduce old ranking, vision summaries, runtime, or provider costs.",
+    "historicalBenchmark": false,
+    "visibleFacts": 15,
+    "totalFacts": 18,
+    "factVisibilityRate": 0.8333333333333334
+  },
+  "apiCalls": 0,
+  "modelQuality": "not measured (offline retrieval only)",
+  "modelCosts": "not measured; token counts do not imply a currency cost",
+  "tokenUsage": "not measured (no provider calls)",
+  "cases": [
+    {
+      "name": "exact engineering term",
+      "expectedNodeId": "1:1",
+      "answerable": true,
+      "rank": 1,
+      "correctAbstention": false,
+      "legacySummaryFactVisible": true
+    },
+    {
+      "name": "German umlaut",
+      "expectedNodeId": "1:1",
+      "answerable": true,
+      "rank": 1,
+      "correctAbstention": false,
+      "legacySummaryFactVisible": true
+    },
+    {
+      "name": "German compound",
+      "expectedNodeId": "1:1",
+      "answerable": true,
+      "rank": 1,
+      "correctAbstention": false,
+      "legacySummaryFactVisible": true
+    },
+    {
+      "name": "French accents",
+      "expectedNodeId": "1:1",
+      "answerable": true,
+      "rank": 1,
+      "correctAbstention": false,
+      "legacySummaryFactVisible": true
+    },
+    {
+      "name": "Turkish text",
+      "expectedNodeId": "1:1",
+      "answerable": true,
+      "rank": 1,
+      "correctAbstention": false,
+      "legacySummaryFactVisible": true
+    },
+    {
+      "name": "Chinese segmentation",
+      "expectedNodeId": "1:1",
+      "answerable": true,
+      "rank": 1,
+      "correctAbstention": false,
+      "legacySummaryFactVisible": true
+    },
+    {
+      "name": "Japanese segmentation",
+      "expectedNodeId": "1:1",
+      "answerable": true,
+      "rank": 1,
+      "correctAbstention": false,
+      "legacySummaryFactVisible": true
+    },
+    {
+      "name": "numeric fact",
+      "expectedNodeId": "1:1",
+      "answerable": true,
+      "rank": 1,
+      "correctAbstention": false,
+      "legacySummaryFactVisible": true
+    },
+    {
+      "name": "rare identifier",
+      "expectedNodeId": "1:1",
+      "answerable": true,
+      "rank": 1,
+      "correctAbstention": false,
+      "legacySummaryFactVisible": true
+    },
+    {
+      "name": "NFKC normalization",
+      "expectedNodeId": "1:1",
+      "answerable": true,
+      "rank": 1,
+      "correctAbstention": false,
+      "legacySummaryFactVisible": true
+    },
+    {
+      "name": "case insensitivity",
+      "expectedNodeId": "1:1",
+      "answerable": true,
+      "rank": 1,
+      "correctAbstention": false,
+      "legacySummaryFactVisible": true
+    },
+    {
+      "name": "negation preserved",
+      "expectedNodeId": "1:1",
+      "answerable": true,
+      "rank": 1,
+      "correctAbstention": false,
+      "legacySummaryFactVisible": true
+    },
+    {
+      "name": "email phrase",
+      "expectedNodeId": "1:1",
+      "answerable": true,
+      "rank": 1,
+      "correctAbstention": false,
+      "legacySummaryFactVisible": true
+    },
+    {
+      "name": "short acronym",
+      "expectedNodeId": "1:1",
+      "answerable": true,
+      "rank": 1,
+      "correctAbstention": false,
+      "legacySummaryFactVisible": true
+    },
+    {
+      "name": "fact beyond first chunk",
+      "expectedNodeId": "2:1",
+      "answerable": true,
+      "rank": 1,
+      "correctAbstention": false,
+      "legacySummaryFactVisible": false
+    },
+    {
+      "name": "fact beyond summary highlights",
+      "expectedNodeId": "3:6",
+      "answerable": true,
+      "rank": 1,
+      "correctAbstention": false,
+      "legacySummaryFactVisible": false
+    },
+    {
+      "name": "table cell source",
+      "expectedNodeId": "cell-b",
+      "answerable": true,
+      "rank": 1,
+      "correctAbstention": false,
+      "legacySummaryFactVisible": false
+    },
+    {
+      "name": "duplicate cluster labels",
+      "expectedNodeId": "5:2",
+      "answerable": true,
+      "rank": 1,
+      "correctAbstention": false,
+      "legacySummaryFactVisible": true
+    },
+    {
+      "name": "unrelated topic stays empty",
+      "expectedNodeId": null,
+      "answerable": false,
+      "rank": 0,
+      "correctAbstention": true,
+      "legacySummaryFactVisible": null
+    },
+    {
+      "name": "stopword-only query stays empty",
+      "expectedNodeId": null,
+      "answerable": false,
+      "rank": 0,
+      "correctAbstention": true,
+      "legacySummaryFactVisible": null
+    }
+  ],
+  "revisions": {
+    "fixtures": 20,
+    "passed": 20,
+    "diffMs": {
+      "samples": 20,
+      "p50": 0.079,
+      "p95": 0.368,
+      "max": 3.225
+    },
+    "cases": [
+      {
+        "name": "exact engineering term",
+        "kind": "text-edit",
+        "changedNodeId": "1:1",
+        "expected": {
+          "addedNodes": 0,
+          "removedNodes": 0,
+          "editedNodes": 1,
+          "addedConnections": 0,
+          "removedConnections": 0,
+          "tableCellChanges": 0
+        },
+        "actual": {
+          "addedNodes": 0,
+          "removedNodes": 0,
+          "editedNodes": 1,
+          "addedConnections": 0,
+          "removedConnections": 0,
+          "tableCellChanges": 0
+        },
+        "passed": true,
+        "elapsedMs": 3.225
+      },
+      {
+        "name": "German umlaut",
+        "kind": "node-added",
+        "changedNodeId": "eval:added",
+        "expected": {
+          "addedNodes": 1,
+          "removedNodes": 0,
+          "editedNodes": 0,
+          "addedConnections": 0,
+          "removedConnections": 0,
+          "tableCellChanges": 0
+        },
+        "actual": {
+          "addedNodes": 1,
+          "removedNodes": 0,
+          "editedNodes": 0,
+          "addedConnections": 0,
+          "removedConnections": 0,
+          "tableCellChanges": 0
+        },
+        "passed": true,
+        "elapsedMs": 0.341
+      },
+      {
+        "name": "German compound",
+        "kind": "node-removed",
+        "changedNodeId": "1:1",
+        "expected": {
+          "addedNodes": 0,
+          "removedNodes": 1,
+          "editedNodes": 0,
+          "addedConnections": 0,
+          "removedConnections": 0,
+          "tableCellChanges": 0
+        },
+        "actual": {
+          "addedNodes": 0,
+          "removedNodes": 1,
+          "editedNodes": 0,
+          "addedConnections": 0,
+          "removedConnections": 0,
+          "tableCellChanges": 0
+        },
+        "passed": true,
+        "elapsedMs": 0.133
+      },
+      {
+        "name": "French accents",
+        "kind": "internal-arrow-reversed",
+        "changedNodeId": "eval:arrow",
+        "expected": {
+          "addedNodes": 0,
+          "removedNodes": 0,
+          "editedNodes": 0,
+          "addedConnections": 1,
+          "removedConnections": 1,
+          "tableCellChanges": 0
+        },
+        "actual": {
+          "addedNodes": 0,
+          "removedNodes": 0,
+          "editedNodes": 0,
+          "addedConnections": 1,
+          "removedConnections": 1,
+          "tableCellChanges": 0
+        },
+        "passed": true,
+        "elapsedMs": 0.368
+      },
+      {
+        "name": "Turkish text",
+        "kind": "text-edit",
+        "changedNodeId": "1:1",
+        "expected": {
+          "addedNodes": 0,
+          "removedNodes": 0,
+          "editedNodes": 1,
+          "addedConnections": 0,
+          "removedConnections": 0,
+          "tableCellChanges": 0
+        },
+        "actual": {
+          "addedNodes": 0,
+          "removedNodes": 0,
+          "editedNodes": 1,
+          "addedConnections": 0,
+          "removedConnections": 0,
+          "tableCellChanges": 0
+        },
+        "passed": true,
+        "elapsedMs": 0.21
+      },
+      {
+        "name": "Chinese segmentation",
+        "kind": "node-added",
+        "changedNodeId": "eval:added",
+        "expected": {
+          "addedNodes": 1,
+          "removedNodes": 0,
+          "editedNodes": 0,
+          "addedConnections": 0,
+          "removedConnections": 0,
+          "tableCellChanges": 0
+        },
+        "actual": {
+          "addedNodes": 1,
+          "removedNodes": 0,
+          "editedNodes": 0,
+          "addedConnections": 0,
+          "removedConnections": 0,
+          "tableCellChanges": 0
+        },
+        "passed": true,
+        "elapsedMs": 0.119
+      },
+      {
+        "name": "Japanese segmentation",
+        "kind": "node-removed",
+        "changedNodeId": "1:1",
+        "expected": {
+          "addedNodes": 0,
+          "removedNodes": 1,
+          "editedNodes": 0,
+          "addedConnections": 0,
+          "removedConnections": 0,
+          "tableCellChanges": 0
+        },
+        "actual": {
+          "addedNodes": 0,
+          "removedNodes": 1,
+          "editedNodes": 0,
+          "addedConnections": 0,
+          "removedConnections": 0,
+          "tableCellChanges": 0
+        },
+        "passed": true,
+        "elapsedMs": 0.046
+      },
+      {
+        "name": "numeric fact",
+        "kind": "internal-arrow-reversed",
+        "changedNodeId": "eval:arrow",
+        "expected": {
+          "addedNodes": 0,
+          "removedNodes": 0,
+          "editedNodes": 0,
+          "addedConnections": 1,
+          "removedConnections": 1,
+          "tableCellChanges": 0
+        },
+        "actual": {
+          "addedNodes": 0,
+          "removedNodes": 0,
+          "editedNodes": 0,
+          "addedConnections": 1,
+          "removedConnections": 1,
+          "tableCellChanges": 0
+        },
+        "passed": true,
+        "elapsedMs": 0.088
+      },
+      {
+        "name": "rare identifier",
+        "kind": "text-edit",
+        "changedNodeId": "1:1",
+        "expected": {
+          "addedNodes": 0,
+          "removedNodes": 0,
+          "editedNodes": 1,
+          "addedConnections": 0,
+          "removedConnections": 0,
+          "tableCellChanges": 0
+        },
+        "actual": {
+          "addedNodes": 0,
+          "removedNodes": 0,
+          "editedNodes": 1,
+          "addedConnections": 0,
+          "removedConnections": 0,
+          "tableCellChanges": 0
+        },
+        "passed": true,
+        "elapsedMs": 0.088
+      },
+      {
+        "name": "NFKC normalization",
+        "kind": "node-added",
+        "changedNodeId": "eval:added",
+        "expected": {
+          "addedNodes": 1,
+          "removedNodes": 0,
+          "editedNodes": 0,
+          "addedConnections": 0,
+          "removedConnections": 0,
+          "tableCellChanges": 0
+        },
+        "actual": {
+          "addedNodes": 1,
+          "removedNodes": 0,
+          "editedNodes": 0,
+          "addedConnections": 0,
+          "removedConnections": 0,
+          "tableCellChanges": 0
+        },
+        "passed": true,
+        "elapsedMs": 0.068
+      },
+      {
+        "name": "case insensitivity",
+        "kind": "node-removed",
+        "changedNodeId": "1:1",
+        "expected": {
+          "addedNodes": 0,
+          "removedNodes": 1,
+          "editedNodes": 0,
+          "addedConnections": 0,
+          "removedConnections": 0,
+          "tableCellChanges": 0
+        },
+        "actual": {
+          "addedNodes": 0,
+          "removedNodes": 1,
+          "editedNodes": 0,
+          "addedConnections": 0,
+          "removedConnections": 0,
+          "tableCellChanges": 0
+        },
+        "passed": true,
+        "elapsedMs": 0.078
+      },
+      {
+        "name": "negation preserved",
+        "kind": "internal-arrow-reversed",
+        "changedNodeId": "eval:arrow",
+        "expected": {
+          "addedNodes": 0,
+          "removedNodes": 0,
+          "editedNodes": 0,
+          "addedConnections": 1,
+          "removedConnections": 1,
+          "tableCellChanges": 0
+        },
+        "actual": {
+          "addedNodes": 0,
+          "removedNodes": 0,
+          "editedNodes": 0,
+          "addedConnections": 1,
+          "removedConnections": 1,
+          "tableCellChanges": 0
+        },
+        "passed": true,
+        "elapsedMs": 0.079
+      },
+      {
+        "name": "email phrase",
+        "kind": "text-edit",
+        "changedNodeId": "1:1",
+        "expected": {
+          "addedNodes": 0,
+          "removedNodes": 0,
+          "editedNodes": 1,
+          "addedConnections": 0,
+          "removedConnections": 0,
+          "tableCellChanges": 0
+        },
+        "actual": {
+          "addedNodes": 0,
+          "removedNodes": 0,
+          "editedNodes": 1,
+          "addedConnections": 0,
+          "removedConnections": 0,
+          "tableCellChanges": 0
+        },
+        "passed": true,
+        "elapsedMs": 0.053
+      },
+      {
+        "name": "short acronym",
+        "kind": "node-added",
+        "changedNodeId": "eval:added",
+        "expected": {
+          "addedNodes": 1,
+          "removedNodes": 0,
+          "editedNodes": 0,
+          "addedConnections": 0,
+          "removedConnections": 0,
+          "tableCellChanges": 0
+        },
+        "actual": {
+          "addedNodes": 1,
+          "removedNodes": 0,
+          "editedNodes": 0,
+          "addedConnections": 0,
+          "removedConnections": 0,
+          "tableCellChanges": 0
+        },
+        "passed": true,
+        "elapsedMs": 0.047
+      },
+      {
+        "name": "fact beyond first chunk",
+        "kind": "node-removed",
+        "changedNodeId": "2:1",
+        "expected": {
+          "addedNodes": 0,
+          "removedNodes": 1,
+          "editedNodes": 0,
+          "addedConnections": 0,
+          "removedConnections": 0,
+          "tableCellChanges": 0
+        },
+        "actual": {
+          "addedNodes": 0,
+          "removedNodes": 1,
+          "editedNodes": 0,
+          "addedConnections": 0,
+          "removedConnections": 0,
+          "tableCellChanges": 0
+        },
+        "passed": true,
+        "elapsedMs": 0.008
+      },
+      {
+        "name": "fact beyond summary highlights",
+        "kind": "internal-arrow-reversed",
+        "changedNodeId": "eval:arrow",
+        "expected": {
+          "addedNodes": 0,
+          "removedNodes": 0,
+          "editedNodes": 0,
+          "addedConnections": 1,
+          "removedConnections": 1,
+          "tableCellChanges": 0
+        },
+        "actual": {
+          "addedNodes": 0,
+          "removedNodes": 0,
+          "editedNodes": 0,
+          "addedConnections": 1,
+          "removedConnections": 1,
+          "tableCellChanges": 0
+        },
+        "passed": true,
+        "elapsedMs": 0.111
+      },
+      {
+        "name": "table cell source",
+        "kind": "table-cell-edit",
+        "changedNodeId": "4:0",
+        "changedCellId": "cell-b",
+        "expected": {
+          "addedNodes": 0,
+          "removedNodes": 0,
+          "editedNodes": 1,
+          "addedConnections": 0,
+          "removedConnections": 0,
+          "tableCellChanges": 1
+        },
+        "actual": {
+          "addedNodes": 0,
+          "removedNodes": 0,
+          "editedNodes": 1,
+          "addedConnections": 0,
+          "removedConnections": 0,
+          "tableCellChanges": 1
+        },
+        "passed": true,
+        "elapsedMs": 0.102
+      },
+      {
+        "name": "duplicate cluster labels",
+        "kind": "node-added",
+        "changedNodeId": "eval:added",
+        "expected": {
+          "addedNodes": 1,
+          "removedNodes": 0,
+          "editedNodes": 0,
+          "addedConnections": 0,
+          "removedConnections": 0,
+          "tableCellChanges": 0
+        },
+        "actual": {
+          "addedNodes": 1,
+          "removedNodes": 0,
+          "editedNodes": 0,
+          "addedConnections": 0,
+          "removedConnections": 0,
+          "tableCellChanges": 0
+        },
+        "passed": true,
+        "elapsedMs": 0.047
+      },
+      {
+        "name": "unrelated topic stays empty",
+        "kind": "node-removed",
+        "changedNodeId": "1:1",
+        "expected": {
+          "addedNodes": 0,
+          "removedNodes": 1,
+          "editedNodes": 0,
+          "addedConnections": 0,
+          "removedConnections": 0,
+          "tableCellChanges": 0
+        },
+        "actual": {
+          "addedNodes": 0,
+          "removedNodes": 1,
+          "editedNodes": 0,
+          "addedConnections": 0,
+          "removedConnections": 0,
+          "tableCellChanges": 0
+        },
+        "passed": true,
+        "elapsedMs": 0.009
+      },
+      {
+        "name": "stopword-only query stays empty",
+        "kind": "internal-arrow-reversed",
+        "changedNodeId": "eval:arrow",
+        "expected": {
+          "addedNodes": 0,
+          "removedNodes": 0,
+          "editedNodes": 0,
+          "addedConnections": 1,
+          "removedConnections": 1,
+          "tableCellChanges": 0
+        },
+        "actual": {
+          "addedNodes": 0,
+          "removedNodes": 0,
+          "editedNodes": 0,
+          "addedConnections": 1,
+          "removedConnections": 1,
+          "tableCellChanges": 0
+        },
+        "passed": true,
+        "elapsedMs": 0.067
+      }
+    ]
+  }
+}

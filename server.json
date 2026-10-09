@@ -1,0 +1,48 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.ecestnrkl/figjam-mcp",
+  "description": "Query FigJam board context, source-cited answers and snapshot changes through five local MCP tools.",
+  "repository": {
+    "url": "https://github.com/ecestnrkl/figjam-mcp",
+    "source": "github"
+  },
+  "version": "0.4.0",
+  "packages": [
+    {
+      "registryType": "npm",
+      "identifier": "figjam-context-mcp",
+      "version": "0.4.0",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "FIGMA_ACCESS_TOKEN",
+          "description": "Figma token with file_content:read; file_metadata:read also enables cheap freshness checks.",
+          "isSecret": true,
+          "isRequired": false,
+          "format": "string"
+        },
+        {
+          "name": "LLM_API_KEY",
+          "description": "Key for the configured OpenAI-compatible provider; required for vision and answers.",
+          "isSecret": true,
+          "isRequired": false,
+          "format": "string"
+        },
+        {
+          "name": "LLM_BASE_URL",
+          "description": "Explicit OpenAI-compatible provider base URL; .env.example uses OpenRouter.",
+          "format": "string",
+          "isRequired": false
+        },
+        {
+          "name": "FIGJAM_MCP_CACHE_DIR",
+          "description": "Private local cache root; v4 snapshots are stored in a subdirectory.",
+          "format": "string",
+          "isRequired": false
+        }
+      ]
+    }
+  ]
+}

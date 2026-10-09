@@ -30,7 +30,8 @@ const BLUE_DIAGNOSTIC_PNG =
 type CheckResult = DiagnoseLlmConfigOutput["checks"][number];
 type ReplyValidator = (reply: unknown) => string | undefined;
 
-export async function diagnoseLlmConfig(): Promise<DiagnoseLlmConfigOutput> {
+export async function diagnoseLlmConfig(options: { signal?: AbortSignal } = {}): Promise<DiagnoseLlmConfigOutput> {
+  options.signal?.throwIfAborted();
   const config = describeModelConfig();
   const checks: DiagnoseLlmConfigOutput["checks"] = [];
 
@@ -41,7 +42,7 @@ export async function diagnoseLlmConfig(): Promise<DiagnoseLlmConfigOutput> {
         content:
           'Calculate 17 + 25. Reply with one JSON object containing only a numeric field named "result".',
       },
-    ], TEXT_DIAG_SCHEMA, expectNumericResult(42)),
+    ], TEXT_DIAG_SCHEMA, expectNumericResult(42), options.signal),
   );
   checks.push(
     await runCheck("fast_text_json", getFastTextModels(), [
@@ -50,7 +51,7 @@ export async function diagnoseLlmConfig(): Promise<DiagnoseLlmConfigOutput> {
         content:
           'Calculate 9 * 7. Reply with one JSON object containing only a numeric field named "result".',
       },
-    ], TEXT_DIAG_SCHEMA, expectNumericResult(63)),
+    ], TEXT_DIAG_SCHEMA, expectNumericResult(63), options.signal),
   );
   checks.push(
     await runCheck("vision_json", getVisionModels(), [
@@ -69,7 +70,7 @@ export async function diagnoseLlmConfig(): Promise<DiagnoseLlmConfigOutput> {
           },
         ],
       },
-    ], VISION_DIAG_SCHEMA, expectDominantColor("blue")),
+    ], VISION_DIAG_SCHEMA, expectDominantColor("blue"), options.signal),
   );
 
   const ok = checks.every((check) => check.ok);
@@ -93,10 +94,13 @@ async function runCheck(
   messages: Parameters<typeof chatJson>[1],
   jsonSchema: Record<string, unknown>,
   validateReply: ReplyValidator,
+  signal?: AbortSignal,
 ): Promise<CheckResult> {
+  signal?.throwIfAborted();
   let modelUsed: string | undefined;
   try {
     const reply = await chatJson(models, messages, {
+      signal,
       maxOutputTokens: 256,
       schemaName: `diagnose_${name}`,
       jsonSchema,
@@ -111,6 +115,7 @@ async function runCheck(
     }
     return { name, ok: true, modelUsed };
   } catch (error) {
+    signal?.throwIfAborted();
     return {
       name,
       ok: false,

@@ -20,6 +20,7 @@ function snapshot(createdAt: number, text: string): BoardData {
     fileKey: "AbC123",
     docStructureHint: "freeform",
     createdAt,
+    snapshotId: `snapshot-${createdAt}`,
     nodes: [
       {
         id: "1:1",
@@ -87,6 +88,9 @@ describe("diffBoard", () => {
 
     expect(output.baselineCreatedAt).toBe(new Date(1000).toISOString());
     expect(output.currentCreatedAt).toBe(new Date(2000).toISOString());
+    expect(output.baselineSnapshotId).toBe("snapshot-1000");
+    expect(output.currentSnapshotId).toBe("snapshot-2000");
+    expect(output.tableCellChanges).toEqual([]);
     expect(output.stats.editedNodes).toBe(1);
     expect(output.stats.modifiedClusters).toBe(1);
     expect(output.summaryText).toContain("changes from");

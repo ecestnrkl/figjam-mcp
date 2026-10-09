@@ -1,6 +1,6 @@
 import type { BoardData } from "../types.js";
 import { readIntEnv } from "./env.js";
-import { readLatestBoard } from "./persistentCache.js";
+import { readLatestBoard, readBoardSnapshot, hasLegacyBoard } from "./persistentCache.js";
 
 /**
  * Simple in-memory store, keyed by boardId. setBoard writes/overwrites an
@@ -42,14 +42,16 @@ export function getBoard(boardId: string): BoardData | undefined {
  * map is empty, but the last finished ingest is still on disk — load it,
  * mark its cluster summaries as cache-sourced, and re-seed the memory map.
  */
-export async function getBoardOrRestore(boardId: string): Promise<BoardData | undefined> {
+export async function getBoardOrRestore(boardId: string, snapshotId?: string): Promise<BoardData | undefined> {
   const inMemory = getBoard(boardId);
-  if (inMemory) {
+  if (inMemory && (!snapshotId || inMemory.snapshotId === snapshotId)) {
     return inMemory;
   }
 
-  const persisted = await readLatestBoard(boardId);
+  const persisted = snapshotId ? await readBoardSnapshot(boardId, snapshotId) : await readLatestBoard(boardId);
   if (!persisted) {
+    if (snapshotId) throw new Error("Snapshot is no longer available. Start a new context query against the latest ingest.");
+    if (await hasLegacyBoard(boardId)) throw new Error("This board uses cache v3. Run ingest_board again to capture complete sources for cache v4; old files are preserved.");
     return undefined;
   }
 
@@ -57,10 +59,9 @@ export async function getBoardOrRestore(boardId: string): Promise<BoardData | un
     ...persisted,
     clusters: persisted.clusters.map((cluster) => ({
       ...cluster,
-      summarySource: "cache" as const,
+      cacheHit: true,
     })),
-    createdAt: Date.now(),
   };
-  setBoard(boardId, restored);
+  if (!snapshotId) setBoard(boardId, restored);
   return restored;
 }

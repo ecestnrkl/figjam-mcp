@@ -12,6 +12,18 @@ export type DocStructureHint =
 export type IngestMode = "balanced" | "max_quality" | "max_speed";
 export type SummarySource = "vision_llm" | "text_llm" | "deterministic" | "cache";
 
+export interface TableCell {
+  id: string;
+  text: string;
+  row?: number;
+  column?: number;
+}
+
+export interface OperationOptions {
+  signal?: AbortSignal;
+  onProgress?: (phase: string, progress: number, total: number) => void | Promise<void>;
+}
+
 /** A single Figma/FigJam node, flattened out of the nested API tree. */
 export interface NormalizedNode {
   id: string;
@@ -27,6 +39,14 @@ export interface NormalizedNode {
   imageRef?: string;
   text?: string;
   parentId?: string;
+  pageId?: string;
+  sectionIds?: string[];
+  renderNodeId?: string;
+  table?: { cells: TableCell[] };
+  /** Includes source properties which affect rendered content. */
+  contentFingerprint?: string;
+  connectorStartArrowhead?: string;
+  connectorEndArrowhead?: string;
   /** For CONNECTOR nodes: the node id the arrow starts at, if attached. */
   connectorStartId?: string;
   /** For CONNECTOR nodes: the node id the arrow points to, if attached. */
@@ -40,6 +60,7 @@ export interface ConnectorEdge {
   toNodeId: string;
   /** Text written on the connector itself (e.g. "leads to"). */
   label?: string;
+  direction?: "forward" | "reverse" | "bidirectional" | "undirected";
 }
 
 /**
@@ -85,6 +106,10 @@ export interface RefinedCluster extends Cluster {
    * Lets a later ingest reuse this cluster's refinement when unchanged.
    */
   contentHash?: string;
+  cacheHit?: boolean;
+  incomplete?: boolean;
+  fallbackReason?: string;
+  retryAfter?: number;
 }
 
 export interface IngestQualityReport {
@@ -95,6 +120,11 @@ export interface IngestQualityReport {
   fallbackCount: number;
   /** Clusters whose refinement was reused from the previous ingest. */
   reusedClusters?: number;
+  incompleteClusters?: number;
+  /** Counts by recorded cause; legacy cache causes remain distinguishable. */
+  fallbackReasons?: Record<string, number>;
+  /** Earliest known retry time among incomplete clusters, in epoch milliseconds. */
+  nextRetryAt?: number;
 }
 
 /** Everything ingest_board produces and later tools read back via cache.ts. */
@@ -110,6 +140,12 @@ export interface BoardData {
   nodeHash?: string;
   modelPreset?: string;
   qualityReport?: IngestQualityReport;
+  schemaVersion?: number;
+  snapshotId?: string;
+  figmaVersion?: string;
+  freshnessCheckedAt?: number;
+  refinementSignature?: string;
+  persistenceWarning?: string;
   nodes: NormalizedNode[];
   clusters: RefinedCluster[];
   /** All connector arrows found on the board (node-level). */

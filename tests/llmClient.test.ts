@@ -8,7 +8,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
  */
 
 // Hoisted so the vi.mock factory (which is hoisted above module init) can see it.
-const { createMock } = vi.hoisted(() => ({ createMock: vi.fn() }));
+const { createMock, constructorMock } = vi.hoisted(() => ({ createMock: vi.fn(), constructorMock: vi.fn() }));
 
 vi.mock("openai", async (importActual) => {
   const actual = await importActual<typeof import("openai")>();
@@ -17,7 +17,7 @@ vi.mock("openai", async (importActual) => {
   // the static error classes used by instanceof checks are preserved.
   class MockOpenAI {
     chat = { completions: { create: createMock } };
-    constructor(_opts?: unknown) {}
+    constructor(opts?: unknown) { constructorMock(opts); }
     static RateLimitError = Real.RateLimitError;
     static APIError = Real.APIError;
     static APIConnectionTimeoutError = Real.APIConnectionTimeoutError;
@@ -48,9 +48,49 @@ afterEach(() => {
 });
 
 describe("chatJson", () => {
+  it("detects missing configuration without making any provider request", async () => {
+    const { validateLlmConfiguration } = await import("../src/lib/llmClient.js");
+    const previous = process.env.LLM_API_KEY;
+    try {
+      delete process.env.LLM_API_KEY;
+      expect(() => validateLlmConfiguration()).toThrow(expect.objectContaining({ name: "LLMConfigurationError" }));
+      await expect(chatJson("test-model", MESSAGES)).rejects.toMatchObject({ name: "LLMConfigurationError" });
+      expect(createMock).not.toHaveBeenCalled();
+    } finally { if (previous === undefined) delete process.env.LLM_API_KEY; else process.env.LLM_API_KEY = previous; }
+  });
+
+  it("keeps provider timeouts distinguishable from other failures", async () => {
+    const error = new Error("Private provider details"); error.name = "APIConnectionTimeoutError";
+    createMock.mockRejectedValueOnce(error);
+    const pending = chatJson("test-model", MESSAGES);
+    await expect(pending).rejects.toMatchObject({ name: "LlmTimeoutError" });
+    await expect(pending).rejects.not.toThrow(/Private provider details/);
+  });
   it("parses a normal completion", async () => {
     createMock.mockResolvedValueOnce(okCompletion('{"answer":42}'));
     await expect(chatJson("test-model", MESSAGES)).resolves.toEqual({ answer: 42 });
+  });
+
+  it("reports actual attempts and provider usage including invalid JSON responses", async () => {
+    const onRequest = vi.fn(); const onUsage = vi.fn();
+    createMock.mockResolvedValueOnce({ ...okCompletion("invalid"), usage: { prompt_tokens: 10, completion_tokens: 2, total_tokens: 12 } })
+      .mockResolvedValueOnce({ ...okCompletion('{"ok":true}'), usage: { prompt_tokens: 10, completion_tokens: 4, total_tokens: 14 } });
+    await chatJson(["bad", "good"], MESSAGES, { onRequest, onUsage });
+    expect(onRequest.mock.calls).toEqual([["bad"], ["good"]]);
+    expect(onUsage.mock.calls.map(call => call[0].totalTokens)).toEqual([12, 14]);
+  });
+
+  it("rebuilds the provider client when its configured endpoint changes", async () => {
+    createMock.mockResolvedValue(okCompletion('{"ok":true}'));
+    await chatJson("test-model", MESSAGES);
+    const before = constructorMock.mock.calls.length;
+    const previous = process.env.LLM_BASE_URL;
+    try {
+      process.env.LLM_BASE_URL = "http://another-provider.local/v1";
+      await chatJson("test-model", MESSAGES);
+      expect(constructorMock).toHaveBeenCalledTimes(before + 1);
+      expect(constructorMock.mock.calls.at(-1)?.[0].baseURL).toBe(process.env.LLM_BASE_URL);
+    } finally { process.env.LLM_BASE_URL = previous; }
   });
 
   it("forwards caller cancellation and stops before trying another model", async () => {
@@ -131,12 +171,13 @@ describe("chatJson", () => {
   });
 
   it("surfaces a clear error when a 200 body is an error envelope (no choices)", async () => {
-    createMock.mockResolvedValueOnce({ error: { message: "No endpoints found for model" } });
+    createMock.mockResolvedValueOnce({ error: { message: "No endpoints found for model: potentially private echoed content" } });
 
     const promise = chatJson("test-model", MESSAGES);
     // The whole point: NOT the cryptic undefined-read crash.
     await expect(promise).rejects.not.toThrow(/reading '0'/);
-    await expect(promise).rejects.toThrow(/No endpoints found for model/);
+    await expect(promise).rejects.toThrow(/LLM request failed/);
+    await expect(promise).rejects.not.toThrow(/potentially private echoed content/);
   });
 
   it("surfaces a clear error when the body simply has no choices", async () => {

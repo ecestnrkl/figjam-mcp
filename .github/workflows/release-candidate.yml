@@ -1,0 +1,32 @@
+name: Release candidate
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  candidate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run package:smoke
+      - run: npm run security:check
+      - run: npm pack --ignore-scripts
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: release-candidate
+          path: |
+            *.tgz
+            CHANGELOG.md
+            server.json
+          if-no-files-found: error

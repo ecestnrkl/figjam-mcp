@@ -19,6 +19,10 @@ const expectedPublishedFiles = new Set([
   "README.md",
   ".env.example",
   "docs/pipeline.gif",
+  "LICENSE",
+  "CHANGELOG.md",
+  "SECURITY.md",
+  "server.json",
 ]);
 const publishedFiles = Array.isArray(packageJson.files)
   ? packageJson.files
@@ -53,6 +57,17 @@ invariant(
     packageLock.packages?.[""]?.version === packageJson.version,
   "package-lock.json version must match package.json",
 );
+
+
+invariant(packageJson.license === "MIT", "Package license must be MIT");
+invariant(packageJson.engines?.node === ">=22.12.0", "Package must require Node.js 22.12+");
+invariant(packageJson.repository?.url === "git+https://github.com/ecestnrkl/figjam-mcp.git", "Repository metadata is missing");
+invariant(Boolean(packageJson.bugs?.url && packageJson.homepage), "Support/homepage metadata is missing");
+const license = await readFile(new URL("../LICENSE", import.meta.url), "utf8");
+invariant(license.startsWith("MIT License\n") && license.includes("Copyright (c) 2026 ecestnrkl"), "MIT license file is missing or inconsistent");
+const registry = JSON.parse(await readFile(new URL("../server.json", import.meta.url), "utf8"));
+invariant(registry.name === packageJson.mcpName && registry.version === packageJson.version, "Registry identity/version must match package");
+invariant(registry.packages?.[0]?.version === packageJson.version && registry.packages?.[0]?.identifier === packageJson.name, "Registry npm package must match");
 
 await access(serverUrl, constants.R_OK);
 const source = await readFile(entryPointUrl, "utf8");

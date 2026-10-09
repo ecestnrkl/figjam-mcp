@@ -60,7 +60,7 @@ export const ingestBoardInputShape = {
     .boolean()
     .optional()
     .describe(
-      "Skip all caching and incremental reuse — re-refine every cluster from scratch (e.g. after changing models). Default: false",
+      "Deliberately skip all caching and incremental reuse, including successful interpretations. The vision time budget still applies. Model/configuration changes are detected automatically. Default: false",
     ),
 };
 
@@ -69,6 +69,7 @@ export type IngestBoardInput = z.infer<typeof ingestBoardInputSchema>;
 
 export const ingestBoardOutputShape = {
   boardId: figmaFileKeySchema,
+  ingestMode: z.enum(["balanced", "max_quality", "max_speed"]).optional(),
   clusterCount: z.number().int().nonnegative(),
   relationCount: z
     .number()
@@ -77,6 +78,10 @@ export const ingestBoardOutputShape = {
     .optional()
     .describe("Directed cluster-to-cluster relations derived from connector arrows"),
   summary: z.string(),
+  snapshotId: z.string().optional(),
+  figmaVersion: z.string().optional(),
+  freshnessCheckedAt: z.string().optional(),
+  persistenceWarning: z.string().optional(),
   qualityReport: z
     .object({
       modelsUsed: z.array(z.string()),
@@ -85,6 +90,9 @@ export const ingestBoardOutputShape = {
       visionClusters: z.number().int().nonnegative(),
       fallbackCount: z.number().int().nonnegative(),
       reusedClusters: z.number().int().nonnegative().optional(),
+      incompleteClusters: z.number().int().nonnegative().optional(),
+      fallbackReasons: z.record(z.string(), z.number().int().nonnegative()).optional(),
+      nextRetryAt: z.number().finite().optional(),
     })
     .optional(),
 };

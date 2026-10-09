@@ -1,0 +1,24 @@
+name: Bug report
+description: Report a reproducible problem using synthetic or redacted data.
+title: "[Bug]: "
+body:
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Package version, Node version, operating system, MCP client and ingest mode.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction
+      description: Steps and a small synthetic example. Do not include tokens, private links or board data.
+    validations:
+      required: true
+  - type: textarea
+    id: behavior
+    attributes:
+      label: Expected and actual behavior
+    validations:
+      required: true

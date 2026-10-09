@@ -1,0 +1,896 @@
+{
+  "evaluation": "20 synthetic lexical source-retrieval fixtures; not a real-board benchmark",
+  "mode": "explicit-provider-evaluation",
+  "providerEvaluation": {
+    "selection": "grounding-only",
+    "selectedFixtures": 5,
+    "perCaseTimeoutMs": 45000
+  },
+  "fixtures": 20,
+  "answerableFixtures": 18,
+  "unanswerableFixtures": 2,
+  "recallAt1": 1,
+  "recallAt3": 1,
+  "meanReciprocalRankAt3": 1,
+  "correctAbstentionRate": 1,
+  "coldRetrievalMs": {
+    "samples": 20,
+    "p50": 0.051,
+    "p95": 0.692,
+    "max": 1.06
+  },
+  "baselineProxy": {
+    "description": "Source-fact visibility in the former deterministic first-five-texts, 120-characters-per-text summary. These fixture nodes share one spatial area. Tables had no cell text. Uses current Unicode tokens to isolate information loss; does not reproduce old ranking, vision summaries, runtime, or provider costs.",
+    "historicalBenchmark": false,
+    "visibleFacts": 15,
+    "totalFacts": 18,
+    "factVisibilityRate": 0.8333333333333334
+  },
+  "apiCalls": 36,
+  "modelQuality": "Structural citation validity and expected-source coverage measured below; semantic answer correctness requires human review.",
+  "modelCosts": "not measured; token counts do not imply a currency cost",
+  "tokenUsage": {
+    "receivedCompletions": 5,
+    "promptTokens": {
+      "reportedSum": 2692,
+      "reportedCompletions": 5,
+      "missingCompletions": 0
+    },
+    "completionTokens": {
+      "reportedSum": 2605,
+      "reportedCompletions": 5,
+      "missingCompletions": 0
+    },
+    "totalTokens": {
+      "reportedSum": 5297,
+      "reportedCompletions": 5,
+      "missingCompletions": 0
+    },
+    "note": "Only provider-reported usage is summed. Missing usage and failed attempts may still incur charges."
+  },
+  "semanticGrounding": {
+    "fixtures": 5,
+    "generation": "responses collected for human review",
+    "semanticReview": "required",
+    "note": "No automatic semantic pass or score. Compare each generated answer with its original sources and expected behavior; valid citations alone do not establish a correct conclusion.",
+    "cases": [
+      {
+        "name": "open availability task does not establish booking status",
+        "question": "Ist der Simulator bereits verbindlich gebucht?",
+        "expectedStatus": "unknown",
+        "expectedBehavior": "State that booking status is not established by the excerpt. The open availability task proves neither a booking nor the absence of a booking; it may be quoted to explain the uncertainty.",
+        "sources": [
+          {
+            "nodeId": "1:1",
+            "nodeName": "Simulator",
+            "text": "Simulatorverfügbarkeit klären"
+          }
+        ],
+        "semanticReview": "required",
+        "elapsedMs": 10425.65,
+        "httpAttempts": 7,
+        "attemptedModels": [
+          "qwen/qwen3-next-80b-a3b-instruct:free",
+          "qwen/qwen3-next-80b-a3b-instruct:free",
+          "qwen/qwen3-next-80b-a3b-instruct:free",
+          "nvidia/nemotron-nano-9b-v2:free",
+          "nvidia/nemotron-nano-9b-v2:free",
+          "nvidia/nemotron-nano-9b-v2:free",
+          "openrouter/free"
+        ],
+        "completions": [
+          {
+            "model": "openrouter/free",
+            "promptTokens": 517,
+            "completionTokens": 729,
+            "totalTokens": 1246
+          }
+        ],
+        "citationCount": 1,
+        "validCitationCount": 1,
+        "answer": "Es kann nicht bestimmt werden, ob der Simulator bereits verbindlich gebucht ist. Der Board-Eintrag \"Simulatorverfügbarkeit klären\" ist eine offene Aufgabe zur Klärung der Verfügbarkeit und stellt keine Bestätigung einer Buchung dar.",
+        "citedNodeIds": [
+          "1:1"
+        ]
+      },
+      {
+        "name": "explicit confirmed booking supports a positive answer",
+        "question": "Ist der Simulator für Freitag verbindlich gebucht?",
+        "expectedStatus": "confirmed",
+        "expectedBehavior": "Confirm that the board explicitly records a binding booking for Friday and cite that source. Do not invent a booking reference or other details.",
+        "sources": [
+          {
+            "nodeId": "1:1",
+            "nodeName": "Sticky",
+            "text": "Der Simulator ist für Freitag verbindlich gebucht."
+          }
+        ],
+        "semanticReview": "required",
+        "elapsedMs": 2185.202,
+        "httpAttempts": 8,
+        "attemptedModels": [
+          "qwen/qwen3-next-80b-a3b-instruct:free",
+          "qwen/qwen3-next-80b-a3b-instruct:free",
+          "qwen/qwen3-next-80b-a3b-instruct:free",
+          "nvidia/nemotron-nano-9b-v2:free",
+          "nvidia/nemotron-nano-9b-v2:free",
+          "nvidia/nemotron-nano-9b-v2:free",
+          "openrouter/free",
+          "openrouter/free"
+        ],
+        "completions": [
+          {
+            "model": "openrouter/free",
+            "promptTokens": 541,
+            "completionTokens": 149,
+            "totalTokens": 690
+          }
+        ],
+        "citationCount": 1,
+        "validCitationCount": 1,
+        "answer": "Ja, der Simulator ist für Freitag verbindlich gebucht.",
+        "citedNodeIds": [
+          "1:1"
+        ]
+      },
+      {
+        "name": "explicit absence of booking supports a negative answer",
+        "question": "Ist der Simulator für Freitag gebucht?",
+        "expectedStatus": "denied",
+        "expectedBehavior": "State that the board explicitly records no booking for Friday and cite that source. Do not weaken an explicit negative into mere lack of evidence.",
+        "sources": [
+          {
+            "nodeId": "1:1",
+            "nodeName": "Sticky",
+            "text": "Der Simulator ist für Freitag nicht gebucht."
+          }
+        ],
+        "semanticReview": "required",
+        "elapsedMs": 5665.853,
+        "httpAttempts": 7,
+        "attemptedModels": [
+          "qwen/qwen3-next-80b-a3b-instruct:free",
+          "qwen/qwen3-next-80b-a3b-instruct:free",
+          "qwen/qwen3-next-80b-a3b-instruct:free",
+          "nvidia/nemotron-nano-9b-v2:free",
+          "nvidia/nemotron-nano-9b-v2:free",
+          "nvidia/nemotron-nano-9b-v2:free",
+          "openrouter/free"
+        ],
+        "completions": [
+          {
+            "model": "openrouter/free",
+            "promptTokens": 516,
+            "completionTokens": 370,
+            "totalTokens": 886
+          }
+        ],
+        "citationCount": 1,
+        "validCitationCount": 1,
+        "answer": "Nein, der Simulator ist für Freitag nicht gebucht.",
+        "citedNodeIds": [
+          "1:1"
+        ]
+      },
+      {
+        "name": "proposed booking is not completed booking",
+        "question": "Ist der Simulator für Freitag bereits verbindlich gebucht?",
+        "expectedStatus": "unknown",
+        "expectedBehavior": "Explain that the source is a proposal or question, so whether a binding booking exists remains unknown. Do not treat the proposal as either confirmation or denial.",
+        "sources": [
+          {
+            "nodeId": "1:1",
+            "nodeName": "Sticky",
+            "text": "Vorschlag: Simulator für Freitag buchen?"
+          }
+        ],
+        "semanticReview": "required",
+        "elapsedMs": 12377.635,
+        "httpAttempts": 7,
+        "attemptedModels": [
+          "qwen/qwen3-next-80b-a3b-instruct:free",
+          "qwen/qwen3-next-80b-a3b-instruct:free",
+          "qwen/qwen3-next-80b-a3b-instruct:free",
+          "nvidia/nemotron-nano-9b-v2:free",
+          "nvidia/nemotron-nano-9b-v2:free",
+          "nvidia/nemotron-nano-9b-v2:free",
+          "openrouter/free"
+        ],
+        "completions": [
+          {
+            "model": "openrouter/free",
+            "promptTokens": 521,
+            "completionTokens": 910,
+            "totalTokens": 1431
+          }
+        ],
+        "citationCount": 1,
+        "validCitationCount": 1,
+        "answer": "Es kann nicht festgestellt werden, dass der Simulator für Freitag bereits verbindlich gebucht ist. Der einzige vorliegende Eintrag ist ein Vorschlag („Simulator für Freitag buchen?“), der keine Bestätigung einer bestehenden Buchung darstellt.",
+        "citedNodeIds": [
+          "1:1"
+        ]
+      },
+      {
+        "name": "conflicting booking records remain unresolved",
+        "question": "Ist der Simulator für Freitag verbindlich gebucht?",
+        "expectedStatus": "conflicting",
+        "expectedBehavior": "Identify the contradictory booking records and cite both. With no dates or supersession information, do not choose one as the current truth.",
+        "sources": [
+          {
+            "nodeId": "1:1",
+            "nodeName": "Sticky",
+            "text": "Der Simulator ist für Freitag verbindlich gebucht."
+          },
+          {
+            "nodeId": "1:2",
+            "nodeName": "Sticky",
+            "text": "Der Simulator ist für Freitag nicht gebucht."
+          }
+        ],
+        "semanticReview": "required",
+        "elapsedMs": 3375.845,
+        "httpAttempts": 7,
+        "attemptedModels": [
+          "qwen/qwen3-next-80b-a3b-instruct:free",
+          "qwen/qwen3-next-80b-a3b-instruct:free",
+          "qwen/qwen3-next-80b-a3b-instruct:free",
+          "nvidia/nemotron-nano-9b-v2:free",
+          "nvidia/nemotron-nano-9b-v2:free",
+          "nvidia/nemotron-nano-9b-v2:free",
+          "openrouter/free"
+        ],
+        "completions": [
+          {
+            "model": "openrouter/free",
+            "promptTokens": 597,
+            "completionTokens": 447,
+            "totalTokens": 1044
+          }
+        ],
+        "citationCount": 2,
+        "validCitationCount": 2,
+        "answer": "Es gibt widersprüchliche Informationen: Ein Eintrag (ev_caa09a0e4cdad0d47fbfb053cb76a278) besagt, dass der Simulator für Freitag verbindlich gebucht ist (Area 1), während ein anderer Eintrag (ev_afc6ef2395d3a788e5762a225198dd64) feststellt, dass er für Freitag nicht gebucht ist (Area 2). Die Quellen sind nicht konsistent.",
+        "citedNodeIds": [
+          "1:1",
+          "1:2"
+        ]
+      }
+    ]
+  },
+  "cases": [
+    {
+      "name": "exact engineering term",
+      "expectedNodeId": "1:1",
+      "answerable": true,
+      "rank": 1,
+      "correctAbstention": false,
+      "legacySummaryFactVisible": true
+    },
+    {
+      "name": "German umlaut",
+      "expectedNodeId": "1:1",
+      "answerable": true,
+      "rank": 1,
+      "correctAbstention": false,
+      "legacySummaryFactVisible": true
+    },
+    {
+      "name": "German compound",
+      "expectedNodeId": "1:1",
+      "answerable": true,
+      "rank": 1,
+      "correctAbstention": false,
+      "legacySummaryFactVisible": true
+    },
+    {
+      "name": "French accents",
+      "expectedNodeId": "1:1",
+      "answerable": true,
+      "rank": 1,
+      "correctAbstention": false,
+      "legacySummaryFactVisible": true
+    },
+    {
+      "name": "Turkish text",
+      "expectedNodeId": "1:1",
+      "answerable": true,
+      "rank": 1,
+      "correctAbstention": false,
+      "legacySummaryFactVisible": true
+    },
+    {
+      "name": "Chinese segmentation",
+      "expectedNodeId": "1:1",
+      "answerable": true,
+      "rank": 1,
+      "correctAbstention": false,
+      "legacySummaryFactVisible": true
+    },
+    {
+      "name": "Japanese segmentation",
+      "expectedNodeId": "1:1",
+      "answerable": true,
+      "rank": 1,
+      "correctAbstention": false,
+      "legacySummaryFactVisible": true
+    },
+    {
+      "name": "numeric fact",
+      "expectedNodeId": "1:1",
+      "answerable": true,
+      "rank": 1,
+      "correctAbstention": false,
+      "legacySummaryFactVisible": true
+    },
+    {
+      "name": "rare identifier",
+      "expectedNodeId": "1:1",
+      "answerable": true,
+      "rank": 1,
+      "correctAbstention": false,
+      "legacySummaryFactVisible": true
+    },
+    {
+      "name": "NFKC normalization",
+      "expectedNodeId": "1:1",
+      "answerable": true,
+      "rank": 1,
+      "correctAbstention": false,
+      "legacySummaryFactVisible": true
+    },
+    {
+      "name": "case insensitivity",
+      "expectedNodeId": "1:1",
+      "answerable": true,
+      "rank": 1,
+      "correctAbstention": false,
+      "legacySummaryFactVisible": true
+    },
+    {
+      "name": "negation preserved",
+      "expectedNodeId": "1:1",
+      "answerable": true,
+      "rank": 1,
+      "correctAbstention": false,
+      "legacySummaryFactVisible": true
+    },
+    {
+      "name": "email phrase",
+      "expectedNodeId": "1:1",
+      "answerable": true,
+      "rank": 1,
+      "correctAbstention": false,
+      "legacySummaryFactVisible": true
+    },
+    {
+      "name": "short acronym",
+      "expectedNodeId": "1:1",
+      "answerable": true,
+      "rank": 1,
+      "correctAbstention": false,
+      "legacySummaryFactVisible": true
+    },
+    {
+      "name": "fact beyond first chunk",
+      "expectedNodeId": "2:1",
+      "answerable": true,
+      "rank": 1,
+      "correctAbstention": false,
+      "legacySummaryFactVisible": false
+    },
+    {
+      "name": "fact beyond summary highlights",
+      "expectedNodeId": "3:6",
+      "answerable": true,
+      "rank": 1,
+      "correctAbstention": false,
+      "legacySummaryFactVisible": false
+    },
+    {
+      "name": "table cell source",
+      "expectedNodeId": "cell-b",
+      "answerable": true,
+      "rank": 1,
+      "correctAbstention": false,
+      "legacySummaryFactVisible": false
+    },
+    {
+      "name": "duplicate cluster labels",
+      "expectedNodeId": "5:2",
+      "answerable": true,
+      "rank": 1,
+      "correctAbstention": false,
+      "legacySummaryFactVisible": true
+    },
+    {
+      "name": "unrelated topic stays empty",
+      "expectedNodeId": null,
+      "answerable": false,
+      "rank": 0,
+      "correctAbstention": true,
+      "legacySummaryFactVisible": null
+    },
+    {
+      "name": "stopword-only query stays empty",
+      "expectedNodeId": null,
+      "answerable": false,
+      "rank": 0,
+      "correctAbstention": true,
+      "legacySummaryFactVisible": null
+    }
+  ],
+  "revisions": {
+    "fixtures": 20,
+    "passed": 20,
+    "diffMs": {
+      "samples": 20,
+      "p50": 0.277,
+      "p95": 0.922,
+      "max": 6.178
+    },
+    "cases": [
+      {
+        "name": "exact engineering term",
+        "kind": "text-edit",
+        "changedNodeId": "1:1",
+        "expected": {
+          "addedNodes": 0,
+          "removedNodes": 0,
+          "editedNodes": 1,
+          "addedConnections": 0,
+          "removedConnections": 0,
+          "tableCellChanges": 0
+        },
+        "actual": {
+          "addedNodes": 0,
+          "removedNodes": 0,
+          "editedNodes": 1,
+          "addedConnections": 0,
+          "removedConnections": 0,
+          "tableCellChanges": 0
+        },
+        "passed": true,
+        "elapsedMs": 6.178
+      },
+      {
+        "name": "German umlaut",
+        "kind": "node-added",
+        "changedNodeId": "eval:added",
+        "expected": {
+          "addedNodes": 1,
+          "removedNodes": 0,
+          "editedNodes": 0,
+          "addedConnections": 0,
+          "removedConnections": 0,
+          "tableCellChanges": 0
+        },
+        "actual": {
+          "addedNodes": 1,
+          "removedNodes": 0,
+          "editedNodes": 0,
+          "addedConnections": 0,
+          "removedConnections": 0,
+          "tableCellChanges": 0
+        },
+        "passed": true,
+        "elapsedMs": 0.512
+      },
+      {
+        "name": "German compound",
+        "kind": "node-removed",
+        "changedNodeId": "1:1",
+        "expected": {
+          "addedNodes": 0,
+          "removedNodes": 1,
+          "editedNodes": 0,
+          "addedConnections": 0,
+          "removedConnections": 0,
+          "tableCellChanges": 0
+        },
+        "actual": {
+          "addedNodes": 0,
+          "removedNodes": 1,
+          "editedNodes": 0,
+          "addedConnections": 0,
+          "removedConnections": 0,
+          "tableCellChanges": 0
+        },
+        "passed": true,
+        "elapsedMs": 0.277
+      },
+      {
+        "name": "French accents",
+        "kind": "internal-arrow-reversed",
+        "changedNodeId": "eval:arrow",
+        "expected": {
+          "addedNodes": 0,
+          "removedNodes": 0,
+          "editedNodes": 0,
+          "addedConnections": 1,
+          "removedConnections": 1,
+          "tableCellChanges": 0
+        },
+        "actual": {
+          "addedNodes": 0,
+          "removedNodes": 0,
+          "editedNodes": 0,
+          "addedConnections": 1,
+          "removedConnections": 1,
+          "tableCellChanges": 0
+        },
+        "passed": true,
+        "elapsedMs": 0.576
+      },
+      {
+        "name": "Turkish text",
+        "kind": "text-edit",
+        "changedNodeId": "1:1",
+        "expected": {
+          "addedNodes": 0,
+          "removedNodes": 0,
+          "editedNodes": 1,
+          "addedConnections": 0,
+          "removedConnections": 0,
+          "tableCellChanges": 0
+        },
+        "actual": {
+          "addedNodes": 0,
+          "removedNodes": 0,
+          "editedNodes": 1,
+          "addedConnections": 0,
+          "removedConnections": 0,
+          "tableCellChanges": 0
+        },
+        "passed": true,
+        "elapsedMs": 0.471
+      },
+      {
+        "name": "Chinese segmentation",
+        "kind": "node-added",
+        "changedNodeId": "eval:added",
+        "expected": {
+          "addedNodes": 1,
+          "removedNodes": 0,
+          "editedNodes": 0,
+          "addedConnections": 0,
+          "removedConnections": 0,
+          "tableCellChanges": 0
+        },
+        "actual": {
+          "addedNodes": 1,
+          "removedNodes": 0,
+          "editedNodes": 0,
+          "addedConnections": 0,
+          "removedConnections": 0,
+          "tableCellChanges": 0
+        },
+        "passed": true,
+        "elapsedMs": 0.29
+      },
+      {
+        "name": "Japanese segmentation",
+        "kind": "node-removed",
+        "changedNodeId": "1:1",
+        "expected": {
+          "addedNodes": 0,
+          "removedNodes": 1,
+          "editedNodes": 0,
+          "addedConnections": 0,
+          "removedConnections": 0,
+          "tableCellChanges": 0
+        },
+        "actual": {
+          "addedNodes": 0,
+          "removedNodes": 1,
+          "editedNodes": 0,
+          "addedConnections": 0,
+          "removedConnections": 0,
+          "tableCellChanges": 0
+        },
+        "passed": true,
+        "elapsedMs": 0.13
+      },
+      {
+        "name": "numeric fact",
+        "kind": "internal-arrow-reversed",
+        "changedNodeId": "eval:arrow",
+        "expected": {
+          "addedNodes": 0,
+          "removedNodes": 0,
+          "editedNodes": 0,
+          "addedConnections": 1,
+          "removedConnections": 1,
+          "tableCellChanges": 0
+        },
+        "actual": {
+          "addedNodes": 0,
+          "removedNodes": 0,
+          "editedNodes": 0,
+          "addedConnections": 1,
+          "removedConnections": 1,
+          "tableCellChanges": 0
+        },
+        "passed": true,
+        "elapsedMs": 0.922
+      },
+      {
+        "name": "rare identifier",
+        "kind": "text-edit",
+        "changedNodeId": "1:1",
+        "expected": {
+          "addedNodes": 0,
+          "removedNodes": 0,
+          "editedNodes": 1,
+          "addedConnections": 0,
+          "removedConnections": 0,
+          "tableCellChanges": 0
+        },
+        "actual": {
+          "addedNodes": 0,
+          "removedNodes": 0,
+          "editedNodes": 1,
+          "addedConnections": 0,
+          "removedConnections": 0,
+          "tableCellChanges": 0
+        },
+        "passed": true,
+        "elapsedMs": 0.298
+      },
+      {
+        "name": "NFKC normalization",
+        "kind": "node-added",
+        "changedNodeId": "eval:added",
+        "expected": {
+          "addedNodes": 1,
+          "removedNodes": 0,
+          "editedNodes": 0,
+          "addedConnections": 0,
+          "removedConnections": 0,
+          "tableCellChanges": 0
+        },
+        "actual": {
+          "addedNodes": 1,
+          "removedNodes": 0,
+          "editedNodes": 0,
+          "addedConnections": 0,
+          "removedConnections": 0,
+          "tableCellChanges": 0
+        },
+        "passed": true,
+        "elapsedMs": 0.355
+      },
+      {
+        "name": "case insensitivity",
+        "kind": "node-removed",
+        "changedNodeId": "1:1",
+        "expected": {
+          "addedNodes": 0,
+          "removedNodes": 1,
+          "editedNodes": 0,
+          "addedConnections": 0,
+          "removedConnections": 0,
+          "tableCellChanges": 0
+        },
+        "actual": {
+          "addedNodes": 0,
+          "removedNodes": 1,
+          "editedNodes": 0,
+          "addedConnections": 0,
+          "removedConnections": 0,
+          "tableCellChanges": 0
+        },
+        "passed": true,
+        "elapsedMs": 0.115
+      },
+      {
+        "name": "negation preserved",
+        "kind": "internal-arrow-reversed",
+        "changedNodeId": "eval:arrow",
+        "expected": {
+          "addedNodes": 0,
+          "removedNodes": 0,
+          "editedNodes": 0,
+          "addedConnections": 1,
+          "removedConnections": 1,
+          "tableCellChanges": 0
+        },
+        "actual": {
+          "addedNodes": 0,
+          "removedNodes": 0,
+          "editedNodes": 0,
+          "addedConnections": 1,
+          "removedConnections": 1,
+          "tableCellChanges": 0
+        },
+        "passed": true,
+        "elapsedMs": 0.162
+      },
+      {
+        "name": "email phrase",
+        "kind": "text-edit",
+        "changedNodeId": "1:1",
+        "expected": {
+          "addedNodes": 0,
+          "removedNodes": 0,
+          "editedNodes": 1,
+          "addedConnections": 0,
+          "removedConnections": 0,
+          "tableCellChanges": 0
+        },
+        "actual": {
+          "addedNodes": 0,
+          "removedNodes": 0,
+          "editedNodes": 1,
+          "addedConnections": 0,
+          "removedConnections": 0,
+          "tableCellChanges": 0
+        },
+        "passed": true,
+        "elapsedMs": 0.118
+      },
+      {
+        "name": "short acronym",
+        "kind": "node-added",
+        "changedNodeId": "eval:added",
+        "expected": {
+          "addedNodes": 1,
+          "removedNodes": 0,
+          "editedNodes": 0,
+          "addedConnections": 0,
+          "removedConnections": 0,
+          "tableCellChanges": 0
+        },
+        "actual": {
+          "addedNodes": 1,
+          "removedNodes": 0,
+          "editedNodes": 0,
+          "addedConnections": 0,
+          "removedConnections": 0,
+          "tableCellChanges": 0
+        },
+        "passed": true,
+        "elapsedMs": 0.107
+      },
+      {
+        "name": "fact beyond first chunk",
+        "kind": "node-removed",
+        "changedNodeId": "2:1",
+        "expected": {
+          "addedNodes": 0,
+          "removedNodes": 1,
+          "editedNodes": 0,
+          "addedConnections": 0,
+          "removedConnections": 0,
+          "tableCellChanges": 0
+        },
+        "actual": {
+          "addedNodes": 0,
+          "removedNodes": 1,
+          "editedNodes": 0,
+          "addedConnections": 0,
+          "removedConnections": 0,
+          "tableCellChanges": 0
+        },
+        "passed": true,
+        "elapsedMs": 0.02
+      },
+      {
+        "name": "fact beyond summary highlights",
+        "kind": "internal-arrow-reversed",
+        "changedNodeId": "eval:arrow",
+        "expected": {
+          "addedNodes": 0,
+          "removedNodes": 0,
+          "editedNodes": 0,
+          "addedConnections": 1,
+          "removedConnections": 1,
+          "tableCellChanges": 0
+        },
+        "actual": {
+          "addedNodes": 0,
+          "removedNodes": 0,
+          "editedNodes": 0,
+          "addedConnections": 1,
+          "removedConnections": 1,
+          "tableCellChanges": 0
+        },
+        "passed": true,
+        "elapsedMs": 0.286
+      },
+      {
+        "name": "table cell source",
+        "kind": "table-cell-edit",
+        "changedNodeId": "4:0",
+        "changedCellId": "cell-b",
+        "expected": {
+          "addedNodes": 0,
+          "removedNodes": 0,
+          "editedNodes": 1,
+          "addedConnections": 0,
+          "removedConnections": 0,
+          "tableCellChanges": 1
+        },
+        "actual": {
+          "addedNodes": 0,
+          "removedNodes": 0,
+          "editedNodes": 1,
+          "addedConnections": 0,
+          "removedConnections": 0,
+          "tableCellChanges": 1
+        },
+        "passed": true,
+        "elapsedMs": 0.315
+      },
+      {
+        "name": "duplicate cluster labels",
+        "kind": "node-added",
+        "changedNodeId": "eval:added",
+        "expected": {
+          "addedNodes": 1,
+          "removedNodes": 0,
+          "editedNodes": 0,
+          "addedConnections": 0,
+          "removedConnections": 0,
+          "tableCellChanges": 0
+        },
+        "actual": {
+          "addedNodes": 1,
+          "removedNodes": 0,
+          "editedNodes": 0,
+          "addedConnections": 0,
+          "removedConnections": 0,
+          "tableCellChanges": 0
+        },
+        "passed": true,
+        "elapsedMs": 0.117
+      },
+      {
+        "name": "unrelated topic stays empty",
+        "kind": "node-removed",
+        "changedNodeId": "1:1",
+        "expected": {
+          "addedNodes": 0,
+          "removedNodes": 1,
+          "editedNodes": 0,
+          "addedConnections": 0,
+          "removedConnections": 0,
+          "tableCellChanges": 0
+        },
+        "actual": {
+          "addedNodes": 0,
+          "removedNodes": 1,
+          "editedNodes": 0,
+          "addedConnections": 0,
+          "removedConnections": 0,
+          "tableCellChanges": 0
+        },
+        "passed": true,
+        "elapsedMs": 0.021
+      },
+      {
+        "name": "stopword-only query stays empty",
+        "kind": "internal-arrow-reversed",
+        "changedNodeId": "eval:arrow",
+        "expected": {
+          "addedNodes": 0,
+          "removedNodes": 0,
+          "editedNodes": 0,
+          "addedConnections": 1,
+          "removedConnections": 1,
+          "tableCellChanges": 0
+        },
+        "actual": {
+          "addedNodes": 0,
+          "removedNodes": 0,
+          "editedNodes": 0,
+          "addedConnections": 1,
+          "removedConnections": 1,
+          "tableCellChanges": 0
+        },
+        "passed": true,
+        "elapsedMs": 0.158
+      }
+    ]
+  }
+}

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { geometricPreCluster } from "../src/lib/spatialCluster.js";
+import { geometricPreCluster, partitionedBoardClusters } from "../src/lib/spatialCluster.js";
 import type { NormalizedNode } from "../src/types.js";
 
 /** Builds a minimal NormalizedNode for synthetic point-cloud tests. */
@@ -21,7 +21,71 @@ function clusterOf(clusters: ReturnType<typeof geometricPreCluster>, nodeId: str
   return cluster!;
 }
 
+describe("partitionedBoardClusters", () => {
+  it("keeps overlapping pages and inner sections separate", () => {
+    const nodes = [
+      { ...makeNode("a", 0, 0), pageId: "page-a", sectionIds: ["outer", "one"] },
+      { ...makeNode("b", 0, 0), pageId: "page-a", sectionIds: ["outer", "two"] },
+      { ...makeNode("c", 0, 0), pageId: "page-b", sectionIds: [] },
+      { ...makeNode("d", 0, 0), pageId: "page-a", sectionIds: [] },
+      { ...makeNode("e", 220, 0), pageId: "page-a", sectionIds: ["outer", "one"] },
+    ];
+    const clusters = partitionedBoardClusters(nodes);
+    expect(clusters).toHaveLength(4);
+    expect(clusterOf(clusters, "a").nodeIds).toEqual(["a", "e"]);
+    expect(clusterOf(clusters, "a").id).not.toBe(clusterOf(clusters, "b").id);
+  });
+
+  it("keeps membership IDs stable after moving groups or adding earlier groups", () => {
+    const original = [makeNode("a", 0, 0), makeNode("b", 220, 0)];
+    const before = partitionedBoardClusters(original);
+    const after = partitionedBoardClusters([
+      makeNode("new", -10_000, -10_000),
+      ...original.map((node) => ({ ...node, x: node.x + 5000 })),
+    ]);
+    expect(clusterOf(after, "a").id).toBe(clusterOf(before, "a").id);
+    expect(clusterOf(partitionedBoardClusters([...original].reverse()), "a").id).toBe(clusterOf(before, "a").id);
+  });
+
+  it("excludes containers and connector footprints from clustering", () => {
+    const nodes = [
+      { ...makeNode("section", 0, 0, 10000, 10000), type: "SECTION" },
+      { ...makeNode("a", 0, 0), parentId: "section" },
+      { ...makeNode("b", 2000, 0), parentId: "section" },
+      { ...makeNode("edge", 0, 0, 2200), type: "CONNECTOR" },
+    ];
+    const clusters = partitionedBoardClusters(nodes);
+    expect(clusters).toHaveLength(2);
+    expect(clusters.flatMap((cluster) => cluster.nodeIds).sort()).toEqual(["a", "b"]);
+  });
+
+  it("shares the work and grid budgets across page partitions", () => {
+    const nodes = [
+      { ...makeNode("a", 0, 0, 100, 100), pageId: "one" },
+      { ...makeNode("b", 0, 0, 100, 100), pageId: "one" },
+      { ...makeNode("c", 0, 0, 100, 100), pageId: "two" },
+      { ...makeNode("d", 0, 0, 100, 100), pageId: "two" },
+    ];
+    expect(() => partitionedBoardClusters(nodes, { adaptiveGapThreshold: false, maxPairComparisons: 12 })).toThrow(/pair comparisons/);
+    expect(() => partitionedBoardClusters([nodes[0]!, nodes[2]!], { maxGridEntries: 10 })).toThrow(/spatial index limit/);
+  });
+
+  it("validates geometry before excluding nodes from clustering", () => {
+    expect(() => partitionedBoardClusters([makeNode("invalid", 0, 0, -1, -1)])).toThrow(/invalid.*geometry/);
+  });
+});
+
 describe("geometricPreCluster", () => {
+  it("rejects a dense overlapping board with a controlled work-limit error", () => {
+    const dense = Array.from({ length: 5000 }, (_, index) => makeNode(`overlap-${index}`, 0, 0));
+    expect(() => geometricPreCluster(dense, { adaptiveGapThreshold: false })).toThrow(/exceeded 10000000 pair comparisons/);
+  });
+
+  it("bounds total spatial index entries, even when every individual shape fits", () => {
+    const spread = Array.from({ length: 100 }, (_, index) => makeNode(`wide-${index}`, index * 5000, 0, 1000, 1000));
+    expect(() => geometricPreCluster(spread, { adaptiveGapThreshold: false, maxGridEntries: 1000 })).toThrow(/1000-entry spatial index limit/);
+  });
+
   it("returns [] for empty input", () => {
     expect(geometricPreCluster([])).toEqual([]);
   });

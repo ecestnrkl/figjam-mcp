@@ -1,253 +1,146 @@
-/**
- * Thin wrapper around the Figma REST API (https://api.figma.com/v1).
- * All three functions use the passed-in token as the "X-Figma-Token" header.
- */
-
 import { readIntEnv } from "./env.js";
 
 const FIGMA_API_BASE = "https://api.figma.com/v1";
 const FIGMA_REQUEST_TIMEOUT_MS = readIntEnv("FIGMA_REQUEST_TIMEOUT_MS", 15000, 1000);
 const FIGMA_FILE_REQUEST_TIMEOUT_MS = readIntEnv("FIGMA_FILE_REQUEST_TIMEOUT_MS", 60000, 1000);
-const SCREENSHOT_DOWNLOAD_CONCURRENCY = readIntEnv(
-  "FIGMA_SCREENSHOT_DOWNLOAD_CONCURRENCY",
-  3,
-  1,
-);
-
-async function figmaFetch(
-  path: string,
-  token: string,
-  timeoutMs = FIGMA_REQUEST_TIMEOUT_MS,
-  externalSignal?: AbortSignal,
-): Promise<Response> {
+const DOWNLOAD_CONCURRENCY = readIntEnv("FIGMA_SCREENSHOT_DOWNLOAD_CONCURRENCY", 3, 1);
+export const FILE_MAX_BYTES = 64 * 1024 * 1024;
+export const IMAGE_MAX_BYTES = 8 * 1024 * 1024;
+export const INGEST_IMAGE_MAX_BYTES = 64 * 1024 * 1024;
+export interface DownloadBudget { usedBytes: number; maxBytes: number }
+export class FigmaApiError extends Error {
+  constructor(message: string, readonly status: number, readonly retryAfter?: number) { super(message); }
+}
+export class FigmaDownloadBudgetError extends Error {
+  constructor() { super("Figma download exceeds the configured byte budget"); this.name = "FigmaDownloadBudgetError"; }
+}
+export class FigmaTimeoutError extends Error {
+  constructor(message: string) { super(message); this.name = "FigmaTimeoutError"; }
+}
+function combineSignals(timeoutMs: number, signal?: AbortSignal): AbortSignal {
+  return signal ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs);
+}
+async function figmaFetch(apiPath: string, token: string, timeoutMs: number, externalSignal?: AbortSignal): Promise<Response> {
+  externalSignal?.throwIfAborted();
   let response: Response;
   try {
-    response = await fetch(`${FIGMA_API_BASE}${path}`, {
-      headers: { "X-Figma-Token": token },
-      signal: combineAbortSignals(AbortSignal.timeout(timeoutMs), externalSignal),
-    });
+    response = await fetch(`${FIGMA_API_BASE}${apiPath}`, { headers: { "X-Figma-Token": token }, signal: combineSignals(timeoutMs, externalSignal) });
   } catch (error) {
-    if (externalSignal?.aborted) {
-      throw externalSignal.reason ?? error;
-    }
-    if (isTimeoutError(error)) {
-      throw figmaTimeoutError("Figma API request", timeoutMs, path);
-    }
+    externalSignal?.throwIfAborted();
+    if (isTimeout(error)) throw timeoutError("Figma API request", apiPath, timeoutMs);
     throw error;
   }
-
   if (!response.ok) {
-    throw new Error(describeFigmaError(response, path));
+    const retryAfter = Number(response.headers.get("Retry-After"));
+    const message = response.status === 401 || response.status === 403
+      ? `Figma access denied (${response.status}). Check the token, file permission and required scopes.`
+      : response.status === 404 ? `Figma file not found (404): ${apiPath}`
+      : response.status === 429 ? `Figma API rate limit exceeded (429).${retryAfter > 0 ? ` Retry after ${retryAfter} seconds.` : " Retry later."}`
+      : `Figma API request failed (${response.status} ${response.statusText}): ${apiPath}`;
+    await response.body?.cancel();
+    throw new FigmaApiError(message, response.status, retryAfter > 0 ? retryAfter : undefined);
   }
-
   return response;
 }
-
-/** Translates common Figma API failure statuses into actionable messages. */
-function describeFigmaError(response: Response, path: string): string {
-  const { status, statusText } = response;
-
-  if (status === 401 || status === 403) {
-    return `Figma token is invalid or expired (${status} ${statusText}). Generate a new personal access token under Figma → Settings → Security.`;
+/** Enforces the limit while streaming, including servers that omit Content-Length. */
+async function readBounded(response: Response, maxBytes: number, signal?: AbortSignal, budget?: DownloadBudget): Promise<Buffer> {
+  signal?.throwIfAborted();
+  const announced = Number(response.headers.get("Content-Length"));
+  if (announced > maxBytes || (budget && announced > budget.maxBytes - budget.usedBytes)) {
+    await response.body?.cancel();
+    throw new FigmaDownloadBudgetError();
   }
-  if (status === 404) {
-    return `Figma file not found (404) — check the Figma file URL: ${path}`;
-  }
-  if (status === 429) {
-    const retryAfter = response.headers.get("Retry-After");
-    const hint = retryAfter
-      ? ` Retry after ${retryAfter} seconds (Retry-After header).`
-      : " Wait a moment before retrying.";
-    return `Figma API rate limit exceeded (429).${hint}`;
-  }
-  return `Figma API request failed (${status} ${statusText}): ${path}`;
-}
-
-/**
- * Fetches the raw node tree for a file via GET /v1/files/:file_key.
- * Returns the untouched Figma API JSON response; normalization into
- * NormalizedNode[] happens in nodeTree.ts#flattenNodeTree.
- */
-export async function fetchFileTree(fileKey: string, token: string): Promise<unknown> {
-  const path = `/files/${fileKey}`;
-  const response = await figmaFetch(path, token, FIGMA_FILE_REQUEST_TIMEOUT_MS);
-  return readJsonResponse(response, path, FIGMA_FILE_REQUEST_TIMEOUT_MS);
-}
-
-/**
- * Fetches image fill references for a file via GET /v1/files/:file_key/images.
- * Maps imageRef → CDN URL for original bitmaps. The ingest pipeline detects
- * image content via node fills (nodeTree.ts) and screenshots via the render
- * endpoint below; this is kept for callers that need the raw source images.
- */
-export async function fetchImageRefs(
-  fileKey: string,
-  token: string,
-): Promise<Record<string, string>> {
-  const path = `/files/${fileKey}/images`;
-  const response = await figmaFetch(path, token);
-  const data = await readJsonResponse<{ images?: Record<string, string> }>(
-    response,
-    path,
-    FIGMA_REQUEST_TIMEOUT_MS,
-  );
-  return data.images ?? {};
-}
-
-/**
- * Renders and downloads PNG screenshots for the given node IDs via
- * GET /v1/images/:file_key?ids=...&format=png. The buffers are fed into
- * visionInterpreter.ts#refineClusterWithVision as separate images within a
- * single vision request.
- *
- * Figma's render endpoint returns one URL per node ID (not a composited
- * image), so this resolves to one Buffer per node ID, in the same order as
- * `nodeIds`. IDs Figma could not render (null URL — e.g. zero-size nodes)
- * are skipped; only if nothing renders at all does the call fail.
- */
-export async function fetchScreenshot(
-  fileKey: string,
-  nodeIds: string[],
-  token: string,
-  signal?: AbortSignal,
-): Promise<Buffer[]> {
-  if (nodeIds.length === 0) {
-    throw new Error("fetchScreenshot: nodeIds must not be empty");
-  }
-
-  const idsParam = nodeIds.join(",");
-  const renderPath = `/images/${fileKey}?ids=${encodeURIComponent(idsParam)}&format=png`;
-  const renderResponse = await figmaFetch(renderPath, token, FIGMA_REQUEST_TIMEOUT_MS, signal);
-  const renderData = await readJsonResponse<{
-    images?: Record<string, string | null>;
-    err?: string | null;
-  }>(renderResponse, renderPath, FIGMA_REQUEST_TIMEOUT_MS);
-
-  if (renderData.err) {
-    throw new Error(`Figma image render error: ${renderData.err}`);
-  }
-
-  const urls = nodeIds
-    .map((id) => renderData.images?.[id])
-    .filter((url): url is string => Boolean(url));
-
-  if (urls.length === 0) {
-    throw new Error(`Figma image render returned no URLs for node IDs: ${idsParam}`);
-  }
-
-  return mapWithConcurrency(urls, SCREENSHOT_DOWNLOAD_CONCURRENCY, (url) =>
-    downloadImage(url, signal),
-  );
-}
-
-/** Downloads a single rendered PNG from Figma's CDN into a Buffer. */
-async function downloadImage(url: string, externalSignal?: AbortSignal): Promise<Buffer> {
+  if (!response.body) return Buffer.alloc(0);
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let bytes = 0;
+  const cancel = () => { void reader.cancel(signal?.reason).catch(() => undefined); };
+  signal?.addEventListener("abort", cancel, { once: true });
   try {
-    const imageResponse = await fetch(url, {
-      signal: combineAbortSignals(
-        AbortSignal.timeout(FIGMA_REQUEST_TIMEOUT_MS),
-        externalSignal,
-      ),
-    });
-    if (!imageResponse.ok) {
-      throw new Error(
-        `Failed to download rendered screenshot (${imageResponse.status} ${imageResponse.statusText})`,
-      );
+    for (;;) {
+      signal?.throwIfAborted();
+      const { done, value } = await reader.read();
+      signal?.throwIfAborted();
+      if (done) break;
+      bytes += value.byteLength;
+      if (budget) budget.usedBytes += value.byteLength;
+      if (bytes > maxBytes || (budget && budget.usedBytes > budget.maxBytes)) {
+        await reader.cancel();
+        throw new FigmaDownloadBudgetError();
+      }
+      chunks.push(value);
     }
-    const arrayBuffer = await imageResponse.arrayBuffer();
-    return Buffer.from(arrayBuffer);
-  } catch (error) {
-    if (externalSignal?.aborted) {
-      throw externalSignal.reason ?? error;
-    }
-    if (isTimeoutError(error)) {
-      throw new Error(
-        `Figma screenshot download timed out after ${Math.round(FIGMA_REQUEST_TIMEOUT_MS / 1000)}s`,
-      );
-    }
+    return Buffer.concat(chunks, bytes);
+  } finally {
+    signal?.removeEventListener("abort", cancel);
+    reader.releaseLock();
+  }
+}
+async function readJson<T>(response: Response, apiPath: string, timeoutMs: number, signal?: AbortSignal): Promise<T> {
+  try { return JSON.parse((await readBounded(response, FILE_MAX_BYTES, signal)).toString("utf8")) as T; }
+  catch (error) {
+    signal?.throwIfAborted();
+    if (isTimeout(error)) throw timeoutError("Figma API response body", apiPath, timeoutMs);
     throw error;
   }
 }
-
-function isTimeoutError(error: unknown): boolean {
-  return (
-    error instanceof DOMException && error.name === "TimeoutError" ||
-    error instanceof Error && error.name === "AbortError"
-  );
+export async function fetchFileTree(fileKey: string, token: string, signal?: AbortSignal): Promise<unknown> {
+  const apiPath = `/files/${fileKey}`;
+  return readJson(await figmaFetch(apiPath, token, FIGMA_FILE_REQUEST_TIMEOUT_MS, signal), apiPath, FIGMA_FILE_REQUEST_TIMEOUT_MS, signal);
 }
-
-/** Combines the request timeout with a caller-owned phase cancellation. */
-function combineAbortSignals(timeoutSignal: AbortSignal, externalSignal?: AbortSignal): AbortSignal {
-  if (!externalSignal) {
-    return timeoutSignal;
-  }
-  if (externalSignal.aborted) {
-    return externalSignal;
-  }
-
+export async function fetchFileMetadata(fileKey: string, token: string, signal?: AbortSignal): Promise<{ version: string }> {
+  const apiPath = `/files/${fileKey}/meta`;
+  const data = await readJson<{ file?: { version?: unknown } }>(await figmaFetch(apiPath, token, FIGMA_REQUEST_TIMEOUT_MS, signal), apiPath, FIGMA_REQUEST_TIMEOUT_MS, signal);
+  if (typeof data.file?.version !== "string" || !data.file.version) throw new Error("Figma metadata did not include a file version; freshness cannot be confirmed");
+  return { version: data.file.version };
+}
+export async function fetchImageRefs(fileKey: string, token: string, signal?: AbortSignal): Promise<Record<string, string>> {
+  const apiPath = `/files/${fileKey}/images`;
+  const data = await readJson<{ meta?: { images?: Record<string, string> }; images?: Record<string, string> }>(await figmaFetch(apiPath, token, FIGMA_REQUEST_TIMEOUT_MS, signal), apiPath, FIGMA_REQUEST_TIMEOUT_MS, signal);
+  return data.meta?.images ?? data.images ?? {};
+}
+export async function fetchScreenshot(fileKey: string, nodeIds: string[], token: string, signal?: AbortSignal, budget?: DownloadBudget, version?: string): Promise<Buffer[]> {
+  if (!nodeIds.length) throw new Error("fetchScreenshot: nodeIds must not be empty");
+  const params = new URLSearchParams({ ids: nodeIds.join(","), format: "png", scale: "1" });
+  if (version) params.set("version", version);
+  const apiPath = `/images/${fileKey}?${params}`;
+  const data = await readJson<{ images?: Record<string, string | null>; err?: string }>(await figmaFetch(apiPath, token, FIGMA_REQUEST_TIMEOUT_MS, signal), apiPath, FIGMA_REQUEST_TIMEOUT_MS, signal);
+  if (data.err) throw new Error("Figma could not render the requested nodes");
+  const urls = nodeIds.map(id => data.images?.[id]).filter((url): url is string => Boolean(url));
+  if (!urls.length) throw new Error("Figma image render returned no URLs for the requested nodes");
+  if (urls.length !== nodeIds.length) throw new Error("Figma image render was incomplete; some requested nodes have no image URL");
+  let index = 0;
+  const images: Buffer[] = [];
   const controller = new AbortController();
-  const forwardAbort = (source: AbortSignal) => {
-    if (!controller.signal.aborted) {
-      controller.abort(source.reason);
-    }
-  };
-  timeoutSignal.addEventListener("abort", () => forwardAbort(timeoutSignal), { once: true });
-  externalSignal.addEventListener("abort", () => forwardAbort(externalSignal), { once: true });
-  return controller.signal;
-}
-
-async function readJsonResponse<T>(
-  response: Response,
-  path: string,
-  timeoutMs: number,
-): Promise<T> {
-  try {
-    return (await response.json()) as T;
-  } catch (error) {
-    if (isTimeoutError(error)) {
-      throw figmaTimeoutError("Figma API response body", timeoutMs, path);
-    }
-    throw error;
-  }
-}
-
-function figmaTimeoutError(operation: string, timeoutMs: number, path: string): Error {
-  if (path.startsWith("/files/") && !path.endsWith("/images")) {
-    return new Error(
-      `${operation} timed out after ${Math.round(timeoutMs / 1000)}s: ${path}. ` +
-        "Increase FIGMA_FILE_REQUEST_TIMEOUT_MS if the board is large. " +
-        "If your MCP client times out first, increase the client request timeout too.",
-    );
-  }
-
-  return new Error(
-    `${operation} timed out after ${Math.round(timeoutMs / 1000)}s: ${path}. ` +
-      'Increase FIGMA_REQUEST_TIMEOUT_MS or use ingestMode "max_speed" to avoid screenshot/vision work.',
-  );
-}
-
-async function mapWithConcurrency<T, R>(
-  values: T[],
-  concurrency: number,
-  mapper: (value: T) => Promise<R>,
-): Promise<R[]> {
-  const results: R[] = [];
-  let nextIndex = 0;
-
+  const workerSignal = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
   async function worker(): Promise<void> {
     for (;;) {
-      const index = nextIndex++;
-      if (index >= values.length) {
-        return;
+      workerSignal.throwIfAborted();
+      const current = index++;
+      if (current >= urls.length) return;
+      try {
+        const downloadSignal = combineSignals(FIGMA_REQUEST_TIMEOUT_MS, workerSignal);
+        const response = await fetch(urls[current]!, { signal: downloadSignal });
+        if (!response.ok) {
+          const retryAfter = Number(response.headers.get("Retry-After"));
+          await response.body?.cancel();
+          throw new FigmaApiError(`Screenshot download failed (${response.status})`, response.status,
+            Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter : undefined);
+        }
+        images[current] = await readBounded(response, IMAGE_MAX_BYTES, downloadSignal, budget);
+      } catch (error) {
+        workerSignal.throwIfAborted();
+        if (isTimeout(error)) throw new FigmaTimeoutError("Figma screenshot download timed out");
+        throw error;
       }
-      results[index] = await mapper(values[index]!);
     }
   }
-
-  const workers = Array.from(
-    { length: Math.min(concurrency, values.length) },
-    () => worker(),
-  );
-  await Promise.all(workers);
-  return results;
+  try { await Promise.all(Array.from({ length: Math.min(DOWNLOAD_CONCURRENCY, urls.length) }, worker)); }
+  catch (error) { controller.abort(error); throw error; }
+  return images;
+}
+function isTimeout(error: unknown): boolean { return error instanceof Error && ["TimeoutError", "AbortError"].includes(error.name); }
+function timeoutError(operation: string, apiPath: string, timeoutMs: number): FigmaTimeoutError {
+  const setting = /^\/files\/[^/?]+$/.test(apiPath) ? "FIGMA_FILE_REQUEST_TIMEOUT_MS" : "FIGMA_REQUEST_TIMEOUT_MS";
+  return new FigmaTimeoutError(`${operation} timed out after ${Math.round(timeoutMs / 1000)}s: ${apiPath}. Check the connection or increase ${setting}.`);
 }

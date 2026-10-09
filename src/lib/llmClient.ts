@@ -14,6 +14,17 @@ import { getModelConfig, getModelsForRole } from "./modelRegistry.js";
  */
 
 let client: OpenAI | undefined;
+let clientConfig: string | undefined;
+
+export class LlmRequestError extends Error {
+  constructor(message: string, readonly status?: number, readonly retryAfter?: number) { super(message); }
+}
+export class LLMConfigurationError extends Error {
+  constructor(message: string) { super(message); this.name = "LLMConfigurationError"; }
+}
+export class LlmTimeoutError extends Error {
+  constructor(message: string) { super(message); this.name = "LlmTimeoutError"; }
+}
 
 export class LlmInvalidJsonError extends Error {
   constructor(
@@ -31,6 +42,8 @@ export interface ChatJsonOptions {
   schemaName?: string;
   jsonSchema?: JsonSchema;
   onModelUsed?: (model: string) => void;
+  onUsage?: (usage: { model: string; promptTokens?: number; completionTokens?: number; totalTokens?: number }) => void;
+  onRequest?: (model: string) => void;
   /** Optional caller-owned cancellation, e.g. an ingest phase deadline. */
   signal?: AbortSignal;
 }
@@ -41,21 +54,31 @@ export type JsonSchema = Record<string, unknown>;
 function requireEnv(name: string): string {
   const value = process.env[name]?.trim();
   if (!value) {
-    throw new Error(
-      `${name} is not set — copy .env.example to .env and fill in the LLM settings.`,
+    throw new LLMConfigurationError(
+      `${name} is not set — configure it in your MCP client's environment, or in .env when starting from the project directory.`,
     );
   }
   return value;
 }
 
+/** Validate required settings before spending Figma requests on vision input. */
+export function validateLlmConfiguration(): void {
+  requireEnv("LLM_BASE_URL");
+  requireEnv("LLM_API_KEY");
+}
+
 /** Lazily constructs (and caches) the OpenAI-compatible client. */
 export function getLlmClient(): OpenAI {
-  client ??= new OpenAI({
-    baseURL: requireEnv("LLM_BASE_URL"),
-    apiKey: requireEnv("LLM_API_KEY"),
+  const baseURL = requireEnv("LLM_BASE_URL");
+  const apiKey = requireEnv("LLM_API_KEY");
+  const config = JSON.stringify([baseURL, apiKey]);
+  if (!client || clientConfig !== config) client = new OpenAI({
+    baseURL,
+    apiKey,
     timeout: LLM_REQUEST_TIMEOUT_MS,
     maxRetries: LLM_SDK_MAX_RETRIES,
   });
+  clientConfig = config;
   return client;
 }
 
@@ -139,7 +162,7 @@ export async function chatJson(
       errors.push(error);
       if (candidate !== models.at(-1) && shouldTryNextModel(error)) {
         console.error(
-          `LLM model ${candidate} failed; trying next candidate: ${errorMessage(error)}`,
+          `LLM model ${candidate} failed; trying the next explicitly configured candidate.`,
         );
         continue;
       }
@@ -167,7 +190,7 @@ async function createJsonCompletion(
   for (const responseFormat of formats) {
     try {
       const params = responseFormat ? { ...base, response_format: responseFormat } : base;
-      return await createCompletion(llm, withProviderRequirements(params), options.signal);
+      return await createCompletion(llm, withProviderRequirements(params), options);
     } catch (error) {
       if (!isUnsupportedParamError(error) || responseFormat === formats.at(-1)) {
         throw error;
@@ -175,7 +198,7 @@ async function createJsonCompletion(
     }
   }
 
-  return createCompletion(llm, base, options.signal);
+  return createCompletion(llm, base, options);
 }
 
 type ResponseFormat = NonNullable<OpenAI.ChatCompletionCreateParamsNonStreaming["response_format"]>;
@@ -226,6 +249,7 @@ function isUnsupportedParamError(error: unknown): boolean {
 }
 
 function shouldTryNextModel(error: unknown): boolean {
+  if (error instanceof LlmRequestError) return error.status === 429 || (error.status ?? 0) >= 500;
   if (error instanceof LlmInvalidJsonError || isLlmTimeout(error)) {
     return true;
   }
@@ -244,7 +268,10 @@ function shouldTryNextModel(error: unknown): boolean {
 }
 
 function normalizeLlmError(error: unknown): unknown {
-  return error instanceof OpenAI.APIError ? new Error(`LLM request failed: ${error.message}`) : error;
+  if (!(error instanceof OpenAI.APIError)) return error;
+  const retryAfter = Number(error.headers?.get("retry-after"));
+  return new LlmRequestError(`LLM request failed (HTTP ${error.status ?? "unknown"}). Check provider availability and configuration.`, error.status,
+    Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter : undefined);
 }
 
 /**
@@ -274,19 +301,23 @@ interface EmbeddedErrorEnvelope {
 async function createCompletion(
   llm: OpenAI,
   params: OpenAI.ChatCompletionCreateParamsNonStreaming,
-  signal?: AbortSignal,
+  options: ChatJsonOptions = {},
 ): Promise<OpenAI.ChatCompletion> {
+  const { signal } = options;
   for (let attempt = 0; ; attempt++) {
     throwIfAborted(signal);
     let completion: OpenAI.ChatCompletion;
     try {
+      options.onRequest?.(params.model);
       completion = await llm.chat.completions.create(params, signal ? { signal } : undefined);
+      options.onUsage?.({ model: params.model, promptTokens: completion.usage?.prompt_tokens,
+        completionTokens: completion.usage?.completion_tokens, totalTokens: completion.usage?.total_tokens });
     } catch (error) {
       if (signal?.aborted) {
         throw abortReason(signal, error);
       }
       if (isLlmTimeout(error)) {
-        throw new Error(
+        throw new LlmTimeoutError(
           `LLM request timed out after ${Math.round(LLM_REQUEST_TIMEOUT_MS / 1000)}s. ` +
             "Use a faster model, lower LLM_MAX_OUTPUT_TOKENS, or increase LLM_REQUEST_TIMEOUT_MS/client timeout.",
         );
@@ -308,7 +339,8 @@ async function createCompletion(
       await backoff(2 ** attempt * 2000, attempt, signal);
       continue;
     }
-    throw new Error(`LLM request failed: ${embedded.message ?? "response contained no choices"}`);
+    throw new LlmRequestError(`LLM request failed: ${isRateLimit(embedded) ? "rate limit exceeded (429)" : "response contained no choices"}`,
+      isRateLimit(embedded) ? 429 : Number(embedded.code) || 502);
   }
 }
 
@@ -424,7 +456,7 @@ function parseJsonReply(raw: string, model: string, finishReason?: string | null
         "Use a JSON-capable/non-reasoning model or raise the relevant output-token limit."
       : "";
   throw new LlmInvalidJsonError(
-    `LLM (${model}) did not return valid JSON.${hint} Reply started with: "${raw.slice(0, 120)}"`,
+    `LLM (${model}) did not return valid JSON.${hint}`,
     raw,
     finishReason,
   );
