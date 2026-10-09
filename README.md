@@ -492,6 +492,7 @@ version. Maintenance ratings depend on actual maintenance activity over time.
 - `npm run check` — type-check, test, build, and validate the package metadata/binary.
 - `npm run package:smoke` — install the tarball with production dependencies only and exercise its CLI, five MCP tools, context/diff results and errors.
 - `npm run package:smoke -- --long` — additionally wait through a synthetic 65-second ingest in the installed server and verify that its final response and saved sources arrive after completion progress. No real Figma or model requests are made by these fixtures.
+- `npm run package:smoke -- --artifact-dir /absolute/path/to/new-candidate` — retain the exact tested tarball after every package check succeeds and print its SHA-256 checksum. The destination must not exist; existing candidates are never overwritten. Combine with `--long` for the extended stdio check.
 - `npm run security:check` — audit runtime and development dependencies.
 - `npm run eval:retrieval` — evaluate the 20 synthetic source/change fixtures locally; no provider calls.
 - `npm run eval:retrieval -- --with-llm` — explicitly opt into model evaluation using the configured provider, with measured requests, reported token usage and source checks. Includes separate status-question cases for human review. May incur charges.
@@ -499,6 +500,9 @@ version. Maintenance ratings depend on actual maintenance activity over time.
 
 Publishing runs the same checks automatically through `prepack`; CI is configured to exercise
 that complete package path on Node 22 and 24 across Linux, macOS and Windows.
+An additional Linux job verifies the exact minimum Node version, 22.12.0. The
+release-candidate workflow retains the tested archive instead of packing a second
+one; its long stdio check and dependency audit must pass before artifact upload.
 The synthetic evaluator reports lexical retrieval and source traceability, not
 general reasoning quality or real-world workshop accuracy. Its historical
 summary-visibility comparison is a proxy, not a measured run of the old release.
