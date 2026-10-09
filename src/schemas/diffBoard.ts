@@ -25,6 +25,8 @@ export type DiffBoardInput = z.infer<typeof diffBoardInputSchema>;
 
 export const diffBoardOutputShape = {
   boardId: figmaFileKeySchema,
+  baselineSnapshotId: z.string().optional(),
+  currentSnapshotId: z.string().optional(),
   baselineCreatedAt: z.string().describe("ISO timestamp of the baseline ingest"),
   currentCreatedAt: z.string().describe("ISO timestamp of the latest ingest"),
   summaryText: z.string().describe("Paste-ready human/LLM-readable change report"),
@@ -52,6 +54,17 @@ export const diffBoardOutputShape = {
   ),
   addedConnections: z.array(z.string()),
   removedConnections: z.array(z.string()),
+  tableCellChanges: z.array(z.object({
+    tableNodeId: z.string(),
+    cellId: z.string(),
+    changeType: z.enum(["added", "removed", "modified"]),
+    previousText: z.string().optional(),
+    currentText: z.string().optional(),
+    previousRow: z.number().int().nonnegative().optional(),
+    previousColumn: z.number().int().nonnegative().optional(),
+    currentRow: z.number().int().nonnegative().optional(),
+    currentColumn: z.number().int().nonnegative().optional(),
+  })).optional(),
 };
 
 export const diffBoardOutputSchema = z.object(diffBoardOutputShape);

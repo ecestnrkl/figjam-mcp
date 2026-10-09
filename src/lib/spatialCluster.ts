@@ -1,4 +1,37 @@
+import { createHash } from "node:crypto";
 import type { NormalizedNode, Cluster } from "../types.js";
+
+/**
+ * Board-level entry point. Pages have independent coordinate systems and
+ * sections are explicit author-owned boundaries, so geometric components must
+ * never cross either. Cluster identity follows membership, not canvas order.
+ */
+export function partitionedBoardClusters(
+  nodes: NormalizedNode[],
+  options: GeometricClusterOptions = {},
+): Cluster[] {
+  const parentIds = new Set(nodes.map((node) => node.parentId).filter(Boolean));
+  const partitions = new Map<string, NormalizedNode[]>();
+  for (const node of nodes) {
+    toFootprint(node); // Validate even excluded containers/zero-size entries.
+    if (parentIds.has(node.id) || node.type === "CONNECTOR" ||
+        (node.width <= 0 && node.height <= 0)) continue;
+    const key = JSON.stringify([node.pageId ?? null, node.sectionIds?.at(-1) ?? null]);
+    const members = partitions.get(key) ?? [];
+    members.push(node);
+    partitions.set(key, members);
+  }
+  const result: Cluster[] = [];
+  const budget: SpatialWorkBudget = { comparisons: 0, gridEntries: 0 };
+  for (const [partition, members] of [...partitions].sort(([a], [b]) => a.localeCompare(b))) {
+    for (const cluster of clusterNodes(members, options, budget)) {
+      const identity = JSON.stringify([partition, [...cluster.nodeIds].sort()]);
+      cluster.id = `cluster_${createHash("sha256").update(identity).digest("hex").slice(0, 24)}`;
+      result.push(cluster);
+    }
+  }
+  return result;
+}
 
 /**
  * Maximum gap (in canvas px) between two nodes' footprints for them to be
@@ -31,6 +64,9 @@ const DEFAULT_MAX_CLUSTER_SIZE = 250;
  * memory in proportion to canvas area.
  */
 const DEFAULT_MAX_GRID_CELLS_PER_NODE = 4096;
+const DEFAULT_MAX_GRID_ENTRIES = 1_000_000;
+const DEFAULT_MAX_PAIR_COMPARISONS = 10_000_000;
+const MAX_ADAPTIVE_COMPARISONS = 1_000_000;
 
 export interface GeometricClusterOptions {
   /**
@@ -49,6 +85,10 @@ export interface GeometricClusterOptions {
   maxClusterSize?: number;
   /** Maximum spatial-hash cells occupied by one node before using the overflow path. */
   maxGridCellsPerNode?: number;
+  /** Total footprint-to-cell entries allowed for the entire board partition. */
+  maxGridEntries?: number;
+  /** Hard work bound, including pairs already connected in the union-find. */
+  maxPairComparisons?: number;
 }
 
 /** A node's spatial footprint used for distance checks. */
@@ -60,6 +100,8 @@ interface Footprint {
   radius: number;
   rotated: boolean;
 }
+
+interface SpatialWorkBudget { comparisons: number; gridEntries: number }
 
 /**
  * Groups NormalizedNode entries into spatial clusters purely by geometry
@@ -93,16 +135,30 @@ export function geometricPreCluster(
   nodes: NormalizedNode[],
   options: GeometricClusterOptions = {},
 ): Cluster[] {
+  return clusterNodes(nodes, options, { comparisons: 0, gridEntries: 0 });
+}
+
+function clusterNodes(
+  nodes: NormalizedNode[],
+  options: GeometricClusterOptions,
+  budget: SpatialWorkBudget,
+): Cluster[] {
   if (nodes.length === 0) {
     return [];
   }
 
   const footprints = nodes.map(toFootprint);
+  const maxPairComparisons = positiveIntegerOption("maxPairComparisons", options.maxPairComparisons ?? DEFAULT_MAX_PAIR_COMPARISONS);
+  const countComparison = () => {
+    if (++budget.comparisons > maxPairComparisons) {
+      throw new Error(`Board is too dense to cluster safely: exceeded ${maxPairComparisons} pair comparisons. Reduce overlapping elements or split the board into sections.`);
+    }
+  };
   const gapThreshold =
     options.gapThreshold ??
     (options.adaptiveGapThreshold === false
       ? DEFAULT_GAP_THRESHOLD
-      : adaptiveGapThreshold(footprints));
+      : adaptiveGapThreshold(footprints, countComparison));
   if (!Number.isFinite(gapThreshold) || gapThreshold < 0) {
     throw new Error("geometricPreCluster: gapThreshold must be a finite number >= 0");
   }
@@ -114,6 +170,7 @@ export function geometricPreCluster(
     "maxGridCellsPerNode",
     options.maxGridCellsPerNode ?? DEFAULT_MAX_GRID_CELLS_PER_NODE,
   );
+  const maxGridEntries = positiveIntegerOption("maxGridEntries", options.maxGridEntries ?? DEFAULT_MAX_GRID_ENTRIES);
 
   // Union-find over node indices; union any pair within the gap threshold.
   const parent = footprints.map((_, i) => i);
@@ -137,10 +194,13 @@ export function geometricPreCluster(
     footprints,
     gapThreshold,
     maxGridCellsPerNode,
+    maxGridEntries,
+    budget,
   );
   for (const cellMembers of cells.values()) {
     for (let a = 0; a < cellMembers.length; a++) {
       for (let b = a + 1; b < cellMembers.length; b++) {
+        countComparison();
         const i = cellMembers[a]!;
         const j = cellMembers[b]!;
         if (find(i) === find(j)) {
@@ -158,6 +218,7 @@ export function geometricPreCluster(
   const overflowSet = new Set(overflowIndices);
   for (const i of overflowIndices) {
     for (let j = 0; j < footprints.length; j++) {
+      countComparison();
       if (i === j || (overflowSet.has(j) && j < i) || find(i) === find(j)) {
         continue;
       }
@@ -196,17 +257,19 @@ export function geometricPreCluster(
  * neighbors (gap 0) carry no spacing signal and are ignored. Falls back to
  * DEFAULT_GAP_THRESHOLD for small boards or when there is no usable signal.
  */
-function adaptiveGapThreshold(footprints: Footprint[]): number {
+function adaptiveGapThreshold(footprints: Footprint[], countComparison: () => void): number {
   if (footprints.length < MIN_ADAPTIVE_NODES) {
     return DEFAULT_GAP_THRESHOLD;
   }
 
-  const step = Math.max(1, Math.floor(footprints.length / ADAPTIVE_SAMPLE_LIMIT));
+  const sampleLimit = Math.max(1, Math.min(ADAPTIVE_SAMPLE_LIMIT, Math.floor(MAX_ADAPTIVE_COMPARISONS / footprints.length)));
+  const step = Math.max(1, Math.ceil(footprints.length / sampleLimit));
   const nearestGaps: number[] = [];
   for (let i = 0; i < footprints.length; i += step) {
     let nearest = Infinity;
     for (let j = 0; j < footprints.length; j++) {
       if (i === j) continue;
+      countComparison();
       const gap = footprintGap(footprints[i]!, footprints[j]!);
       if (gap < nearest) nearest = gap;
     }
@@ -241,6 +304,8 @@ function buildGrid(
   footprints: Footprint[],
   gapThreshold: number,
   maxGridCellsPerNode: number,
+  maxGridEntries: number,
+  budget: SpatialWorkBudget,
 ): GridIndex {
   const cellSize = Math.max(128, gapThreshold);
   const inflate = gapThreshold / 2;
@@ -277,6 +342,11 @@ function buildGrid(
     ) {
       overflowIndices.push(index);
       return;
+    }
+
+    budget.gridEntries += cellCount;
+    if (budget.gridEntries > maxGridEntries) {
+      throw new Error(`Board geometry exceeds the ${maxGridEntries}-entry spatial index limit. Reduce oversized shapes or split the board into sections.`);
     }
 
     for (let cx = firstCellX; cx <= lastCellX; cx++) {

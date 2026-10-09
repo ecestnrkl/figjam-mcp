@@ -6,7 +6,8 @@ const { chatJsonMock, getVisionModelsMock } = vi.hoisted(() => ({
   getVisionModelsMock: vi.fn(),
 }));
 
-vi.mock("../src/lib/llmClient.js", () => ({
+vi.mock("../src/lib/llmClient.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/lib/llmClient.js")>()),
   chatJson: chatJsonMock,
   getVisionModels: getVisionModelsMock,
 }));
@@ -28,6 +29,14 @@ afterEach(() => {
 });
 
 describe("refineClusterWithVision", () => {
+  it("classifies invalid model fields without exposing the returned content", async () => {
+    const { refineClusterWithVision } = await import("../src/lib/visionInterpreter.js");
+    chatJsonMock.mockResolvedValue({ label: "", summary: "Private model output", confirmedNodeIds: [] });
+    const node = normalizedNode(0);
+    const pending = refineClusterWithVision(clusterFor([node]), [], [node]);
+    await expect(pending).rejects.toMatchObject({ name: "LlmInvalidJsonError", rawReply: "" });
+    await expect(pending).rejects.not.toThrow(/Private model output/);
+  });
   it("uses an independently configurable, moderate vision reply budget", async () => {
     vi.stubEnv("LLM_VISION_MAX_OUTPUT_TOKENS", "2304");
     const { refineClusterWithVision } = await import("../src/lib/visionInterpreter.js");
@@ -59,9 +68,9 @@ describe("refineClusterWithVision", () => {
     const result = await refineClusterWithVision(clusterFor(nodes), [], nodes);
 
     const messages = chatJsonMock.mock.calls[0]?.[1] as Array<{
-      content: Array<{ type: string; text?: string }>;
+      role: string; content: Array<{ type: string; text?: string }>;
     }>;
-    const prompt = messages[0]?.content.find((part) => part.type === "text")?.text;
+    const prompt = messages.find(message => message.role === "user")?.content.find((part) => part.type === "text")?.text;
     expect(prompt).toBeDefined();
 
     const inventory = prompt!

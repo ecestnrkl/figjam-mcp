@@ -32,8 +32,8 @@ export async function diffBoard(input: DiffBoardInput): Promise<DiffBoardOutput>
   const baselineEntry = history.at(-1 - stepsBack)!;
 
   const [baseline, current] = await Promise.all([
-    readCachedBoard(baselineEntry.cacheKey),
-    readCachedBoard(currentEntry.cacheKey),
+    readCachedBoard(baselineEntry.refinementId ?? baselineEntry.cacheKey),
+    readCachedBoard(currentEntry.refinementId ?? currentEntry.cacheKey),
   ]);
   if (!baseline || !current) {
     throw new Error(
@@ -45,6 +45,8 @@ export async function diffBoard(input: DiffBoardInput): Promise<DiffBoardOutput>
 
   return {
     boardId: input.boardId,
+    baselineSnapshotId: baseline.snapshotId,
+    currentSnapshotId: current.snapshotId,
     baselineCreatedAt: new Date(baselineEntry.createdAt).toISOString(),
     currentCreatedAt: new Date(currentEntry.createdAt).toISOString(),
     summaryText: diff.summaryText,
@@ -54,5 +56,6 @@ export async function diffBoard(input: DiffBoardInput): Promise<DiffBoardOutput>
     modifiedClusters: diff.modifiedClusters,
     addedConnections: diff.addedConnections,
     removedConnections: diff.removedConnections,
+    tableCellChanges: diff.tableCellChanges,
   };
 }

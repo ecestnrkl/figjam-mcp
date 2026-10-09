@@ -21,7 +21,7 @@ describe("shared input validation", () => {
         boardId: ` ${FILE_KEY} `,
         topic: "  user research  ",
       }),
-    ).toEqual({ boardId: FILE_KEY, topic: "user research" });
+    ).toEqual({ boardId: FILE_KEY, topic: "user research", limit: 20, maxChars: 12000 });
   });
 
   it("rejects malformed or unreasonably sized board IDs", () => {

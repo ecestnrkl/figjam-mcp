@@ -6,7 +6,7 @@
 
 MCP server that turns a FigJam board into queryable context for LLMs — read
 directly via the Figma REST API, no manual PDF-export detour. It exposes
-five tools:
+five tools over a local stdio connection (Node.js 22.12+):
 
 - **ingest_board** — reads a FigJam/Figma file, clusters its content
   spatially, verifies and labels each cluster with a vision model, extracts
@@ -25,13 +25,16 @@ five tools:
 
 Ingested boards survive server restarts: `get_board_context` and
 `answer_from_board` transparently restore the last finished ingest from
-`.cache/figjam-mcp/` when the in-memory store is empty.
+the private per-user cache when the in-memory store is empty. See
+[cache and migration](#cache-and-migration) for locations and upgrade behavior.
 
 Re-ingests are incremental: every cluster's member content is hashed, and
-clusters that didn't change simply reuse their previous label/summary — only
-new or edited clusters hit the vision model. Re-ingesting a mostly unchanged
-board is therefore almost free. Pass `forceFullIngest: true` to bypass all
-caching and reuse (e.g. after switching models).
+successful interpretations are reused when their content and configuration
+still match. New or edited clusters and eligible unfinished vision work are
+processed within the remaining budget. Model, provider and prompt changes
+automatically invalidate derived results; they do not require a forced ingest.
+Figma is still checked for changes. Use `forceFullIngest: true` only for a
+deliberate complete rebuild: it skips successful cached interpretations too.
 
 ## How it works
 
@@ -67,19 +70,56 @@ geometry with vision:
 
 ## Setup
 
+Requires **Node.js 22.12+**; CI is configured for Node 22 and 24 LTS.
+
+### Install a release candidate for normal use
+
+Install the approved local tarball into a dedicated runtime directory. This does
+not require TypeScript, a source checkout or development dependencies:
+
 ```bash
-npm install
-cp .env.example .env
+mkdir figjam-runtime
+cd figjam-runtime
+npm init -y
+npm install --omit=dev /absolute/path/to/figjam-context-mcp-0.4.0.tgz
+cp node_modules/figjam-context-mcp/.env.example .env
+node node_modules/figjam-context-mcp/dist/index.js --version
 ```
+
+Configure the keys below, then point your MCP client at the absolute installed
+entry point: `/absolute/path/to/figjam-runtime/node_modules/figjam-context-mcp/dist/index.js`.
+Set its working directory to `figjam-runtime` when using that `.env`, or supply
+the keys in the MCP client's environment. The candidate is local and unpublished;
+installing `figjam-context-mcp@0.4.0` from npm is only possible after publication.
+
+### Build from source
+
+For development and the Inspector configuration in this repository:
+
+```bash
+git clone https://github.com/ecestnrkl/figjam-mcp.git
+cd figjam-mcp
+npm ci
+cp .env.example .env
+npm run build
+```
+
+On Windows PowerShell use `Copy-Item .env.example .env`. Run commands from the
+repository directory when relying on `.env`, or pass environment variables from
+your MCP client's settings. This checkout prepares version 0.4.0; a checked-in
+version or registry metadata file does not mean it has been published to npm.
 
 Fill in `.env`:
 
 **`FIGMA_ACCESS_TOKEN`** — log in at [figma.com](https://www.figma.com), go
-to **Settings → Security → Personal access tokens**, generate a token. (Can
-also be passed per-call via the `figmaAccessToken` input on `ingest_board`.)
+to **Settings → Security → Personal access tokens**, generate a token with
+**`file_content:read`** and access to the board. Scopes do not override file
+permissions ([Figma scope documentation](https://developers.figma.com/docs/rest-api/scopes/)).
+Keep it in the environment. The optional `figmaAccessToken` tool input remains
+compatible, but client tool-call logs can expose argument values.
 
 **`LLM_BASE_URL` / `LLM_API_KEY` / `LLM_MODEL_PRESET`** — any
-OpenAI-compatible endpoint. Free options:
+OpenAI-compatible endpoint. The bundled preset targets OpenRouter. Provider options:
 
 - **OpenRouter** (default in `.env.example`): get a key at
   [openrouter.ai/keys](https://openrouter.ai/keys). The default
@@ -101,18 +141,66 @@ Optional overrides:
 - Legacy `LLM_VISION_MODEL` / `LLM_TEXT_MODEL` still work as first-candidate
   overrides.
 
+Model availability, free quotas and pricing can change. Override the role model
+lists for your provider and run `diagnose_llm_config` to verify JSON and vision
+support. The `student-free` preset is a convenience configuration, not a service
+availability or zero-cost guarantee. `max_speed` ingestion and `get_board_context`
+work without an LLM key; answers, diagnostics and vision require one.
+
+If the diagnostic reports **`LLM_API_KEY is not set`**, set the model provider's
+key in the MCP client's server environment and restart that connection. A Figma
+access token does not replace the model provider key. A project `.env` is only
+loaded automatically when the server starts from that directory. Missing model
+configuration is detected before vision screenshots are downloaded; original
+texts and table cells remain available for local search.
+
 ## Run
+
+Use the compiled entry point for a normal MCP connection:
+
+```bash
+node /absolute/path/to/figjam-mcp/dist/index.js
+```
+
+For clients accepting a standard `mcpServers` configuration, substitute your
+absolute path and configure secrets in the client's protected environment settings:
+
+```json
+{
+  "mcpServers": {
+    "figjam-context": {
+      "command": "node",
+      "args": ["/absolute/path/to/figjam-mcp/dist/index.js"],
+      "env": {
+        "FIGMA_ACCESS_TOKEN": "YOUR_FIGMA_TOKEN",
+        "LLM_BASE_URL": "https://openrouter.ai/api/v1",
+        "LLM_API_KEY": "YOUR_PROVIDER_KEY"
+      }
+    }
+  }
+}
+```
+
+On Windows, use an absolute path with forward slashes. If a GUI cannot find Node,
+set `command` to its absolute executable path. This server is local stdio only;
+it does not provide a public HTTP URL or hosted authentication service.
+
+For development with automatic restart:
 
 ```bash
 npm run dev
 ```
 
 This starts the MCP server over stdio using `tsx watch`. To try the tools
-interactively:
+interactively, run from this repository's root after installing dependencies:
 
 ```bash
-npx @modelcontextprotocol/inspector npx tsx src/index.ts
+npx @modelcontextprotocol/inspector --config inspector.config.json
 ```
+
+The Inspector v2 config starts the local source with a three-minute request
+timeout and loads `.env` from the project directory. It contains no credentials.
+Restart this Inspector connection after source or environment changes.
 
 > **Note:** don't pass plain `npm run dev` to the Inspector (or any MCP
 > client) — npm prints a lifecycle banner to stdout
@@ -123,8 +211,46 @@ npx @modelcontextprotocol/inspector npx tsx src/index.ts
 ### MCP UI timeouts
 
 `ingest_board` can be slow because it calls Figma and a vision LLM for board
-clusters. If the MCP UI shows `MCP error -32001: Request timed out`, the client
-gave up before those external calls finished.
+clusters. If the MCP UI shows `MCP error -32001: Request timed out`, a client or
+relay deadline expired before it received the final result. The server may still
+be working, or the result may already be saved while delivery is delayed.
+
+`INGEST_BOARD_VISION_BUDGET_MS` limits only the vision phase, not the complete
+ingest. Metadata checks, the full file download when needed, grouping and saving
+add to its duration; a 60-second client timeout can therefore expire before a
+valid ingest finishes. The supplied `inspector.config.json` sets
+`requestTimeout: 180000` (milliseconds) for local testing. Inspector v2 defines
+this [per-server request timeout](https://github.com/modelcontextprotocol/inspector/blob/main/docs/mcp-server-configuration.md);
+it does not increase the server's vision budget or enable additional models.
+If a request has timed out and remains unanswered, disconnect the old connection
+before retrying so another ingest does not wait behind unfinished work.
+
+Inspector 2.10.1's web relay also has independent 60-second response watchdogs
+that are not controlled by this setting. During a local Safari test, an ingest
+saved its result and reported `complete`, but its final response appeared only
+after a later context request. Increasing `requestTimeout` alone does not resolve
+that observed delivery issue. If the web UI stalls after completion, the Inspector
+CLI uses the direct stdio path and avoids that browser relay:
+
+```bash
+npx @modelcontextprotocol/inspector --cli --config inspector.config.json \
+  --server figjam-local --method tools/call --tool-name ingest_board \
+  --tool-arg figmaFileUrl=https://www.figma.com/board/YOUR_FILE_KEY \
+  ingestMode=max_quality forceFullIngest=false --format json
+```
+
+Replace `YOUR_FILE_KEY` with your file key. Keep `forceFullIngest=false` to retain
+successful interpretations while retrying unfinished work. A forced full ingest
+deliberately skips reuse and does not remove the vision phase's time budget.
+See the [local delivery investigation](https://github.com/ecestnrkl/figjam-mcp/blob/main/docs/reviews/2026-10-09-inspector-timeout.md)
+for the observed behavior and limits of the diagnosis.
+
+Restarting the server does not require re-ingestion of a successfully persisted
+v4 snapshot. Call `get_board_context` or `answer_from_board` with the same
+`boardId`; they load the snapshot from disk. A fresh Inspector session may no
+longer display earlier tool results, but that is separate from the server cache.
+Keep the same user and `FIGJAM_MCP_CACHE_DIR`. Re-ingest to refresh board content,
+retry incomplete vision, migrate v3, or recover an ingest that was not persisted.
 
 The server now keeps provider calls bounded by default:
 
@@ -132,7 +258,7 @@ The server now keeps provider calls bounded by default:
 - `FIGMA_FILE_REQUEST_TIMEOUT_MS=60000`
 - `LLM_REQUEST_TIMEOUT_MS=20000`
 - `LLM_RATE_LIMIT_RETRIES=1`
-- `LLM_ANSWER_MAX_OUTPUT_TOKENS=800`
+- `LLM_ANSWER_MAX_OUTPUT_TOKENS=2048` (includes any provider reasoning tokens)
 - `LLM_VISION_MAX_OUTPUT_TOKENS=4096`
 - `LLM_ANSWER_TOP_K=6`
 - `LLM_ANSWER_PROMPT_MAX_CHARS=24000`
@@ -144,8 +270,9 @@ The server now keeps provider calls bounded by default:
 `ingest_board` defaults to `ingestMode: "balanced"`: text-rich clusters use
 deterministic summaries, while image-heavy or low-text clusters use vision
 within the budget. `max_speed` skips vision; `max_quality` attempts vision for
-every cluster. Finished ingests are persisted under `.cache/figjam-mcp/`, keyed
-by file state, node hash, model preset, document hint, and ingest mode.
+every cluster. Finished ingests persist immutable source snapshots separately
+from provider-dependent interpretation, with identities covering file content,
+model/provider configuration, extraction/prompt version, phase hint and ingest mode.
 
 Vision candidates are prioritized by information gain rather than canvas
 position. Each request has bounded node/text inventory, and the phase returns
@@ -153,7 +280,10 @@ at its configured deadline even if a provider stalls. `answer_from_board`
 retrieves the most relevant clusters plus direct connector neighbours and keeps
 the complete prompt under its configured character budget. The in-memory cache
 uses LRU eviction; persisted history keeps 20 states and removes snapshots that
-become safely unreferenced.
+become safely unreferenced. Client cancellation reaches provider calls and ingest
+work; clients requesting progress receive phase updates. Network work is bounded
+by a 64 MiB file response, 100,000 traversed nodes, 8 MiB per image and 64 MiB
+of screenshot downloads per ingest. Oversized files fail with an actionable error.
 
 Run `diagnose_llm_config` after changing model env vars. It verifies structured
 text replies with small arithmetic challenges and checks actual image
@@ -232,6 +362,126 @@ are reused, so this is fast — and diff the snapshots:
 `compareTo` selects an older baseline (2 = two ingests back, …); the history
 keeps the last 20 distinct board states per file.
 
+### Bounded context and source citations
+
+`get_board_context` adds `snapshotId`, `evidence`, `connections`, `totalMatched`,
+`truncated`, explicit `truncation` counts and optional `nextCursor`. The existing `contextText`, `clusters` and
+`relations` remain available. Use `limit` (default 20, maximum 100) and `maxChars`
+(default 12,000, maximum 24,000) to control a page. To continue, send `nextCursor`
+back as `cursor` with the same query and budgets. Cursors bind the snapshot so a
+later ingest cannot silently change the next page. Exact `nodeIds` lookups can
+retrieve original text/table cells (up to 50 IDs); `topic` and `nodeIds` are mutually exclusive.
+The complete readable and structured result is limited to 128 KiB. A page never
+silently skips a partially returned source chunk; increase `maxChars` if one
+chunk cannot fit. Cursors also reject changed interpretation results.
+
+Without search parameters the tool returns a bounded overview across clusters.
+Topic search uses Unicode-aware local BM25 over original text, table cells and
+descriptive names, supplemented by direct graph neighbors and up to six related
+table-cell excerpts. Cells in the matching row take priority when row positions
+are available; missing positions are never inferred. Names and available table
+positions remain visible in the source metadata. A topic with no matches now
+returns **empty results**, instead of falling back to the entire board.
+
+Structured cluster summaries carry `summarySource` and `modelDerived` alongside
+the original evidence. They are derived context, not verbatim quotations;
+unknown or cache-only origins are conservatively marked as potentially model
+derived. `sourceNodeIds` identifies the source nodes displayed on that page and
+does not validate every claim in the cluster summary.
+
+```jsonc
+// tool: get_board_context
+{ "boardId": "AbC123XyZ456", "topic": "research", "limit": 10, "maxChars": 6000 }
+// Next page: same arguments, plus "cursor": "<nextCursor from previous result>".
+```
+
+`answer_from_board` retains `answer` and `citedClusters` and adds `snapshotId`
+and `citations` containing source node IDs, exact evidence quotes and Figma links.
+Original board text/table cells are distinguished from model interpretations.
+Answers are instructed to distinguish explicit status statements from open tasks
+and proposals. For example, “clarify room availability” does not establish either
+“booked” or “not booked”; the booking status remains unconfirmed by that excerpt.
+An uncertainty explanation may cite the open task without claiming its outcome.
+A quote matching a source does not guarantee the model's inference is correct;
+use the source links to verify important conclusions. The tool reports insufficient
+evidence when it cannot return a supported answer.
+
+## Cache and migration
+
+Version 0.4.0 uses cache format **v4**, stored beneath a private per-user root:
+
+| Platform | Default root |
+| --- | --- |
+| macOS | `~/Library/Caches/figjam-context-mcp` |
+| Windows | `%LOCALAPPDATA%/figjam-context-mcp` |
+| Linux | `$XDG_CACHE_HOME/figjam-context-mcp`, or `~/.cache/figjam-context-mcp` |
+
+Set `FIGJAM_MCP_CACHE_DIR` to use another dedicated private directory. Current
+files live in its `v4/` subdirectory. The cache contains board text, node metadata,
+interpretations and retained snapshots. Unix files/directories use owner-only
+permissions; Windows relies on the user's profile/directory access controls.
+The server/client must be trusted to access this user's cache.
+
+Legacy v3 files in `.cache/figjam-mcp/` are preserved. They cannot supply the
+complete provenance required by v4: **run `ingest_board` again after upgrading**.
+No silent destructive conversion runs. To remove retained data, stop the server
+and delete its dedicated cache root; cached context and history then disappear.
+When using a custom location, remove only the directory you configured for this
+server. Clearing the cache does not remove provider-side request logs.
+
+If a writer crashes and leaves `v4/.write-lock`, future writes fail closed rather
+than stealing the lock. Stop **all** instances of this server using that cache,
+then remove only `v4/.write-lock` and restart. Never remove the lock while a
+writer may still be running. Existing committed snapshots remain readable.
+
+Source snapshot IDs depend on captured board content, not the model. Refinements
+use separate immutable revisions, committed together with history through an
+atomic manifest replacement. A model change does not create a board-content diff.
+Failed vision work remains marked incomplete and is retried on a later ingest;
+successful refinements are reused. Provider `Retry-After` delays are respected.
+
+Ingest results include the actual `ingestMode` and `qualityReport.fallbackReasons`.
+These distinguish unstarted work deferred by the time budget from rendering,
+model, configuration, authorization, rate-limit, response-format, timeout and
+download-budget failures. Older generic cache reasons remain explicitly unknown.
+`qualityReport.nextRetryAt` records the earliest pending cooldown when present.
+Fix missing credentials or authorization before retrying; increasing the time
+budget cannot repair these failures. Work deferred by the time budget is given
+priority over repeatedly failing clusters on the next ingest. Switching to
+`max_speed` intentionally uses text without inheriting a failed vision status.
+
+Repeated ingestion first checks Figma's metadata version when possible. Tokens
+without metadata access fall back to a complete file read; other metadata errors
+do not claim that the cached board is current. `forceFullIngest` bypasses both
+metadata reuse and refinement reuse. Downloads are bounded to 64 MiB per file
+tree, 8 MiB per image and 64 MiB of image downloads per ingest. Extraction allows
+100,000 nodes and 1,024 nesting levels; dense geometry and metadata have additional
+work limits with actionable errors. Cancellation stops later phases and network
+work before publication; completed source publication is the operation's commit point.
+
+## Data handling
+
+The server reads Figma and never changes the board. Balanced/quality ingestion
+can send board text and screenshots to the configured LLM provider; Q&A sends
+selected evidence and your question. Synthetic diagnostic requests also use the
+provider. Costs, model availability and retention are controlled by that provider.
+For local deterministic retrieval, use `ingestMode: "max_speed"` followed by
+`get_board_context`. Review sensitive content before enabling external model calls.
+Tokens belong in environment settings, never in issue reports or committed files.
+
+## License and maintenance
+
+[MIT](LICENSE), copyright 2026 ecestnrkl. See [CONTRIBUTING.md](https://github.com/ecestnrkl/figjam-mcp/blob/main/CONTRIBUTING.md),
+[SECURITY.md](SECURITY.md) and [CHANGELOG.md](CHANGELOG.md). Dependency updates are
+proposed weekly for review. CI is configured to verify the package on Node 22/24 across Linux,
+macOS and Windows. The manual Release candidate workflow produces an artifact;
+a maintainer approves publication separately.
+
+`glama.json` identifies the maintainer, and `server.json` prepares MCP Registry
+metadata for all five capabilities. Neither file publishes the project. After a
+real release, refresh the Glama inspection so its tool schema matches the current
+version. Maintenance ratings depend on actual maintenance activity over time.
+
 ## Scripts
 
 - `npm run dev` — run the server with `tsx watch` (auto-restart on change).
@@ -240,10 +490,23 @@ keeps the last 20 distinct board states per file.
 - `npm test` — run the Vitest test suite.
 - `npm run typecheck` — type-check both source and tests without emitting files.
 - `npm run check` — type-check, test, build, and validate the package metadata/binary.
-- `npm run package:smoke` — pack the npm tarball, execute its CLI, and verify MCP initialization/tool discovery.
+- `npm run package:smoke` — install the tarball with production dependencies only and exercise its CLI, five MCP tools, context/diff results and errors.
+- `npm run package:smoke -- --long` — additionally wait through a synthetic 65-second ingest in the installed server and verify that its final response and saved sources arrive after completion progress. No real Figma or model requests are made by these fixtures.
+- `npm run security:check` — audit runtime and development dependencies.
+- `npm run eval:retrieval` — evaluate the 20 synthetic source/change fixtures locally; no provider calls.
+- `npm run eval:retrieval -- --with-llm` — explicitly opt into model evaluation using the configured provider, with measured requests, reported token usage and source checks. Includes separate status-question cases for human review. May incur charges.
+- `npm run eval:retrieval -- --with-llm --grounding-only` — call the provider only for the five status-question cases, each with a 45-second deadline; keep the retrieval/change checks offline. Provide `LLM_BASE_URL` and `LLM_API_KEY` in the environment; source users can preload their project `.env` with `node --import dotenv/config --import tsx scripts/evaluate-retrieval.mjs --with-llm --grounding-only`.
 
-Publishing runs the same checks automatically through `prepack`; CI exercises
-that complete package path on the minimum supported Node version and an LTS line.
+Publishing runs the same checks automatically through `prepack`; CI is configured to exercise
+that complete package path on Node 22 and 24 across Linux, macOS and Windows.
+The synthetic evaluator reports lexical retrieval and source traceability, not
+general reasoning quality or real-world workshop accuracy. Its historical
+summary-visibility comparison is a proxy, not a measured run of the old release.
+Missing provider usage and monetary cost are reported as unmeasured.
+The status-question cases distinguish unknown, confirmed, explicitly negative,
+proposed and conflicting statuses. Their generated answers require human review;
+the evaluator does not award a semantic pass based on a citation ID or a mocked
+provider response. Offline runs do not measure model compliance with these rules.
 
 ## Project layout
 

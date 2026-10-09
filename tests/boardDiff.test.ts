@@ -42,6 +42,49 @@ function board(nodes: NormalizedNode[], clusters: RefinedCluster[], createdAt: n
 }
 
 describe("diffBoards", () => {
+  it("counts a changed table once and identifies changed, added and removed cells", () => {
+    const baseline = board([node("table", undefined, {
+      type: "TABLE", table: { cells: [
+        { id: "budget", text: "100", row: 0, column: 1 },
+        { id: "old", text: "Old value" },
+      ] },
+    })], [cluster("table-cluster", "Budget", ["table"])], 1);
+    const current = board([node("table", undefined, {
+      type: "TABLE", table: { cells: [
+        { id: "budget", text: "999", row: 0, column: 1 },
+        { id: "new", text: "New value" },
+      ] },
+    })], [cluster("table-cluster", "Budget", ["table"])], 2);
+    const diff = diffBoards(baseline, current);
+    expect(diff.stats).toMatchObject({ editedNodes: 1, addedNodes: 0, removedNodes: 0, modifiedClusters: 1 });
+    expect(diff.tableCellChanges).toEqual([
+      expect.objectContaining({ tableNodeId: "table", cellId: "budget", changeType: "modified", previousText: "100", currentText: "999", previousRow: 0, currentColumn: 1 }),
+      expect.objectContaining({ cellId: "old", changeType: "removed", previousText: "Old value" }),
+      expect.objectContaining({ cellId: "new", changeType: "added", currentText: "New value" }),
+    ]);
+  });
+
+  it("detects visual edits and changes to connector direction", () => {
+    const nodes = [node("a", undefined, { contentFingerprint: "red" }), node("b", "Target")];
+    const clusters = [cluster("one", "Process", ["a", "b"])];
+    const baseline = board(nodes, clusters, 1);
+    baseline.connectorEdges = [{ connectorId: "edge", fromNodeId: "a", toNodeId: "b", direction: "forward" }];
+    const current = board([{ ...nodes[0]!, contentFingerprint: "green" }, nodes[1]!], clusters, 2);
+    current.connectorEdges = [{ ...baseline.connectorEdges[0]!, direction: "reverse" }];
+    const diff = diffBoards(baseline, current);
+    expect(diff.stats).toMatchObject({ editedNodes: 1, modifiedClusters: 1, addedConnections: 1, removedConnections: 1 });
+    expect(diff.addedConnections[0]).toBe('"a" ← "Target"');
+  });
+
+  it("does not treat a reversed endpoint encoding as a changed directed meaning", () => {
+    const nodes = [node("a", "A"), node("b", "B")];
+    const baseline = board(nodes, [], 1);
+    baseline.connectorEdges = [{ connectorId: "edge", fromNodeId: "a", toNodeId: "b", direction: "forward" }];
+    const current = board(nodes, [], 2);
+    current.connectorEdges = [{ connectorId: "new-edge", fromNodeId: "b", toNodeId: "a", direction: "reverse" }];
+    expect(diffBoards(baseline, current).stats).toMatchObject({ addedConnections: 0, removedConnections: 0 });
+  });
+
   it("reports no changes for identical snapshots", () => {
     const nodes = [node("a", "Hello"), node("b", "World")];
     const clusters = [cluster("cluster_1", "Greetings", ["a", "b"])];

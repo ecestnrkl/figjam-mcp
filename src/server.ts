@@ -1,22 +1,23 @@
 import { createRequire } from "node:module";
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { McpServer } from "@modelcontextprotocol/server";
+import { z } from "zod";
 import {
-  ingestBoardInputShape,
+  ingestBoardInputSchema,
   ingestBoardOutputShape,
 } from "./schemas/ingestBoard.js";
 import {
-  getBoardContextInputShape,
+  getBoardContextInputSchema,
   getBoardContextOutputShape,
 } from "./schemas/getBoardContext.js";
 import {
-  answerFromBoardInputShape,
+  answerFromBoardInputSchema,
   answerFromBoardOutputShape,
 } from "./schemas/answerFromBoard.js";
 import {
-  diagnoseLlmConfigInputShape,
+  diagnoseLlmConfigInputSchema,
   diagnoseLlmConfigOutputShape,
 } from "./schemas/diagnoseLlmConfig.js";
-import { diffBoardInputShape, diffBoardOutputShape } from "./schemas/diffBoard.js";
+import { diffBoardInputSchema, diffBoardOutputShape } from "./schemas/diffBoard.js";
 import { ingestBoard } from "./tools/ingestBoard.js";
 import { getBoardContext } from "./tools/getBoardContext.js";
 import { answerFromBoard } from "./tools/answerFromBoard.js";
@@ -84,12 +85,22 @@ export function createServer(): McpServer {
     {
       title: "Ingest FigJam Board",
       description:
-        "Reads a FigJam/Figma file, clusters its content, extracts connector-arrow relations, and caches it under a boardId for later get_board_context / answer_from_board calls. Clusters can be mapped to built-in framework phases (double_diamond, lean_canvas, retro, user_journey) or free-form customPhases.",
-      inputSchema: ingestBoardInputShape,
-      outputSchema: ingestBoardOutputShape,
+        "Read a FigJam/Figma URL with the configured Figma token and persist a local snapshot for get_board_context, answer_from_board and diff_board. Leaves the Figma file unchanged. Balanced/quality modes may send board text and screenshots to the configured LLM provider and incur charges; max_speed skips vision. Re-ingest to refresh stale content; local history is bounded. Supports framework phases or customPhases.",
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+      inputSchema: ingestBoardInputSchema,
+      outputSchema: z.object(ingestBoardOutputShape),
     },
-    async (input) => {
-      const output = await ingestBoard(input);
+    async (input, ctx) => {
+      const progressToken = ctx.mcpReq._meta?.progressToken;
+      const output = await ingestBoard(input, {
+        signal: ctx.mcpReq.signal,
+        onProgress: progressToken === undefined ? undefined : async (phase, progress, total) => {
+          await ctx.mcpReq.notify({
+            method: "notifications/progress",
+            params: { progressToken, progress, total, message: phase },
+          });
+        },
+      });
       return {
         content: [{ type: "text" as const, text: output.summary }],
         structuredContent: output,
@@ -102,9 +113,10 @@ export function createServer(): McpServer {
     {
       title: "Get Board Context",
       description:
-        "Returns a text summary plus the underlying clusters for a previously ingested board, optionally scoped to a topic.",
-      inputSchema: getBoardContextInputShape,
-      outputSchema: getBoardContextOutputShape,
+        "Read bounded text and structured clusters from a previously ingested local board snapshot. Use topic filtering and pagination for focused context; no network or LLM calls. Does not refresh Figma content. Use answer_from_board for a synthesized answer and ingest_board to refresh the snapshot.",
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      inputSchema: getBoardContextInputSchema,
+      outputSchema: z.object(getBoardContextOutputShape),
     },
     async (input) => {
       const output = await getBoardContext(input);
@@ -120,12 +132,13 @@ export function createServer(): McpServer {
     {
       title: "Answer From Board",
       description:
-        "Answers a free-form question about a previously ingested board, citing the clusters the answer was derived from.",
-      inputSchema: answerFromBoardInputShape,
-      outputSchema: answerFromBoardOutputShape,
+        "Answer a question using evidence retrieved from a previously ingested local board snapshot. Sends the question and selected board content to the configured LLM provider; calls may incur charges. Returns validated source citations or an insufficient-evidence response. Use get_board_context for deterministic context without an LLM call.",
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+      inputSchema: answerFromBoardInputSchema,
+      outputSchema: z.object(answerFromBoardOutputShape),
     },
-    async (input) => {
-      const output = await answerFromBoard(input);
+    async (input, ctx) => {
+      const output = await answerFromBoard(input, { signal: ctx.mcpReq.signal });
       return {
         content: [{ type: "text" as const, text: output.answer }],
         structuredContent: output,
@@ -138,9 +151,10 @@ export function createServer(): McpServer {
     {
       title: "Diff Board Snapshots",
       description:
-        "Compares the two most recent ingest snapshots of a board (or further back via compareTo) and reports new, removed, and modified clusters, node changes, and connector changes. Run ingest_board first to capture the current board state.",
-      inputSchema: diffBoardInputShape,
-      outputSchema: diffBoardOutputShape,
+        "Compare retained local snapshots of the same board, reporting cluster, node and connector changes. Requires at least two distinct ingests. compareTo=1 selects the previous snapshot, 2 selects two states back. No network or LLM calls; ingest_board must capture the current Figma state first.",
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      inputSchema: diffBoardInputSchema,
+      outputSchema: z.object(diffBoardOutputShape),
     },
     async (input) => {
       const output = await diffBoard(input);
@@ -156,12 +170,13 @@ export function createServer(): McpServer {
     {
       title: "Diagnose LLM Config",
       description:
-        "Checks the active free-model LLM configuration with small text and vision JSON calls.",
-      inputSchema: diagnoseLlmConfigInputShape,
-      outputSchema: diagnoseLlmConfigOutputShape,
+        "Test the configured text and vision models with three small synthetic JSON challenges. Sends synthetic text and an image to the configured provider, may incur charges, and reports semantic/schema failures. Does not read board contents. Use after changing model/provider settings.",
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+      inputSchema: diagnoseLlmConfigInputSchema,
+      outputSchema: z.object(diagnoseLlmConfigOutputShape),
     },
-    async () => {
-      const output = await diagnoseLlmConfig();
+    async (_input, ctx) => {
+      const output = await diagnoseLlmConfig({ signal: ctx.mcpReq.signal });
       return {
         content: [{ type: "text" as const, text: output.summary }],
         structuredContent: output,

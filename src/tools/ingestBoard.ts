@@ -1,9 +1,11 @@
 import type { IngestBoardInput, IngestBoardOutput } from "../schemas/ingestBoard.js";
+import { setImmediate as yieldToRequests } from "node:timers/promises";
 import { extractFigmaFileKeyFromUrl } from "../schemas/common.js";
-import type { Cluster, IngestMode, IngestQualityReport, NormalizedNode, RefinedCluster } from "../types.js";
-import { fetchFileTree, fetchScreenshot } from "../lib/figmaApi.js";
+import type { Cluster, IngestMode, IngestQualityReport, NormalizedNode, RefinedCluster, BoardData, OperationOptions } from "../types.js";
+import { fetchFileTree, fetchScreenshot, fetchFileMetadata, FigmaApiError, FigmaDownloadBudgetError, FigmaTimeoutError, INGEST_IMAGE_MAX_BYTES } from "../lib/figmaApi.js";
+import { LLMConfigurationError, LlmInvalidJsonError, LlmRequestError, LlmTimeoutError, validateLlmConfiguration } from "../lib/llmClient.js";
 import { flattenNodeTree } from "../lib/nodeTree.js";
-import { geometricPreCluster } from "../lib/spatialCluster.js";
+import { partitionedBoardClusters } from "../lib/spatialCluster.js";
 import { refineClusterWithVision } from "../lib/visionInterpreter.js";
 import { mapClustersToPhases } from "../lib/docStructureMapper.js";
 import { buildClusterRelations, extractConnectorEdges } from "../lib/connectorGraph.js";
@@ -17,9 +19,9 @@ import {
   hashNormalizedNodes,
   readCachedBoard,
   readLatestBoard,
-  writeBoardHistoryEntry,
-  writeCachedBoard,
-  writeLatestBoardPointer,
+  persistBoard,
+  buildSnapshotId,
+  getRefinementSignature,
 } from "../lib/persistentCache.js";
 
 /**
@@ -55,208 +57,219 @@ const VISION_CONCURRENCY = readIntEnv("INGEST_BOARD_VISION_CONCURRENCY", 3, 1);
  * The boardId is the Figma fileKey itself: one cache entry per file, and a
  * repeated ingest_board call simply refreshes it.
  */
-export async function ingestBoard(input: IngestBoardInput): Promise<IngestBoardOutput> {
+const ingestQueues = new Map<string, Promise<unknown>>();
+
+export async function ingestBoard(input: IngestBoardInput, options: OperationOptions = {}): Promise<IngestBoardOutput> {
+  const fileKey = parseFigmaFileKey(input.figmaFileUrl);
+  const pending = (ingestQueues.get(fileKey) ?? Promise.resolve()).catch(() => undefined)
+    .then(() => performIngest(input, options));
+  ingestQueues.set(fileKey, pending);
+  try { return await pending; }
+  finally { if (ingestQueues.get(fileKey) === pending) ingestQueues.delete(fileKey); }
+}
+
+async function performIngest(input: IngestBoardInput, options: OperationOptions): Promise<IngestBoardOutput> {
+  const { signal } = options;
+  const progress = async (phase: string, completed: number) => {
+    // Let stdio cancellation notifications run between bounded CPU phases.
+    await yieldToRequests(undefined, { signal });
+    signal?.throwIfAborted();
+    await options.onProgress?.(phase, completed, 5);
+  };
+  // Publication is the commit point. A later disconnected progress consumer
+  // must not turn an already committed operation into an apparent rollback.
+  const complete = async () => { try { await options.onProgress?.("complete", 5, 5); } catch { /* Best effort after commit. */ } };
+  await progress("fetch", 0);
   const ingestMode = input.ingestMode ?? "balanced";
   const fileKey = parseFigmaFileKey(input.figmaFileUrl);
   const token = input.figmaAccessToken?.trim() || process.env.FIGMA_ACCESS_TOKEN?.trim();
-  if (!token) {
-    throw new Error(
-      "No Figma access token — pass figmaAccessToken or set FIGMA_ACCESS_TOKEN in .env",
-    );
+  if (!token) throw new Error("No Figma access token — set FIGMA_ACCESS_TOKEN in your MCP client's environment");
+  const previousBoard = await readLatestBoard(fileKey);
+  let nodes: NormalizedNode[];
+  let figmaLastModified: string | undefined;
+  let figmaVersion: string | undefined;
+  let unchanged = false;
+  if (previousBoard?.figmaVersion && !input.forceFullIngest) {
+    try {
+      const metadata = await fetchFileMetadata(fileKey, token, signal);
+      unchanged = metadata.version === previousBoard.figmaVersion;
+    } catch (error) {
+      signal?.throwIfAborted();
+      // Older tokens may not have file_metadata:read. Other failures must not
+      // silently claim freshness or consume another request after a rate limit.
+      if (!(error instanceof FigmaApiError && [403, 404].includes(error.status))) throw error;
+    }
   }
-
-  const rawTree = await fetchFileTree(fileKey, token);
-  const nodes = flattenNodeTree(rawTree);
+  if (unchanged && previousBoard) {
+    nodes = previousBoard.nodes;
+    figmaLastModified = previousBoard.figmaLastModified;
+    figmaVersion = previousBoard.figmaVersion;
+  } else {
+    const rawTree = await fetchFileTree(fileKey, token, signal);
+    signal?.throwIfAborted();
+    nodes = flattenNodeTree(rawTree);
+    figmaLastModified = extractFigmaLastModified(rawTree);
+    const version = (rawTree as { version?: unknown } | null)?.version;
+    figmaVersion = typeof version === "string" ? version : undefined;
+  }
+  const freshnessCheckedAt = Date.now();
+  await progress("extract", 1);
   const connectorEdges = extractConnectorEdges(nodes);
-  const figmaLastModified = extractFigmaLastModified(rawTree);
   const nodeHash = hashNormalizedNodes(nodes);
-  const cacheKey = buildBoardCacheKey({
-    fileKey,
-    figmaLastModified,
-    nodeHash,
-    docStructureHint: input.docStructureHint,
-    customPhases: input.customPhases,
-    ingestMode,
-  });
-  const cached = input.forceFullIngest ? undefined : await readCachedBoard(cacheKey);
-  if (cached) {
-    const clusters = cached.clusters.map((cluster) => ({
-      ...cluster,
-      summarySource: "cache" as const,
-    }));
-    const qualityReport = buildQualityReport(clusters, clusters.length);
-    setBoard(fileKey, {
-      ...cached,
-      clusters,
-      createdAt: Date.now(),
-      qualityReport,
-    });
-    await writeLatestBoardPointer(fileKey, cacheKey);
-    await writeBoardHistoryEntry(fileKey, { cacheKey, nodeHash, createdAt: Date.now() });
-    return {
-      boardId: fileKey,
-      clusterCount: clusters.length,
-      relationCount: cached.clusterRelations?.length ?? 0,
-      qualityReport,
-      summary: buildSummary(fileKey, clusters, input.docStructureHint, qualityReport),
-    };
+  const snapshotId = buildSnapshotId(fileKey, nodeHash);
+  const refinementSignature = getRefinementSignature();
+  const cacheKey = buildBoardCacheKey({ fileKey, nodeHash, docStructureHint: input.docStructureHint,
+    customPhases: input.customPhases, ingestMode });
+  const cached = input.forceFullIngest ? undefined : await readCachedBoard(cacheKey, fileKey);
+  if (cached && !cached.clusters.some(cluster => cluster.incomplete)) {
+    const clusters = cached.clusters.map(cluster => ({ ...cluster, cacheHit: true }));
+    const board: BoardData = { ...cached, clusters, freshnessCheckedAt, figmaVersion, figmaLastModified,
+      createdAt: previousBoard?.snapshotId === snapshotId ? previousBoard.createdAt : Date.now(),
+      qualityReport: buildQualityReport(clusters, clusters.length) };
+    await progress("persist", 4);
+    await publishBoard(board, signal);
+    await complete();
+    return ingestResult(board);
   }
-
-  // Incremental reuse: index the previous ingest's refinements by cluster
-  // content hash. Clusters whose member content is unchanged skip the
-  // expensive vision step entirely and keep their label/summary.
-  const reuseIndex = input.forceFullIngest
-    ? new Map<string, RefinedCluster>()
-    : await buildReuseIndex(fileKey);
-
-  const clusters = geometricPreCluster(selectClusterableNodes(nodes));
-
-  if (clusters.length === 0) {
-    throw new Error(`Board ${fileKey} contains no content nodes to ingest`);
+  await progress("cluster", 2);
+  const reuseBoard = cached ?? previousBoard;
+  const reuseIndex = input.forceFullIngest || reuseBoard?.refinementSignature !== refinementSignature
+    ? new Map<string, RefinedCluster>() : buildReuseIndex(reuseBoard);
+  const clusters = partitionedBoardClusters(nodes);
+  if (!clusters.length) throw new Error(`Board ${fileKey} contains no content nodes to ingest`);
+  const nodesById = new Map(nodes.map(node => [node.id, node]));
+  const clusterNodesByIndex = clusters.map(cluster => cluster.nodeIds.map(id => nodesById.get(id)!).filter(Boolean));
+  const contentHashes = clusterContentHashes(clusters, nodes);
+  const clusterByNode = new Map(clusters.flatMap(cluster => cluster.nodeIds.map(id => [id, cluster.id] as const)));
+  const internalEdgesByCluster = new Map<string, typeof connectorEdges>();
+  for (const edge of connectorEdges) {
+    const clusterId = clusterByNode.get(edge.fromNodeId);
+    if (clusterId && clusterId === clusterByNode.get(edge.toNodeId)) {
+      const group = internalEdgesByCluster.get(clusterId) ?? [];
+      group.push(edge); internalEdgesByCluster.set(clusterId, group);
+    }
   }
-
-  // Refine clusters while the MCP-safe vision budget allows it; remaining
-  // clusters still get deterministic text summaries and are cached. Vision
-  // candidates run through a small concurrent worker pool (screenshot fetch
-  // + LLM call dominate latency); results land at their original index so
-  // cluster order stays stable regardless of completion order.
-  const nodesById = new Map(nodes.map((node) => [node.id, node]));
-  const clusterNodesOf = (cluster: Cluster): NormalizedNode[] =>
-    cluster.nodeIds
-      .map((id) => nodesById.get(id))
-      .filter((node): node is NormalizedNode => node !== undefined);
-  const clusterNodesByIndex = clusters.map(clusterNodesOf);
-
   const refined: RefinedCluster[] = new Array(clusters.length);
   const visionQueue: number[] = [];
   let reusedCount = 0;
   clusters.forEach((cluster, index) => {
-    const clusterNodes = clusterNodesByIndex[index]!;
-    const contentHash = hashClusterNodes(clusterNodes);
-
+    const members = clusterNodesByIndex[index]!;
+    const contentHash = contentHashes.get(cluster.id)!;
     const previous = reuseIndex.get(contentHash);
-    if (previous && canReusePrevious(previous, clusterNodes, ingestMode)) {
-      refined[index] = reuseCluster(cluster, previous, contentHash);
+    if (previous && canReusePrevious(previous, members, ingestMode)) {
+      refined[index] = { ...reuseCluster(cluster, previous, contentHash), cacheHit: true };
       reusedCount++;
-      return;
-    }
-
-    if (shouldUseVision(clusterNodes, ingestMode)) {
-      visionQueue.push(index);
-    } else {
-      refined[index] = { ...refineClusterFromText(cluster, clusterNodes), contentHash };
-    }
+    } else if (shouldUseVision(members, ingestMode)) visionQueue.push(index);
+    else refined[index] = { ...refineClusterFromText(cluster, members), contentHash };
   });
-
-  // The queue is deliberately independent of canvas order. Image-backed
-  // clusters carry information that cannot be recovered from the Figma text
-  // tree, while low-text clusters benefit more from visual interpretation
-  // than already well-described ones. Stable tie-breakers keep the result
-  // deterministic across runs.
-  const visionPriorities = clusters.map((cluster, index) =>
-    buildVisionPriority(cluster, clusterNodesByIndex[index]!),
-  );
-  visionQueue.sort((left, right) =>
-    compareVisionPriority(visionPriorities[left]!, visionPriorities[right]!),
-  );
-
-  // Start the budget when the vision phase actually begins. Slow Figma file
-  // downloads and geometric clustering must not consume time intended for
-  // screenshots and visual interpretation.
-  const visionDeadline = Date.now() + VISION_BUDGET_MS;
-
-  let fallbackCount = 0;
+  const priorities = clusters.map((cluster, index) => buildVisionPriority(cluster, clusterNodesByIndex[index]!));
+  // Previously deferred work must not sit behind the same failing requests on
+  // every ingest. Existing cache reasons are enough; no attempt log is needed.
+  const retryPriorities = clusters.map(cluster => retryPriority(reuseIndex.get(contentHashes.get(cluster.id)!)));
+  visionQueue.sort((left, right) => retryPriorities[left]! - retryPriorities[right]!
+    || compareVisionPriority(priorities[left]!, priorities[right]!));
+  await progress("interpret", 3);
+  const deadline = Date.now() + VISION_BUDGET_MS;
+  const imageBudget = { usedBytes: 0, maxBytes: INGEST_IMAGE_MAX_BYTES };
   let queueCursor = 0;
-  const visionWorker = async (): Promise<void> => {
+  let sharedFailure: { reason: VisionFallbackReason; retryAfter?: number } | undefined;
+  const currentSharedFailure = (): typeof sharedFailure => sharedFailure;
+  if (visionQueue.length) {
+    try { validateLlmConfiguration(); }
+    catch (error) { sharedFailure = { reason: classifyVisionFailure(error, "model") }; }
+  }
+  const fallback = (index: number, reason: VisionFallbackReason, retryAfter?: number) => {
+    const members = clusterNodesByIndex[index]!;
+    refined[index] = { ...refineClusterFromText(clusters[index]!, members), contentHash: contentHashes.get(clusters[index]!.id),
+      incomplete: true, fallbackReason: reason, retryAfter };
+  };
+  async function worker(): Promise<void> {
     while (queueCursor < visionQueue.length) {
+      signal?.throwIfAborted();
       const index = visionQueue[queueCursor++]!;
       const cluster = clusters[index]!;
-      const clusterNodes = clusterNodesByIndex[index]!;
-      const contentHash = hashClusterNodes(clusterNodes);
-
-      if (!hasVisionBudget(visionDeadline)) {
-        refined[index] = { ...refineClusterFromText(cluster, clusterNodes), contentHash };
-        fallbackCount++;
-        continue;
-      }
-
+      const members = clusterNodesByIndex[index]!;
+      if (sharedFailure) { fallback(index, sharedFailure.reason, sharedFailure.retryAfter); continue; }
+      if (!hasVisionBudget(deadline)) { fallback(index, "time_budget"); continue; }
+      let stage: VisionStage = "render";
       try {
-        const screenshots = await withinVisionDeadline(
-          (signal) =>
-            fetchScreenshot(fileKey, pickScreenshotNodes(clusterNodes), token, signal),
-          visionDeadline,
-        );
-
-        // Screenshot rendering/downloading can itself consume the remaining
-        // budget. Re-check before the expensive LLM request so no new model
-        // work starts once the phase deadline (or minimum useful slot) has
-        // elapsed.
-        if (!hasVisionBudget(visionDeadline)) {
-          refined[index] = { ...refineClusterFromText(cluster, clusterNodes), contentHash };
-          fallbackCount++;
-          continue;
-        }
-
-        const visionRefinement = await withinVisionDeadline(
-          (signal) => refineClusterWithVision(cluster, screenshots, clusterNodes, signal),
-          visionDeadline,
-        );
-        refined[index] = {
-          ...visionRefinement,
-          contentHash,
-        };
+        const screenshots = await withinVisionDeadline(phaseSignal => fetchScreenshot(fileKey, pickScreenshotNodes(members), token!,
+          signal ? AbortSignal.any([signal, phaseSignal]) : phaseSignal, imageBudget, figmaVersion), deadline, signal);
+        const failureAfterRendering = currentSharedFailure();
+        if (failureAfterRendering) { fallback(index, failureAfterRendering.reason, failureAfterRendering.retryAfter); continue; }
+        if (!hasVisionBudget(deadline)) { fallback(index, "time_budget"); continue; }
+        const internalEdges = internalEdgesByCluster.get(cluster.id) ?? [];
+        stage = "model";
+        refined[index] = { ...await withinVisionDeadline(phaseSignal => refineClusterWithVision(cluster, screenshots, members,
+          signal ? AbortSignal.any([signal, phaseSignal]) : phaseSignal, internalEdges), deadline, signal),
+          contentHash: contentHashes.get(cluster.id), incomplete: false };
       } catch (error) {
-        if (!(error instanceof VisionDeadlineExceededError)) {
-          console.error(
-            `Vision refinement failed for ${cluster.id}; using text fallback: ${errorMessage(error)}`,
-          );
-        }
-        refined[index] = { ...refineClusterFromText(cluster, clusterNodes), contentHash };
-        fallbackCount++;
+        signal?.throwIfAborted();
+        const reason = classifyVisionFailure(error, stage);
+        const retryDelay = error instanceof FigmaApiError || error instanceof LlmRequestError ? error.retryAfter : undefined;
+        const retryAfter = retryDelay && Number.isFinite(retryDelay) && retryDelay > 0
+          ? Date.now() + retryDelay * 1000 : reason === "rate_limit" ? Date.now() + 60_000 : undefined;
+        if (reason === "rate_limit" || reason === "config" || reason === "auth") sharedFailure = { reason, retryAfter };
+        fallback(index, reason, retryAfter);
+        console.error(`Vision refinement incomplete (${reason}); original sources are retained.`);
       }
     }
-  };
-  await Promise.all(
-    Array.from({ length: Math.min(VISION_CONCURRENCY, visionQueue.length) }, visionWorker),
-  );
-
+  }
+  await Promise.all(Array.from({ length: Math.min(VISION_CONCURRENCY, visionQueue.length) }, worker));
+  signal?.throwIfAborted();
   const finalClusters = mapClustersToPhases(refined, input.docStructureHint, input.customPhases);
-  const clusterRelations = buildClusterRelations(connectorEdges, finalClusters);
-  const qualityReport = {
-    ...buildQualityReport(finalClusters, 0),
-    fallbackCount,
-    reusedClusters: reusedCount,
+  const qualityReport = { ...buildQualityReport(finalClusters, reusedCount), reusedClusters: reusedCount };
+  const board: BoardData = {
+    schemaVersion: 4, boardId: fileKey, fileKey, docStructureHint: input.docStructureHint,
+    customPhases: input.customPhases, ingestMode, cacheKey, snapshotId, figmaLastModified, figmaVersion,
+    freshnessCheckedAt, nodeHash, refinementSignature, modelPreset: describeModelConfig().preset,
+    qualityReport, nodes, clusters: finalClusters, connectorEdges,
+    clusterRelations: buildClusterRelations(connectorEdges, finalClusters),
+    createdAt: previousBoard?.snapshotId === snapshotId ? previousBoard.createdAt : Date.now(),
   };
+  await progress("persist", 4);
+  await publishBoard(board, signal);
+  await complete();
+  return ingestResult(board);
+}
+async function publishBoard(board: BoardData, signal?: AbortSignal): Promise<void> {
+  signal?.throwIfAborted();
+  try { await persistBoard(board, signal); }
+  catch (error) {
+    signal?.throwIfAborted();
+    board.persistenceWarning = "Ingest is available in this process, but persistence failed. The previous on-disk snapshot is intact; retry ingest_board.";
+    console.error(board.persistenceWarning);
+  }
+  setBoard(board.boardId, board);
+}
+function ingestResult(board: BoardData): IngestBoardOutput {
+  const qualityReport = board.qualityReport ?? buildQualityReport(board.clusters, 0);
+  return { boardId: board.boardId, ingestMode: board.ingestMode, clusterCount: board.clusters.length,
+    relationCount: board.clusterRelations?.length ?? 0, qualityReport,
+    snapshotId: board.snapshotId, figmaVersion: board.figmaVersion,
+    freshnessCheckedAt: board.freshnessCheckedAt === undefined ? undefined : new Date(board.freshnessCheckedAt).toISOString(),
+    persistenceWarning: board.persistenceWarning,
+    summary: buildSummary(board.fileKey, board.clusters, board.docStructureHint, qualityReport, board.ingestMode) };
+}
 
-  const boardData = {
-    boardId: fileKey,
-    fileKey,
-    docStructureHint: input.docStructureHint,
-    customPhases: input.customPhases,
-    ingestMode,
-    cacheKey,
-    figmaLastModified,
-    nodeHash,
-    modelPreset: describeModelConfig().preset,
-    qualityReport,
-    nodes,
-    clusters: finalClusters,
-    connectorEdges,
-    clusterRelations,
-    createdAt: Date.now(),
-  };
-  setBoard(fileKey, boardData);
-  await writeCachedBoard(cacheKey, boardData);
-  await writeLatestBoardPointer(fileKey, cacheKey);
-  await writeBoardHistoryEntry(fileKey, { cacheKey, nodeHash, createdAt: boardData.createdAt });
+type VisionStage = "render" | "model";
+type VisionFallbackReason = "config" | "auth" | "rate_limit" | "timeout" | "invalid_reply"
+  | "download_budget" | "render_failed" | "model_failed" | "time_budget";
 
-  return {
-    boardId: fileKey,
-    clusterCount: finalClusters.length,
-    relationCount: clusterRelations.length,
-    qualityReport,
-    summary: buildSummary(fileKey, finalClusters, input.docStructureHint, qualityReport),
-  };
+function classifyVisionFailure(error: unknown, stage: VisionStage): VisionFallbackReason {
+  if (error instanceof LLMConfigurationError) return "config";
+  if (error instanceof FigmaDownloadBudgetError) return "download_budget";
+  if (error instanceof VisionDeadlineExceededError || error instanceof FigmaTimeoutError || error instanceof LlmTimeoutError) return "timeout";
+  if (error instanceof LlmInvalidJsonError) return "invalid_reply";
+  if (error instanceof FigmaApiError || error instanceof LlmRequestError) {
+    if (error.status === 429) return "rate_limit";
+    if (error.status === 401 || error.status === 403) return "auth";
+  }
+  return stage === "render" ? "render_failed" : "model_failed";
+}
+
+function retryPriority(previous?: RefinedCluster): number {
+  return previous?.incomplete && previous.fallbackReason !== "time_budget" && previous.fallbackReason !== "vision_budget" ? 1 : 0;
 }
 
 /**
@@ -272,23 +285,6 @@ export function parseFigmaFileKey(url: string): string {
     );
   }
   return fileKey;
-}
-
-/**
- * Picks the nodes that participate in geometric clustering: leaf content
- * nodes only. Containers (anything that still has children in the flattened
- * list) would double-count their members, and CONNECTOR lines deliberately
- * span between groups — their bounding boxes would merge otherwise separate
- * clusters. Zero-size entries (document/canvas) carry no position signal.
- */
-function selectClusterableNodes(nodes: NormalizedNode[]): NormalizedNode[] {
-  const parentIds = new Set(nodes.map((node) => node.parentId).filter(Boolean));
-  return nodes.filter(
-    (node) =>
-      !parentIds.has(node.id) &&
-      node.type !== "CONNECTOR" &&
-      (node.width > 0 || node.height > 0),
-  );
 }
 
 /** Chooses which cluster members to screenshot (see MAX_SCREENSHOTS_PER_CLUSTER). */
@@ -327,6 +323,7 @@ class VisionDeadlineExceededError extends Error {
 function withinVisionDeadline<T>(
   operation: (signal: AbortSignal) => Promise<T>,
   deadline: number,
+  signal?: AbortSignal,
 ): Promise<T> {
   const remainingMs = deadline - Date.now();
   if (remainingMs <= 0) {
@@ -335,8 +332,12 @@ function withinVisionDeadline<T>(
 
   return new Promise<T>((resolve, reject) => {
     const controller = new AbortController();
+    signal?.throwIfAborted();
+    const onAbort = () => { clearTimeout(timer); controller.abort(signal?.reason); reject(signal?.reason); };
+    signal?.addEventListener("abort", onAbort, { once: true });
     const timer = setTimeout(() => {
       const error = new VisionDeadlineExceededError();
+      signal?.removeEventListener("abort", onAbort);
       controller.abort(error);
       reject(error);
     }, remainingMs);
@@ -345,10 +346,12 @@ function withinVisionDeadline<T>(
       .then(
         (value) => {
           clearTimeout(timer);
+          signal?.removeEventListener("abort", onAbort);
           resolve(value);
         },
         (error: unknown) => {
           clearTimeout(timer);
+          signal?.removeEventListener("abort", onAbort);
           reject(error);
         },
       );
@@ -416,21 +419,31 @@ function shouldUseVision(clusterNodes: NormalizedNode[], ingestMode: IngestMode)
  * list (rather than trusting stored contentHash values), so boards ingested
  * by older versions work too.
  */
-async function buildReuseIndex(fileKey: string): Promise<Map<string, RefinedCluster>> {
-  const previous = await readLatestBoard(fileKey);
-  if (!previous) {
-    return new Map();
+function clusterContentHashes(clusters: Cluster[], allNodes: NormalizedNode[]): Map<string, string> {
+  const clusterByNode = new Map<string, string>();
+  const content = new Map<string, NormalizedNode[]>();
+  for (const cluster of clusters) {
+    content.set(cluster.id, []);
+    for (const id of cluster.nodeIds) clusterByNode.set(id, cluster.id);
   }
-
-  const nodesById = new Map(previous.nodes.map((node) => [node.id, node]));
-  const index = new Map<string, RefinedCluster>();
-  for (const cluster of previous.clusters) {
-    const clusterNodes = cluster.nodeIds
-      .map((id) => nodesById.get(id))
-      .filter((node): node is NormalizedNode => node !== undefined);
-    if (clusterNodes.length === cluster.nodeIds.length && clusterNodes.length > 0) {
-      index.set(hashClusterNodes(clusterNodes), cluster);
+  for (const node of allNodes) {
+    const clusterId = clusterByNode.get(node.id);
+    if (clusterId) content.get(clusterId)!.push(node);
+    else if (node.type === "CONNECTOR" && node.connectorStartId && node.connectorEndId) {
+      const owner = clusterByNode.get(node.connectorStartId);
+      if (owner && owner === clusterByNode.get(node.connectorEndId)) content.get(owner)!.push(node);
     }
+  }
+  return new Map([...content].map(([id, nodes]) => [id, hashClusterNodes(nodes)]));
+}
+
+function buildReuseIndex(previous?: BoardData): Map<string, RefinedCluster> {
+  const index = new Map<string, RefinedCluster>();
+  if (!previous) return index;
+  const hashes = clusterContentHashes(previous.clusters, previous.nodes);
+  for (const cluster of previous.clusters) {
+    const hash = hashes.get(cluster.id);
+    if (hash && cluster.nodeIds.length) index.set(hash, cluster);
   }
   return index;
 }
@@ -448,6 +461,8 @@ function canReusePrevious(
   clusterNodes: NormalizedNode[],
   ingestMode: IngestMode,
 ): boolean {
+  if (previous.incomplete) return shouldUseVision(clusterNodes, ingestMode)
+    && previous.retryAfter !== undefined && previous.retryAfter > Date.now();
   if (previous.summarySource === "vision_llm") {
     return true;
   }
@@ -469,6 +484,9 @@ function reuseCluster(
     confirmedNodeIds: confirmed.length > 0 ? confirmed : [...cluster.nodeIds],
     summarySource: previous.summarySource,
     modelId: previous.modelId,
+    incomplete: previous.incomplete,
+    fallbackReason: previous.fallbackReason,
+    retryAfter: previous.retryAfter,
     contentHash,
   };
 }
@@ -523,7 +541,7 @@ function fallbackSummary(
 
   if (imageCount > 0) {
     parts.push(
-      `It includes ${imageCount} image element${imageCount === 1 ? "" : "s"} that were not visually described because timeout-safe fallback was used.`,
+      `It includes ${imageCount} image element${imageCount === 1 ? "" : "s"} that have not been visually interpreted in this summary.`,
     );
   }
 
@@ -547,10 +565,6 @@ function truncate(text: string, maxLength: number): string {
   return text.length <= maxLength ? text : `${text.slice(0, maxLength - 3)}...`;
 }
 
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
 function buildQualityReport(
   clusters: RefinedCluster[],
   cachedClusters: number,
@@ -562,13 +576,24 @@ function buildQualityReport(
         .filter((modelId): modelId is string => Boolean(modelId)),
     ),
   ];
+  const incomplete = clusters.filter(cluster => cluster.incomplete);
+  const fallbackReasons: Record<string, number> = {};
+  for (const cluster of incomplete) {
+    const reason = cluster.fallbackReason ?? "unknown";
+    fallbackReasons[reason] = (fallbackReasons[reason] ?? 0) + 1;
+  }
+  const pendingRetryTimes = incomplete.map(cluster => cluster.retryAfter)
+    .filter((time): time is number => time !== undefined && time > Date.now() && time <= 8.64e15);
   return {
     modelsUsed,
     cachedClusters,
     deterministicClusters: clusters.filter((cluster) => cluster.summarySource === "deterministic")
       .length,
     visionClusters: clusters.filter((cluster) => cluster.summarySource === "vision_llm").length,
-    fallbackCount: 0,
+    fallbackCount: incomplete.length,
+    incompleteClusters: incomplete.length,
+    fallbackReasons,
+    ...(pendingRetryTimes.length ? { nextRetryAt: pendingRetryTimes.reduce((earliest, time) => Math.min(earliest, time), Infinity) } : {}),
   };
 }
 
@@ -577,12 +602,15 @@ function buildSummary(
   clusters: RefinedCluster[],
   docStructureHint: IngestBoardInput["docStructureHint"],
   qualityReport: IngestQualityReport,
+  ingestMode?: IngestMode,
 ): string {
   const labels = clusters.map((cluster) => `"${cluster.label}"`);
   const shownLabels = labels.slice(0, 8).join(", ") + (labels.length > 8 ? ", ..." : "");
   const fallbackNote =
     qualityReport.fallbackCount > 0
-      ? ` ${qualityReport.fallbackCount} cluster${qualityReport.fallbackCount === 1 ? "" : "s"} used text fallback because vision processing timed out, failed, or exceeded the MCP-safe budget.`
+      ? ` Visual interpretation is incomplete for ${qualityReport.fallbackCount} cluster${qualityReport.fallbackCount === 1 ? "" : "s"}: ${describeFallbackReasons(qualityReport.fallbackReasons)}.`
+        + ` Original extracted texts, tables and node references remain available for search.`
+        + describeNextSteps(qualityReport)
       : "";
   const cacheNote =
     qualityReport.cachedClusters > 0 ? ` Loaded ${qualityReport.cachedClusters} clusters from cache.` : "";
@@ -592,6 +620,30 @@ function buildSummary(
       : "";
   return (
     `Ingested board ${fileKey}: ${clusters.length} clusters - ${shownLabels} ` +
-    `(docStructureHint=${docStructureHint}).${cacheNote}${reuseNote}${fallbackNote}`
+    `(docStructureHint=${docStructureHint}${ingestMode ? `, ingestMode=${ingestMode}` : ""}).${cacheNote}${reuseNote}`
+    + ` ${qualityReport.visionClusters} visually interpreted; ${qualityReport.deterministicClusters} use extracted text.${fallbackNote}`
   );
+}
+
+function describeFallbackReasons(reasons?: Record<string, number>): string {
+  const labels: Record<string, string> = {
+    time_budget: "deferred by the vision time budget", vision_budget: "deferred by the previous vision budget",
+    timeout: "requests timed out", config: "blocked by missing or invalid model configuration",
+    auth: "blocked by Figma or model access permissions", rate_limit: "blocked by a provider rate limit",
+    invalid_reply: "model replies were unusable", download_budget: "exceeded image download limits",
+    render_failed: "Figma rendering or image download failed", model_failed: "model requests failed",
+    vision_failed: "older cached failures (cause not recorded)", unknown: "failures with no recorded cause",
+  };
+  return Object.entries(reasons ?? {}).filter(([, count]) => count > 0)
+    .map(([reason, count]) => `${count} ${labels[reason] ?? labels.unknown}`).join("; ") || "cause not recorded";
+}
+
+function describeNextSteps(report: IngestQualityReport): string {
+  const reasons = report.fallbackReasons ?? {};
+  const instructions: string[] = [];
+  if (reasons.config) instructions.push("Set LLM_API_KEY and LLM_BASE_URL in the MCP client environment, then reconnect. diagnose_llm_config can test the configured model provider.");
+  if (reasons.auth) instructions.push("Check Figma and model-provider access permissions; diagnose_llm_config can test the configured model provider.");
+  if (report.nextRetryAt) instructions.push(`Retry after ${new Date(report.nextRetryAt).toISOString()} for the pending provider cooldown.`);
+  instructions.push("Re-ingest without forceFullIngest to retain successful interpretations and retry pending work.");
+  return ` ${instructions.join(" ")}`;
 }

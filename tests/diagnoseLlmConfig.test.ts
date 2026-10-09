@@ -26,6 +26,24 @@ beforeEach(() => {
 });
 
 describe("diagnoseLlmConfig", () => {
+  it("does not start diagnostics after cancellation", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    await expect(diagnoseLlmConfig({ signal: controller.signal })).rejects.toBeDefined();
+    expect(chatJsonMock).not.toHaveBeenCalled();
+  });
+
+  it("stops after an in-flight provider call is cancelled", async () => {
+    const controller = new AbortController();
+    chatJsonMock.mockImplementationOnce(async (_models, _messages, options) => {
+      expect(options.signal).toBe(controller.signal);
+      controller.abort();
+      throw controller.signal.reason;
+    });
+    await expect(diagnoseLlmConfig({ signal: controller.signal })).rejects.toBeDefined();
+    expect(chatJsonMock).toHaveBeenCalledTimes(1);
+  });
+
   it("reports ok when text and vision checks pass", async () => {
     chatJsonMock
       .mockResolvedValueOnce({ result: 42 })

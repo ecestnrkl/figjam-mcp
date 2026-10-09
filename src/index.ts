@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import "dotenv/config";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { serveStdio } from "@modelcontextprotocol/server/stdio";
 import { createServer, packageMetadata } from "./server.js";
 
 async function main(): Promise<void> {
@@ -10,9 +10,10 @@ async function main(): Promise<void> {
     return;
   }
 
-  const server = createServer();
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
+  const handle = serveStdio(() => createServer());
+  const shutdown = () => { void handle.close(); };
+  process.once("SIGINT", shutdown);
+  process.once("SIGTERM", shutdown);
   console.error(`${packageMetadata.name} running on stdio`);
 }
 

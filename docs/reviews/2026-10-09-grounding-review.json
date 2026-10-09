@@ -1,0 +1,51 @@
+{
+  "date": "2026-10-09",
+  "reviewMethod": "Two independent assistant reviews against the original synthetic sources and expected behavior; not an automated semantic assertion or a human release approval.",
+  "initialRun": {
+    "report": "2026-10-09-grounding-evaluation.json",
+    "fullyMetExpectations": 2,
+    "totalCases": 5,
+    "note": "Confirmation and explicit denial passed. The other cases were safe but incomplete: a source-excerpt fallback, generic abstention, and missing conflict explanation."
+  },
+  "refinedRun": {
+    "report": "2026-10-09-grounding-evaluation-refined.json",
+    "coreStatusDecisionsCorrect": 5,
+    "fullyMetExpectations": 4,
+    "partiallyMetExpectations": 1,
+    "totalCases": 5,
+    "validCitations": 6,
+    "totalCitations": 6,
+    "cases": [
+      {
+        "expectedStatus": "unknown",
+        "sourceKind": "open task",
+        "assessment": "met",
+        "reason": "Explains that the open availability task does not establish a binding booking; cites its original source."
+      },
+      {
+        "expectedStatus": "confirmed",
+        "sourceKind": "explicit booking",
+        "assessment": "met",
+        "reason": "Confirms the binding Friday booking recorded in the source without inventing additional facts."
+      },
+      {
+        "expectedStatus": "denied",
+        "sourceKind": "explicit absence of booking",
+        "assessment": "met",
+        "reason": "Correctly preserves the explicit negative statement and its source."
+      },
+      {
+        "expectedStatus": "unknown",
+        "sourceKind": "proposal",
+        "assessment": "partial",
+        "reason": "Correctly leaves the status unknown and cites the proposal, but the prose does not explicitly explain that the record is only a proposal."
+      },
+      {
+        "expectedStatus": "conflicting",
+        "sourceKind": "contradictory records",
+        "assessment": "met",
+        "reason": "Explains both contradictory records, cites both and does not choose a current truth. Technical evidence IDs in the prose reduce readability."
+      }
+    ]
+  }
+}

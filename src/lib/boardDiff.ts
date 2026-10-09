@@ -1,6 +1,7 @@
 import type { BoardData, ConnectorEdge, NormalizedNode, RefinedCluster } from "../types.js";
 import { STRUCTURAL_TYPES } from "./nodeTree.js";
 import { hashClusterNodes } from "./persistentCache.js";
+import { connectorArrow } from "./connectorGraph.js";
 
 /**
  * Compares two ingest snapshots of the same board — "what changed since the
@@ -46,6 +47,19 @@ export interface BoardDiffResult {
   addedConnections: string[];
   removedConnections: string[];
   summaryText: string;
+  tableCellChanges: TableCellChange[];
+}
+
+export interface TableCellChange {
+  tableNodeId: string;
+  cellId: string;
+  changeType: "added" | "removed" | "modified";
+  previousText?: string;
+  currentText?: string;
+  previousRow?: number;
+  previousColumn?: number;
+  currentRow?: number;
+  currentColumn?: number;
 }
 
 /** Minimum member overlap (relative to the smaller cluster) to treat two clusters as the same. */
@@ -67,6 +81,7 @@ export function diffBoards(baseline: BoardData, current: BoardData): BoardDiffRe
 
   const clusterDiff = diffClusters(baseline, current);
   const connectionDiff = diffConnections(baseline, current);
+  const tableCellChanges = diffTableCells(baselineNodes, currentNodes);
 
   const stats: BoardDiffStats = {
     addedNodes: addedNodeIds.length,
@@ -88,6 +103,7 @@ export function diffBoards(baseline: BoardData, current: BoardData): BoardDiffRe
     addedConnections: connectionDiff.added,
     removedConnections: connectionDiff.removed,
     summaryText: buildSummaryText(baseline, current, stats, clusterDiff, connectionDiff),
+    tableCellChanges,
   };
 }
 
@@ -103,8 +119,41 @@ function contentNodesById(board: BoardData): Map<string, NormalizedNode> {
 }
 
 function nodeContentChanged(before: NormalizedNode, after: NormalizedNode): boolean {
-  return (before.text?.trim() ?? "") !== (after.text?.trim() ?? "") ||
-    before.imageRef !== after.imageRef;
+  return (before.text ?? "") !== (after.text ?? "") ||
+    before.imageRef !== after.imageRef || before.name !== after.name || before.type !== after.type ||
+    before.rotation !== after.rotation ||
+    JSON.stringify(before.table?.cells) !== JSON.stringify(after.table?.cells) ||
+    (before.contentFingerprint !== undefined && after.contentFingerprint !== undefined &&
+      before.contentFingerprint !== after.contentFingerprint);
+}
+
+function diffTableCells(
+  beforeNodes: Map<string, NormalizedNode>,
+  afterNodes: Map<string, NormalizedNode>,
+): TableCellChange[] {
+  const changes: TableCellChange[] = [];
+  const tableIds = new Set([
+    ...[...beforeNodes.values()].filter((node) => node.table).map((node) => node.id),
+    ...[...afterNodes.values()].filter((node) => node.table).map((node) => node.id),
+  ]);
+  for (const tableNodeId of tableIds) {
+    const before = new Map((beforeNodes.get(tableNodeId)?.table?.cells ?? []).map((cell) => [cell.id, cell]));
+    const after = new Map((afterNodes.get(tableNodeId)?.table?.cells ?? []).map((cell) => [cell.id, cell]));
+    for (const cellId of new Set([...before.keys(), ...after.keys()])) {
+      const previous = before.get(cellId);
+      const current = after.get(cellId);
+      if (previous && current && previous.text === current.text && previous.row === current.row &&
+          previous.column === current.column) continue;
+      changes.push({
+        tableNodeId, cellId,
+        changeType: !previous ? "added" : !current ? "removed" : "modified",
+        previousText: previous?.text, currentText: current?.text,
+        previousRow: previous?.row, previousColumn: previous?.column,
+        currentRow: current?.row, currentColumn: current?.column,
+      });
+    }
+  }
+  return changes;
 }
 
 interface ClusterDiffInternal {
@@ -126,13 +175,20 @@ function diffClusters(baseline: BoardData, current: BoardData): ClusterDiffInter
   const currentNodesById = new Map(current.nodes.map((node) => [node.id, node]));
 
   const pairs: Array<{ prev: RefinedCluster; cur: RefinedCluster; overlap: number }> = [];
+  const previousByMember = new Map<string, RefinedCluster[]>();
   for (const prev of baseline.clusters) {
-    const prevIds = new Set(prev.nodeIds);
-    for (const cur of current.clusters) {
-      const overlap = cur.nodeIds.filter((id) => prevIds.has(id)).length;
-      if (overlap > 0 && overlap / Math.min(prevIds.size, cur.nodeIds.length) >= CLUSTER_MATCH_THRESHOLD) {
-        pairs.push({ prev, cur, overlap });
-      }
+    for (const id of new Set(prev.nodeIds)) {
+      const owners = previousByMember.get(id) ?? [];
+      owners.push(prev); previousByMember.set(id, owners);
+    }
+  }
+  for (const cur of current.clusters) {
+    const overlaps = new Map<RefinedCluster, number>();
+    for (const id of cur.nodeIds) {
+      for (const prev of previousByMember.get(id) ?? []) overlaps.set(prev, (overlaps.get(prev) ?? 0) + 1);
+    }
+    for (const [prev, overlap] of overlaps) {
+      if (overlap / Math.min(prev.nodeIds.length, cur.nodeIds.length) >= CLUSTER_MATCH_THRESHOLD) pairs.push({ prev, cur, overlap });
     }
   }
   pairs.sort((a, b) => b.overlap - a.overlap);
@@ -211,16 +267,18 @@ function diffConnections(baseline: BoardData, current: BoardData): ConnectionDif
   const keys = new Set([...baselineEdges.keys(), ...currentEdges.keys()]);
   const added: string[] = [];
   const removed: string[] = [];
+  const baselineLabel = edgeFormatter(baseline);
+  const currentLabel = edgeFormatter(current);
 
   for (const key of keys) {
     const before = baselineEdges.get(key) ?? [];
     const after = currentEdges.get(key) ?? [];
 
     for (let index = before.length; index < after.length; index++) {
-      added.push(formatEdge(after[index]!, current));
+      added.push(currentLabel(after[index]!));
     }
     for (let index = after.length; index < before.length; index++) {
-      removed.push(formatEdge(before[index]!, baseline));
+      removed.push(baselineLabel(before[index]!));
     }
   }
 
@@ -230,7 +288,13 @@ function diffConnections(baseline: BoardData, current: BoardData): ConnectionDif
 function groupEdgesByMeaning(edges: ConnectorEdge[]): Map<string, ConnectorEdge[]> {
   const grouped = new Map<string, ConnectorEdge[]>();
   for (const edge of edges) {
-    const key = JSON.stringify([edge.fromNodeId, edge.toNodeId, edge.label ?? ""]);
+    const direction = edge.direction ?? "forward";
+    const endpoints = direction === "reverse"
+      ? [edge.toNodeId, edge.fromNodeId]
+      : direction === "bidirectional" || direction === "undirected"
+        ? [edge.fromNodeId, edge.toNodeId].sort()
+        : [edge.fromNodeId, edge.toNodeId];
+    const key = JSON.stringify([endpoints, direction === "reverse" ? "forward" : direction, edge.label ?? ""]);
     const matches = grouped.get(key) ?? [];
     matches.push(edge);
     grouped.set(key, matches);
@@ -239,20 +303,20 @@ function groupEdgesByMeaning(edges: ConnectorEdge[]): Map<string, ConnectorEdge[
 }
 
 /** Renders one edge with the owning clusters' labels (from its own snapshot). */
-function formatEdge(edge: ConnectorEdge, board: BoardData): string {
-  const from = endpointLabel(edge.fromNodeId, board);
-  const to = endpointLabel(edge.toNodeId, board);
-  return `"${from}" → "${to}"${edge.label ? ` — "${edge.label}"` : ""}`;
-}
-
-function endpointLabel(nodeId: string, board: BoardData): string {
-  const cluster = board.clusters.find((c) => c.nodeIds.includes(nodeId));
-  if (cluster) {
-    return cluster.label;
-  }
-  const node = board.nodes.find((n) => n.id === nodeId);
-  const text = node?.text?.trim();
-  return text ? truncate(text, 40) : node?.name ?? nodeId;
+function edgeFormatter(board: BoardData): (edge: ConnectorEdge) => string {
+  const owner = new Map<string, RefinedCluster>();
+  const nodes = new Map(board.nodes.map(node => [node.id, node]));
+  for (const cluster of board.clusters) for (const id of cluster.nodeIds) owner.set(id, cluster);
+  return edge => {
+    const internal = owner.has(edge.fromNodeId) && owner.get(edge.fromNodeId) === owner.get(edge.toNodeId);
+    const label = (id: string) => {
+      const cluster = owner.get(id);
+      if (cluster && !internal) return cluster.label;
+      const node = nodes.get(id); const text = node?.text?.trim();
+      return text ? truncate(text, 40) : node?.name ?? id;
+    };
+    return `"${label(edge.fromNodeId)}" ${connectorArrow(edge)} "${label(edge.toNodeId)}"${edge.label ? ` — "${edge.label}"` : ""}`;
+  };
 }
 
 function buildSummaryText(

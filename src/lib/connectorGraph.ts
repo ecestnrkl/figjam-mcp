@@ -24,14 +24,48 @@ export function extractConnectorEdges(nodes: NormalizedNode[]): ConnectorEdge[] 
       fromNodeId: node.connectorStartId!,
       toNodeId: node.connectorEndId!,
       label: node.text?.trim() || undefined,
+      direction: connectorDirection(node),
     }));
+}
+
+function connectorDirection(node: NormalizedNode): NonNullable<ConnectorEdge["direction"]> {
+  // Historical fixtures/caches lack cap metadata and used start → end.
+  if (node.connectorStartArrowhead === undefined && node.connectorEndArrowhead === undefined) {
+    return "forward";
+  }
+  const hasArrow = (cap: string | undefined) => Boolean(cap?.startsWith("ARROW_") || cap === "TRIANGLE_FILLED");
+  const start = hasArrow(node.connectorStartArrowhead);
+  const end = hasArrow(node.connectorEndArrowhead);
+  return start && end ? "bidirectional" : start ? "reverse" : end ? "forward" : "undirected";
+}
+
+export function connectorArrow(edge: ConnectorEdge): string {
+  return edge.direction === "reverse" ? "←" : edge.direction === "bidirectional" ? "↔" :
+    edge.direction === "undirected" ? "—" : "→";
+}
+
+/** Node-level evidence retains internal arrows that the cluster overview omits. */
+export function formatNodeConnections(
+  edges: ConnectorEdge[],
+  nodes: NormalizedNode[],
+  selectedNodeIds?: ReadonlySet<string>,
+): string[] {
+  const byId = new Map(nodes.map((node) => [node.id, node]));
+  const label = (id: string) => {
+    const node = byId.get(id);
+    const text = node?.text?.trim() || node?.name || id;
+    return `${id} (${text.length > 120 ? `${text.slice(0, 119)}…` : text})`;
+  };
+  return edges
+    .filter((edge) => !selectedNodeIds || selectedNodeIds.has(edge.fromNodeId) || selectedNodeIds.has(edge.toNodeId))
+    .map((edge) => `${label(edge.fromNodeId)} ${connectorArrow(edge)} ${label(edge.toNodeId)}${edge.label ? ` — ${edge.label}` : ""}`);
 }
 
 /**
  * Aggregates node-level connector edges into directed cluster-to-cluster
- * relations. Edges within one cluster are dropped (the cluster summary
- * already covers internal structure); parallel edges between the same
- * cluster pair are merged, collecting their unique labels. Sorted by
+ * relations. Internal edges remain available in the node graph and evidence;
+ * this overview only renders connections between clusters. Parallel edges
+ * between the same cluster pair are merged, collecting their unique labels. Sorted by
  * edgeCount so the strongest relations come first.
  */
 export function buildClusterRelations(
@@ -47,24 +81,32 @@ export function buildClusterRelations(
 
   const relations = new Map<string, ClusterRelation>();
   for (const edge of edges) {
-    const from = clusterOfNode.get(edge.fromNodeId);
-    const to = clusterOfNode.get(edge.toNodeId);
-    if (!from || !to || from === to) {
-      continue;
-    }
+    if (edge.direction === "undirected") continue;
+    const pairs: Array<[string, string]> = edge.direction === "reverse"
+      ? [[edge.toNodeId, edge.fromNodeId]]
+      : edge.direction === "bidirectional"
+        ? [[edge.fromNodeId, edge.toNodeId], [edge.toNodeId, edge.fromNodeId]]
+        : [[edge.fromNodeId, edge.toNodeId]];
+    for (const [fromId, toId] of pairs) {
+      const from = clusterOfNode.get(fromId);
+      const to = clusterOfNode.get(toId);
+      if (!from || !to || from === to) {
+        continue;
+      }
 
-    const key = `${from}->${to}`;
-    const relation = relations.get(key) ?? {
-      fromClusterId: from,
-      toClusterId: to,
-      labels: [],
-      edgeCount: 0,
-    };
-    relation.edgeCount++;
-    if (edge.label && !relation.labels.includes(edge.label)) {
-      relation.labels.push(edge.label);
+      const key = `${from}->${to}`;
+      const relation = relations.get(key) ?? {
+        fromClusterId: from,
+        toClusterId: to,
+        labels: [],
+        edgeCount: 0,
+      };
+      relation.edgeCount++;
+      if (edge.label && !relation.labels.includes(edge.label)) {
+        relation.labels.push(edge.label);
+      }
+      relations.set(key, relation);
     }
-    relations.set(key, relation);
   }
 
   return [...relations.values()].sort((a, b) => b.edgeCount - a.edgeCount);

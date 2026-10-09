@@ -3,6 +3,7 @@ import {
   buildClusterRelations,
   extractConnectorEdges,
   formatClusterRelations,
+  formatNodeConnections,
 } from "../src/lib/connectorGraph.js";
 import type { Cluster, NormalizedNode, RefinedCluster } from "../src/types.js";
 
@@ -49,13 +50,33 @@ describe("extractConnectorEdges", () => {
     ];
 
     expect(extractConnectorEdges(nodes)).toEqual([
-      { connectorId: "c1", fromNodeId: "a", toNodeId: "b", label: "leads to" },
+      { connectorId: "c1", fromNodeId: "a", toNodeId: "b", label: "leads to", direction: "forward" },
     ]);
   });
 
   it("omits empty labels", () => {
     const edges = extractConnectorEdges([connector("c1", "a", "b", "   ")]);
     expect(edges[0]?.label).toBeUndefined();
+  });
+
+  it("preserves actual arrow direction and internal node evidence", () => {
+    const nodes = [
+      node("a", { text: "First" }), node("b", { text: "Second" }),
+      { ...connector("reverse", "a", "b", "must precede"), connectorStartArrowhead: "ARROW_LINES", connectorEndArrowhead: "NONE" },
+      { ...connector("both", "a", "b"), connectorStartArrowhead: "ARROW_LINES", connectorEndArrowhead: "ARROW_EQUILATERAL" },
+      { ...connector("plain", "a", "b"), connectorStartArrowhead: "NONE", connectorEndArrowhead: "NONE" },
+    ];
+    const edges = extractConnectorEdges(nodes);
+    expect(edges.map((edge) => edge.direction)).toEqual(["reverse", "bidirectional", "undirected"]);
+    expect(buildClusterRelations(edges, [cluster("one", ["a", "b"])])).toEqual([]);
+    expect(formatNodeConnections(edges, nodes, new Set(["a"]))).toEqual([
+      "a (First) ← b (Second) — must precede", "a (First) ↔ b (Second)", "a (First) — b (Second)",
+    ]);
+    const intercluster = buildClusterRelations(edges, [cluster("one", ["a"]), cluster("two", ["b"])]);
+    expect(intercluster).toEqual([
+      { fromClusterId: "two", toClusterId: "one", labels: ["must precede"], edgeCount: 2 },
+      { fromClusterId: "one", toClusterId: "two", labels: [], edgeCount: 1 },
+    ]);
   });
 });
 
