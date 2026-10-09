@@ -124,6 +124,7 @@ async function performIngest(input: IngestBoardInput, options: OperationOptions)
   if (cached && !cached.clusters.some(cluster => cluster.incomplete)) {
     const clusters = cached.clusters.map(cluster => ({ ...cluster, cacheHit: true }));
     const board: BoardData = { ...cached, clusters, freshnessCheckedAt, figmaVersion, figmaLastModified,
+      createdAt: previousBoard?.snapshotId === snapshotId ? previousBoard.createdAt : Date.now(),
       qualityReport: buildQualityReport(clusters, clusters.length) };
     await progress("persist", 4);
     await publishBoard(board, signal);

@@ -377,9 +377,17 @@ chunk cannot fit. Cursors also reject changed interpretation results.
 
 Without search parameters the tool returns a bounded overview across clusters.
 Topic search uses Unicode-aware local BM25 over original text, table cells and
-descriptive names, supplemented by direct graph neighbors. Names used to find
-evidence remain visible in the source metadata. A topic with no matches now
+descriptive names, supplemented by direct graph neighbors and up to six related
+table-cell excerpts. Cells in the matching row take priority when row positions
+are available; missing positions are never inferred. Names and available table
+positions remain visible in the source metadata. A topic with no matches now
 returns **empty results**, instead of falling back to the entire board.
+
+Structured cluster summaries carry `summarySource` and `modelDerived` alongside
+the original evidence. They are derived context, not verbatim quotations;
+unknown or cache-only origins are conservatively marked as potentially model
+derived. `sourceNodeIds` identifies the source nodes displayed on that page and
+does not validate every claim in the cluster summary.
 
 ```jsonc
 // tool: get_board_context

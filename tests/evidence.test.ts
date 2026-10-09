@@ -38,6 +38,46 @@ describe("source evidence", () => {
     expect(retrieveEvidence(board, { nodeIds: ["cell:2"] }).evidence).toHaveLength(1);
   });
 
+  it("retrieves separate table values with a matching label and prioritizes its row", () => {
+    const board = evidenceBoard("TableLabel123", [{ ...textNode("10:1", ""), name: "Table 1", type: "TABLE", table: { cells: [
+      { id: "cell:other", text: "Unrelated value", row: 0, column: 1 },
+      { id: "cell:label", text: "Budget", row: 1, column: 0 },
+      { id: "cell:value", text: "999", row: 1, column: 1 },
+    ] } }]);
+    const result = retrieveEvidence(board, { query: "Wie hoch ist das Budget?", includeNeighbors: true, tableNeighborLimit: 1 });
+    expect(result.evidence.map((item) => item.nodeId)).toEqual(["cell:label", "cell:value"]);
+    expect(result.totalMatched).toBe(1);
+    expect(formatEvidence(result.evidence[1]!)).toContain("Table node: 10:1; Row index: 1; Column index: 1");
+    expect(formatEvidence(result.evidence[1]!)).toContain("\n999");
+    expect(retrieveEvidence(board, { query: "quantum reactor", includeNeighbors: true }).evidence).toEqual([]);
+    expect(retrieveEvidence(board, { nodeIds: ["cell:label"], includeNeighbors: true }).evidence.map((item) => item.nodeId)).toEqual(["cell:label"]);
+  });
+
+  it("bounds table expansion globally and shares it across matching rows", () => {
+    const board = evidenceBoard("TableBound123", [{ ...textNode("10:1", ""), type: "TABLE", table: { cells:
+      Array.from({ length: 3 }, (_, row) => [
+        { id: `label:${row}`, text: "Budget", row, column: 0 },
+        ...Array.from({ length: 10 }, (_, column) => ({ id: `value:${row}:${column}`, text: String(row * 100 + column), row, column: column + 1 })),
+      ]).flat(),
+    } }]);
+    const result = retrieveEvidence(board, { query: "Budget", includeNeighbors: true });
+    expect(result.evidence).toHaveLength(3 + 6);
+    expect(new Set(result.evidence.map((item) => item.evidenceId)).size).toBe(9);
+    expect(result.evidence.slice(3).map((item) => item.row)).toEqual([0, 1, 2, 0, 1, 2]);
+    expect(result.evidence.slice(3).every((item) => item.renderNodeId === "10:1")).toBe(true);
+  });
+
+  it("adds bounded table context without inventing missing cell coordinates", () => {
+    const board = evidenceBoard("TableNoPosition123", [{ ...textNode("10:1", ""), type: "TABLE", table: { cells: [
+      { id: "cell:label", text: "Budget" }, { id: "cell:value", text: "999" },
+    ] } }]);
+    const result = retrieveEvidence(board, { query: "Budget", includeNeighbors: true });
+    expect(result.evidence.map((item) => item.text)).toEqual(["Budget", "999"]);
+    expect(result.evidence.every((item) => item.row === undefined && item.column === undefined)).toBe(true);
+    expect(formatEvidence(result.evidence[1]!)).toContain("Table node: 10:1");
+    expect(formatEvidence(result.evidence[1]!)).not.toMatch(/Row index|Column index/);
+  });
+
   it("marks visual interpretations explicitly without replacing original text", () => {
     const board = evidenceBoard();
     board.nodes[0]!.imageRef = "image-hash";

@@ -73,6 +73,8 @@ export async function getBoardContext(input: GetBoardContextInput): Promise<GetB
       label: boundedText(cluster.label, 160),
       phase: cluster.phase ? boundedText(cluster.phase, 80) : undefined,
       summary: boundedText(cluster.summary, 600),
+      summarySource: cluster.summarySource ?? "unknown" as const,
+      modelDerived: cluster.summarySource !== "deterministic" || Boolean(cluster.modelId),
       sourceNodeIds: [...new Set(evidence.filter((item) => item.clusterId === cluster.id).map((item) => item.nodeId))],
     }));
     const labels = new Map(displayedClusters.map((cluster) => [cluster.id, boundedText(cluster.label, 160)]));

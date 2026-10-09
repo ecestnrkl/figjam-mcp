@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { setBoard } from "../src/lib/cache.js";
 import { getBoardContext } from "../src/tools/getBoardContext.js";
-import { getBoardContextInputSchema } from "../src/schemas/getBoardContext.js";
+import { getBoardContextInputSchema, getBoardContextOutputSchema } from "../src/schemas/getBoardContext.js";
 import { evidenceBoard, textNode } from "./fixtures/retrieval.js";
 
 function board(boardId: string) {
@@ -49,6 +49,30 @@ describe("getBoardContext", () => {
     expect(output.totalMatched).toBe(2);
   });
 
+  it("marks a model summary even when only the conflicting original source matches the topic", async () => {
+    const data = evidenceBoard("SummaryOrigin123", [textNode("1:1", "The launch is Tuesday.")]);
+    data.clusters[0]!.summarySource = "vision_llm";
+    data.clusters[0]!.summary = "The launch is Friday.";
+    setBoard(data.boardId, data);
+    const output = await getBoardContext({ boardId: data.boardId, topic: "Tuesday" });
+    expect(output.evidence).toHaveLength(1);
+    expect(output.evidence[0]).toMatchObject({ text: "The launch is Tuesday.", modelDerived: false });
+    expect(output.clusters[0]).toMatchObject({
+      summary: "The launch is Friday.", summarySource: "vision_llm", modelDerived: true,
+    });
+    expect(getBoardContextOutputSchema.parse(output).clusters[0]?.modelDerived).toBe(true);
+  });
+
+  it("distinguishes deterministic summaries and conservatively marks unknown cached origins", async () => {
+    const data = board("SummaryKinds123");
+    data.clusters[0]!.summarySource = "deterministic";
+    data.clusters[1]!.summarySource = "cache";
+    setBoard(data.boardId, data);
+    const output = await getBoardContext({ boardId: data.boardId });
+    expect(output.clusters[0]).toMatchObject({ summarySource: "deterministic", modelDerived: false });
+    expect(output.clusters[1]).toMatchObject({ summarySource: "cache", modelDerived: true });
+  });
+
   it("paginates focused results and their graph neighbors without losing or repeating evidence", async () => {
     setBoard("NeighborPaging123", board("NeighborPaging123"));
     const first = await getBoardContext({ boardId: "NeighborPaging123", topic: "interview", limit: 1 });
@@ -58,6 +82,22 @@ describe("getBoardContext", () => {
     expect(second.evidence.map((item) => item.nodeId)).toEqual(["1:2"]);
     expect(second.nextCursor).toBeUndefined();
     expect(second.truncation.remainingEvidence).toBe(0);
+  });
+
+  it("paginates a table label and its separately stored value as distinct source excerpts", async () => {
+    const data = evidenceBoard("TablePaging123", [{ ...textNode("10:1", "Budget\n999"), name: "Table 1", type: "TABLE", table: { cells: [
+      { id: "label", text: "Budget", row: 0, column: 0 },
+      { id: "value", text: "999", row: 0, column: 1 },
+    ] } }]);
+    setBoard(data.boardId, data);
+    const first = await getBoardContext({ boardId: data.boardId, topic: "Budget", limit: 1 });
+    expect(first.evidence.map(item => item.text)).toEqual(["Budget"]);
+    expect(first.totalMatched).toBe(2);
+    expect(first.nextCursor).toBeDefined();
+    const second = await getBoardContext({ boardId: data.boardId, topic: "Budget", limit: 1, cursor: first.nextCursor });
+    expect(second.evidence.map(item => item.text)).toEqual(["999"]);
+    expect(second.contextText).toContain("Table node: 10:1; Row index: 0; Column index: 1");
+    expect(second.nextCursor).toBeUndefined();
   });
 
   it("does not turn a missing topic into a full-board disclosure", async () => {

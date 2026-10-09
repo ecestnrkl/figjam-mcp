@@ -10,7 +10,11 @@ export const clusterContextShape = {
   label: z.string(),
   phase: z.string().optional(),
   summary: z.string(),
-  sourceNodeIds: z.array(z.string()),
+  summarySource: z.enum(["vision_llm", "text_llm", "deterministic", "cache", "unknown"])
+    .describe("Origin of the derived cluster summary; the summary is not verbatim source evidence"),
+  modelDerived: z.boolean()
+    .describe("True for model summaries and summaries whose non-model origin cannot be established"),
+  sourceNodeIds: z.array(z.string()).describe("Source nodes displayed on this page, not citations validating the cluster summary"),
 };
 
 export const clusterContextSchema = z.object(clusterContextShape);

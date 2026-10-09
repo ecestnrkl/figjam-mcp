@@ -159,6 +159,22 @@ describe("answerFromBoard evidence grounding", () => {
     expect(output.citations[0]).toMatchObject({ nodeId: "1:1", nodeName: "Escalation owner", quote: "Ada" });
   });
 
+  it("supplies separate table labels and values with their source coordinates", async () => {
+    const data = evidenceBoard("TableAnswer123", [{ ...textNode("10:1", "Budget\n999"), name: "Table 1", type: "TABLE", table: { cells: [
+      { id: "cell:label", text: "Budget", row: 0, column: 0 },
+      { id: "cell:value", text: "999", row: 0, column: 1 },
+    ] } }]);
+    setBoard(data.boardId, data);
+    const value = retrieveEvidence(data, { nodeIds: ["cell:value"] }).evidence[0]!;
+    chatJsonMock.mockResolvedValueOnce({ answer: "Das Budget beträgt 999.", evidenceIds: [value.evidenceId] });
+    const output = await answerFromBoard({ boardId: data.boardId, question: "Wie hoch ist das Budget?" });
+    expect(prompt()).toContain("\nBudget");
+    expect(prompt()).toContain("\n999");
+    expect(prompt()).toContain("Table node: 10:1; Row index: 0; Column index: 0");
+    expect(prompt()).toContain("Table node: 10:1; Row index: 0; Column index: 1");
+    expect(output.citations[0]).toMatchObject({ nodeId: "cell:value", quote: "999", sourceType: "table_cell", row: 0, column: 1 });
+  });
+
   it("adds directly connected neighbors and preserves reverse arrows", async () => {
     const data = evidenceBoard("Neighbor123", [textNode("1:1", "Payment failures"), textNode("1:2", "Release milestone"), textNode("1:3", "Unrelated brand")]);
     data.connectorEdges = [{ connectorId: "2:1", fromNodeId: "1:1", toNodeId: "1:2", direction: "reverse", label: "depends on" }];

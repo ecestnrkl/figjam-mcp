@@ -31,6 +31,13 @@
 - Clarify incomplete vision results with actual ingest mode and reason counts;
   validate provider configuration before downloading screenshots, honor shared
   rate-limit cooldowns, and prioritize deferred work over repeated failures.
+- Keep a fresh capture timestamp when a historical board state returns, while
+  still reusing its completed interpretations.
+- Include bounded neighboring table cells in focused retrieval so separately
+  stored labels and values can be read together; expose source table positions
+  to the answer model when they are present.
+- Mark the provenance of structured cluster summaries, including summaries
+  returned alongside a topic match on original text.
 
 This entry describes the release candidate. Publication and hosted CI results
 must be confirmed before announcing the release.

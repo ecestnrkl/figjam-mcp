@@ -45,6 +45,8 @@ export interface EvidenceQuery {
   limit?: number;
   includeNeighbors?: boolean;
   neighborLimit?: number;
+  /** Bounded cell context for lexical table matches, separate from graph neighbors. */
+  tableNeighborLimit?: number;
 }
 
 export interface EvidenceResult {
@@ -140,6 +142,7 @@ export function retrieveEvidence(board: BoardData, options: EvidenceQuery = {}):
   const selected = (options.limit === undefined ? matches : matches.slice(0, options.limit))
     .map((entry) => entry.evidence);
   if (options.includeNeighbors && selected.length > 0) {
+    if (options.query?.trim()) addTableNeighbors(index, selected, options.tableNeighborLimit ?? 6);
     addNeighbors(board, index, selected, options.neighborLimit ?? 6);
   }
   return {
@@ -205,6 +208,9 @@ export function formatEvidence(item: Evidence): string {
     item.nodeName ? `Node name: ${item.nodeName}` : undefined,
     item.pageName ? `Page: ${item.pageName}` : undefined,
     item.sectionNames?.length ? `Sections: ${item.sectionNames.join(" / ")}` : undefined,
+    item.sourceType === "table_cell" && item.renderNodeId ? `Table node: ${item.renderNodeId}` : undefined,
+    item.row !== undefined ? `Row index: ${item.row}` : undefined,
+    item.column !== undefined ? `Column index: ${item.column}` : undefined,
   ].filter(Boolean).join("; ");
   return `[${item.evidenceId}] ${item.nodeName ?? item.nodeId} (${provenance}; node ${item.nodeId})\n${item.clusterLabel ? `Cluster label: ${item.clusterLabel}\n` : ""}${metadata ? `Original source metadata: ${metadata}\n` : ""}${item.text}`;
 }
@@ -366,6 +372,52 @@ function chunkText(text: string): string[] {
     start = end;
   }
   return chunks;
+}
+
+/** A matching cell needs nearby labels/values to retain its table meaning. */
+function addTableNeighbors(index: EvidenceIndex, selected: Evidence[], limit: number): void {
+  const rowsByTable = new Map<string, Set<number>>();
+  const rowGroups = new Map<string, Evidence[]>();
+  const tableGroups = new Map<string, Evidence[]>();
+  const rowKey = (tableId: string, row: number) => `${tableId}\0${row}`;
+  for (const item of selected) {
+    if (item.sourceType !== "table_cell" || !item.renderNodeId) continue;
+    const rows = rowsByTable.get(item.renderNodeId) ?? new Set<number>();
+    if (item.row !== undefined) {
+      rows.add(item.row);
+      const key = rowKey(item.renderNodeId, item.row);
+      if (!rowGroups.has(key)) rowGroups.set(key, []);
+    }
+    rowsByTable.set(item.renderNodeId, rows);
+    if (!tableGroups.has(item.renderNodeId)) tableGroups.set(item.renderNodeId, []);
+  }
+  if (rowsByTable.size === 0 || limit <= 0) return;
+
+  const existing = new Set(selected.map((item) => item.evidenceId));
+  for (const { evidence: item } of index.entries) {
+    if (item.sourceType !== "table_cell" || !item.renderNodeId || existing.has(item.evidenceId)) continue;
+    const rows = rowsByTable.get(item.renderNodeId);
+    if (!rows) continue;
+    const sameRow = item.row !== undefined && rows.has(item.row);
+    const group = sameRow ? rowGroups.get(rowKey(item.renderNodeId, item.row!)) : tableGroups.get(item.renderNodeId);
+    group!.push(item);
+  }
+  // Distribute context across matching rows/tables before giving a long row more
+  // excerpts. Missing coordinates never become inferred source positions.
+  let added = 0;
+  for (const groups of [rowGroups, tableGroups]) {
+    let active = [...groups.values()].filter((group) => group.length > 0);
+    for (let offset = 0; active.length && added < limit; offset++) {
+      const next: Evidence[][] = [];
+      for (const group of active) {
+        if (added >= limit) break;
+        selected.push(group[offset]!);
+        added++;
+        if (group.length > offset + 1) next.push(group);
+      }
+      active = next;
+    }
+  }
 }
 
 function addNeighbors(board: BoardData, index: EvidenceIndex, selected: Evidence[], limit: number): void {

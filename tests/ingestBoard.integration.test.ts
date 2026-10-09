@@ -123,6 +123,38 @@ describe("offline ingest pipeline with actual persistent cache", () => {
     expect((await persistence.readLatestBoard(fileKey))?.clusters[0]?.summarySource).toBe("vision_llm");
   });
 
+  it("records a new capture time when a historical source state returns", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const firstTime = Date.UTC(2026, 9, 9, 12);
+    const changedTime = Date.UTC(2026, 9, 9, 13);
+    const returnedTime = Date.UTC(2026, 9, 9, 14);
+    vi.setSystemTime(firstTime);
+    const first = await ingestBoard(input);
+    vi.setSystemTime(changedTime);
+    activeTree = boardTree([table("Budget 999")], "v2");
+    await ingestBoard(input);
+    vi.setSystemTime(returnedTime);
+    activeTree = boardTree([table("Budget 100")], "v3");
+    const returned = await ingestBoard(input);
+    expect(returned.snapshotId).toBe(first.snapshotId);
+    expect(visionMock).toHaveBeenCalledTimes(2);
+    expect(returned.qualityReport?.cachedClusters).toBe(1);
+    expect((await persistence.readLatestBoard(fileKey))?.createdAt).toBe(returnedTime);
+    expect((await persistence.readBoardHistory(fileKey)).map(entry => entry.createdAt))
+      .toEqual([firstTime, changedTime, returnedTime]);
+    const diff = await diffBoard({ boardId: fileKey, compareTo: 1 });
+    expect(diff.baselineCreatedAt).toBe(new Date(changedTime).toISOString());
+    expect(diff.currentCreatedAt).toBe(new Date(returnedTime).toISOString());
+    expect(diff.summaryText).toContain("changes from 2026-10-09T13:00:00Z to 2026-10-09T14:00:00Z");
+
+    vi.setSystemTime(Date.UTC(2026, 9, 9, 15));
+    await ingestBoard(input);
+    expect((await persistence.readLatestBoard(fileKey))?.createdAt).toBe(returnedTime);
+    expect((await persistence.readBoardHistory(fileKey)).map(entry => entry.createdAt))
+      .toEqual([firstTime, changedTime, returnedTime]);
+    expect(visionMock).toHaveBeenCalledTimes(2);
+  });
+
   it("falls back from a missing metadata scope, but does not bypass rate limits", async () => {
     await ingestBoard(input);
     const { FigmaApiError } = await import("../src/lib/figmaApi.js");
