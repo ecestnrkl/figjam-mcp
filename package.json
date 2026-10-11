@@ -35,6 +35,7 @@
     "package:check": "node scripts/check-package.mjs",
     "package:smoke": "node scripts/package-smoke.mjs",
     "eval:retrieval": "node --import tsx scripts/evaluate-retrieval.mjs",
+    "eval:vision": "node --import tsx scripts/evaluate-vision.mjs",
     "prepack": "npm run check",
     "security:check": "npm audit --audit-level=moderate"
   },

@@ -21,7 +21,7 @@ const ANSWER_SYSTEM_PROMPT =
   "An open task such as 'clarify simulator availability' does not establish whether the simulator is booked. " +
   "Missing confirmation is not evidence of a negative fact: never turn 'not documented here' into 'not done', 'not booked', or even 'probably not booked'. " +
   "When the status is unknown, say that it cannot be established from the provided excerpts; do not begin with yes or no. " +
-  "If relevant evidence is an open task, question, or proposal, explicitly name that kind of record in your answer, briefly explain why it does not establish the requested status, and include its evidence ID. " +
+  "For an unknown status, include two parts in the answer: what the relevant source actually records (an open task, question, or proposal), then why that record establishes neither confirmation nor denial. A generic 'unknown' sentence alone is incomplete when such a source is available. Cite that source in evidenceIds. " +
   "Explicit 'booking confirmed' supports a booking; explicit 'not booked' supports a negative status as recorded in that source. " +
   "When relevant sources contradict each other, explicitly explain the conflict and include the evidence IDs for BOTH sides; do not choose one as the current truth. " +
   "Evidence IDs support an explanation of uncertainty or conflict as well as a factual yes/no answer. A conflict is not a reason to return empty evidenceIds. " +

@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import OpenAI from "openai";
 
 /**
  * These tests exercise chatJson against a stubbed OpenAI client. The focus is
@@ -35,6 +36,11 @@ const MESSAGES = [{ role: "user" as const, content: "hi" }];
 /** A well-formed completion carrying `content` as its first choice. */
 function okCompletion(content: string, finishReason = "stop") {
   return { choices: [{ message: { content }, finish_reason: finishReason }] };
+}
+
+const SCHEMA_OPTIONS = { jsonSchema: { type: "object", properties: { ok: { type: "boolean" } } } };
+function providerError(status: number, message: string, fields: Record<string, unknown> = {}) {
+  return new OpenAI.APIError(status, { message, ...fields }, message, new Headers());
 }
 
 beforeEach(() => {
@@ -136,6 +142,68 @@ describe("chatJson", () => {
     expect(params.response_format?.json_schema?.name).toBe("answer");
     expect(params.response_format?.json_schema?.strict).toBe(true);
     expect(params.provider?.require_parameters).toBe(true);
+  });
+
+  it.each([
+    [404, "No endpoints found for missing/model."],
+    [400, "missing/model is not a valid model ID"],
+  ])("tries an unavailable model only once before the next configured candidate (%s)", async (status, message) => {
+    createMock.mockRejectedValueOnce(providerError(status, message))
+      .mockResolvedValueOnce(okCompletion('{"ok":true}'));
+    const onRequest = vi.fn();
+    await expect(chatJson(["missing/model", "available/model"], MESSAGES, { ...SCHEMA_OPTIONS, onRequest }))
+      .resolves.toEqual({ ok: true });
+    expect(onRequest.mock.calls).toEqual([["missing/model"], ["available/model"]]);
+    expect(createMock.mock.calls.map(([params]) => [params.model, params.response_format?.type]))
+      .toEqual([["missing/model", "json_schema"], ["available/model", "json_schema"]]);
+  });
+
+  it.each([
+    [404, "No endpoints found that support structured outputs.", {}],
+    [404, "No endpoints found that support the requested parameters.", {}],
+    [404, "No endpoints found that can handle the requested parameters. To learn more about provider routing, visit: https://openrouter.ai/docs/guides/routing/provider-selection", { metadata: { failed_routing_step: "Filter by Parameters" } }],
+    [400, "Provider returned error", { metadata: { raw: JSON.stringify({ code: 400, reason: "INVALID_REQUEST_BODY", message: "Model 'apodex/apodex-1.1-mini' does not support 'json_schema' response format. Supported formats: json_object.", metadata: {} }) } }],
+    [400, "Unsupported value", { param: "response_format", code: "unsupported_value" }],
+    [422, "This model does not support json_schema.", {}],
+  ])("retains format fallback when the provider identifies a format incompatibility (%s: %s)", async (status, message, fields) => {
+    createMock.mockRejectedValueOnce(providerError(status, message, fields))
+      .mockResolvedValueOnce(okCompletion('{"ok":true}'));
+    await expect(chatJson("available/model", MESSAGES, SCHEMA_OPTIONS)).resolves.toEqual({ ok: true });
+    expect(createMock.mock.calls.map(([params]) => [params.model, params.response_format?.type]))
+      .toEqual([["available/model", "json_schema"], ["available/model", "json_object"]]);
+  });
+
+  it("reaches prompt-only JSON and removes require_parameters only after both format attempts fail", async () => {
+    createMock.mockRejectedValueOnce(providerError(404, "No endpoints found that support the requested parameters."))
+      .mockRejectedValueOnce(providerError(400, "response_format is not supported"))
+      .mockResolvedValueOnce(okCompletion('{"ok":true}'));
+    await expect(chatJson("available/model", MESSAGES, SCHEMA_OPTIONS)).resolves.toEqual({ ok: true });
+    expect(createMock.mock.calls.map(([params]) => [params.response_format?.type, params.provider?.require_parameters]))
+      .toEqual([["json_schema", true], ["json_object", true], [undefined, undefined]]);
+  });
+
+  it.each([
+    [400, "Invalid schema: missing required property"],
+    [404, "The requested API path does not exist"],
+    [404, "Not Found"],
+    [401, "Authentication failed; response_format unsupported"],
+    [402, "Insufficient credits; response_format unsupported"],
+    [403, "Permission denied; response_format unsupported"],
+  ])("does not retry unrelated request failures or expose their details (%s)", async (status, message) => {
+    createMock.mockRejectedValueOnce(providerError(status, message));
+    const pending = chatJson(["first-model", "second-model"], MESSAGES, SCHEMA_OPTIONS);
+    await expect(pending).rejects.toMatchObject({ status });
+    await expect(pending).rejects.not.toThrow(message);
+    expect(createMock).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    '{"message":"response_format unsupported"',
+    JSON.stringify({ message: "response_format unsupported", padding: "x".repeat(16_384) }),
+  ])("does not interpret malformed or oversized raw provider metadata", async raw => {
+    createMock.mockRejectedValueOnce(providerError(400, "Provider returned error", { metadata: { raw } }));
+    await expect(chatJson(["first-model", "second-model"], MESSAGES, SCHEMA_OPTIONS)).rejects.toMatchObject({ status: 400 });
+    expect(createMock).toHaveBeenCalledTimes(1);
   });
 
   it("falls back to the next model when the first model returns invalid JSON", async () => {

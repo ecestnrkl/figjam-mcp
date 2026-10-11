@@ -497,6 +497,8 @@ version. Maintenance ratings depend on actual maintenance activity over time.
 - `npm run eval:retrieval` — evaluate the 20 synthetic source/change fixtures locally; no provider calls.
 - `npm run eval:retrieval -- --with-llm` — explicitly opt into model evaluation using the configured provider, with measured requests, reported token usage and source checks. Includes separate status-question cases for human review. May incur charges.
 - `npm run eval:retrieval -- --with-llm --grounding-only` — call the provider only for the five status-question cases, each with a 45-second deadline; keep the retrieval/change checks offline. Provide `LLM_BASE_URL` and `LLM_API_KEY` in the environment; source users can preload their project `.env` with `node --import dotenv/config --import tsx scripts/evaluate-retrieval.mjs --with-llm --grounding-only`.
+- `npm run eval:vision` — verify the two committed synthetic PNG fixtures and their source inventories offline. This does not measure model quality.
+- `npm run eval:vision -- --with-llm` — explicitly evaluate the configured vision models on those image-only fixtures, with a 45-second deadline per case. Provide `LLM_BASE_URL` and `LLM_API_KEY` in the environment. The report includes raw synthetic replies, requested/reported models, attempts, timing and reported usage. Compare the visible facts and forbidden claims against both raw and applied replies; successful JSON and valid IDs alone do not establish semantic correctness. Provider calls may incur charges.
 
 Publishing runs the same checks automatically through `prepack`; CI is configured to exercise
 that complete package path on Node 22 and 24 across Linux, macOS and Windows.

@@ -2,6 +2,15 @@
 
 ## 0.4.0 — Unreleased
 
+- Distinguish unavailable models from unsupported JSON formats, avoiding repeated
+  format attempts for a missing model. Verify response-body timeouts and caller
+  cancellation against a real local HTTP server and the installed SDK.
+- Preserve visible facts and diagram direction in vision instructions; reject
+  unsupported source IDs instead of silently filtering them. Refresh visual
+  interpretation signatures while retaining original v4 source snapshots.
+- Add two versioned image-only evaluation fixtures with explicit provider opt-in,
+  raw response/source checks and separate semantic review. Clarify why an open
+  task or proposal cannot establish a requested status in generated answers.
 - Migrate to stable MCP TypeScript SDK v2 and Zod 4, retaining the five stdio tools
   and their existing required response fields. Propagate cancellation and ingest
   progress; declare tool annotations and external-provider behavior.

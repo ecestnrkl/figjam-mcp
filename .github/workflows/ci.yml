@@ -37,6 +37,9 @@ jobs:
       - name: Evaluate synthetic retrieval and board changes without providers
         if: matrix.os == 'ubuntu-latest' && matrix.node-version == 24
         run: npm run eval:retrieval
+      - name: Verify synthetic image fixtures without providers
+        if: matrix.os == 'ubuntu-latest' && matrix.node-version == 24
+        run: npm run eval:vision
 
   minimum-node:
     runs-on: ubuntu-latest

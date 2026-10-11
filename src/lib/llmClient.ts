@@ -129,9 +129,9 @@ const MAX_OUTPUT_TOKENS = readIntEnv("LLM_MAX_OUTPUT_TOKENS", 14096, 1);
 /**
  * Runs a chat completion that must yield a JSON object.
  *
- * Strategy: first try with `response_format: { type: "json_object" }`; if the
- * endpoint rejects that (4xx — not every model supports it), retry once
- * without it and rely on the prompt's "reply with JSON only" instruction.
+ * Try the requested JSON schema, then JSON mode, then prompt-only JSON, but
+ * only downgrade when the provider identifies a formatting incompatibility.
+ * An unavailable model goes straight to the next configured candidate.
  * The reply is parsed defensively (markdown fences stripped, first {...}
  * block extracted) and failures surface as clear errors.
  */
@@ -237,15 +237,45 @@ function withProviderRequirements(
 }
 
 function isUnsupportedParamError(error: unknown): boolean {
-  return (
-    error instanceof OpenAI.APIError &&
-    typeof error.status === "number" &&
-    error.status >= 400 &&
-    error.status < 500 &&
-    error.status !== 401 &&
-    error.status !== 403 &&
-    error.status !== 429
-  );
+  if (!(error instanceof OpenAI.APIError) || ![400, 404, 422].includes(error.status ?? 0)) return false;
+  const detail = providerErrorDetail(error);
+  // OpenRouter can use 404 both for missing models and for endpoints excluded
+  // by require_parameters. Status alone cannot decide whether less strict JSON
+  // formatting will help. Never treat unrelated billing/policy/input failures
+  // as permission to downgrade the requested format.
+  const format = /\b(?:response[_ -]?format|json[_ -]?(?:schema|object|mode)|structured[_ -]?outputs?|require[_ -]?parameters)\b/i;
+  const unsupported = /unsupported|not[_ -]supported|does(?:n't| not) support|do(?:n't| not) support|cannot support|only supports|no (?:available )?endpoints|unavailable|not available|unrecognized|unknown (?:parameter|argument|field)|not (?:allowed|permitted|compatible)/i;
+  return (format.test(detail) && unsupported.test(detail)) ||
+    /no (?:available )?endpoints.*(?:support|match|handle).*\b(?:requested|required) parameters\b/i.test(detail) ||
+    /\bFilter by Parameters\b/i.test(detail);
+}
+
+function isUnavailableModelError(error: unknown): boolean {
+  if (!(error instanceof OpenAI.APIError) || ![400, 404, 410, 422].includes(error.status ?? 0)) return false;
+  const detail = providerErrorDetail(error);
+  return /\b(?:model[_ -]not[_ -]found|invalid[_ -]model|model[_ -]unavailable)\b|\bno (?:available )?endpoints\b|\bmodel\b.*\b(?:not found|does not exist|not available|unavailable|not a valid|decommissioned)\b|\b(?:unknown|invalid|unavailable|not a valid) model\b/i.test(detail);
+}
+
+/** Inspect only known error fields; provider details never enter our logs/errors. */
+function providerErrorDetail(error: InstanceType<typeof OpenAI.APIError>): string {
+  const body = error.error && typeof error.error === "object" ? error.error as Record<string, unknown> : {};
+  const metadata = body.metadata && typeof body.metadata === "object" ? body.metadata as Record<string, unknown> : {};
+  // OpenRouter can wrap the actual format error in metadata.raw while its
+  // top-level message says only "Provider returned error". Parse a bounded JSON
+  // envelope, not arbitrary provider text or recursively nested metadata.
+  let raw: unknown = metadata.raw;
+  if (typeof raw === "string") {
+    try { raw = raw.length <= 16_384 ? JSON.parse(raw) : undefined; }
+    catch { raw = undefined; }
+  }
+  const rawBody = raw && typeof raw === "object" ? raw as Record<string, unknown> : {};
+  const nested = rawBody.error && typeof rawBody.error === "object" ? rawBody.error as Record<string, unknown> : {};
+  return [body.message ?? error.message, error.param, error.code, error.type,
+    metadata.error_type, metadata.provider_code, metadata.failed_routing_step,
+    rawBody.message, rawBody.param, rawBody.code, rawBody.type, nested.message, nested.param, nested.code, nested.type]
+    .filter((value): value is string => typeof value === "string")
+    .map(value => value.slice(0, 4096))
+    .join(" ");
 }
 
 function shouldTryNextModel(error: unknown): boolean {
@@ -257,7 +287,8 @@ function shouldTryNextModel(error: unknown): boolean {
     return true;
   }
   if (error instanceof OpenAI.APIError) {
-    return error.status === 429 || error.status >= 500 || isUnsupportedParamError(error);
+    return error.status === 408 || error.status === 429 || error.status >= 500 ||
+      isUnavailableModelError(error) || isUnsupportedParamError(error);
   }
   if (error instanceof Error) {
     return /429|provider returned error|rate limit|no endpoints|empty response|no choices|timed out|unsupported|response contained/i.test(
