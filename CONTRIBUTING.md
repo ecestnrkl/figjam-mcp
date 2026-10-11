@@ -9,6 +9,9 @@ Before a pull request, run `npm run check`, `npm run package:smoke` and
 `npm run security:check`. The package smoke test downloads production dependencies
 from npm and exercises the installed CLI. No Figma or LLM credentials are needed.
 CI runs the same checks on Linux, macOS and Windows with Node 22 and 24.
+It also verifies the package on exactly Node 22.12.0 and evaluates the synthetic
+retrieval/change fixtures offline on Linux/Node 24. Provider evaluations remain
+explicit opt-in and require separate review of the generated answers.
 
 Describe the concrete problem, behavior change, compatibility impact and how it
 was verified. Keep the five public tool contracts compatible; new response fields
@@ -28,3 +31,13 @@ review; it does not publish or create a GitHub release. A maintainer can publish
 an approved tarball, create a matching tag/release and then submit server.json
 to the MCP Registry. Confirm package ownership and registry availability first.
 Request a fresh Glama inspection so all five tools are visible after release.
+
+To keep a local candidate, run:
+
+```bash
+npm run package:smoke -- --long --artifact-dir /absolute/path/to/new-candidate
+```
+
+The destination must not already exist. Only the exact archive that passes every package check is retained, with
+its SHA-256 checksum. The Release candidate workflow audits dependencies and
+uploads this tested archive; it does not pack a replacement after testing.

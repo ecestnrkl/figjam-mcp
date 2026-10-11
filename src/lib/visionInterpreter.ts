@@ -101,6 +101,8 @@ function buildPrompt(
     "1. Decide which LISTED elements truly belong together thematically. Drop listed outliers that only happen to sit nearby (return the listed ids you keep as confirmedNodeIds — usually all listed ids). Unlisted/omitted elements are retained automatically, so do not invent their ids.",
     "2. Give the group a short, meaningful label (max 6 words).",
     "3. Write a compact summary of the group in 3-5 sentences. If elements contain images/screenshots, describe their content in 1-2 of those sentences.",
+    "Use the extracted original text as the primary source; images add visible evidence. Preserve amounts, units, negation, and whether an item is a question, proposal, open task, or confirmed decision. An unconfirmed item proves neither completion nor non-completion; retain uncertainty and any conflicting evidence.",
+    "For diagrams, preserve visible arrow directions and explicitly distinguish separate, unconnected elements. Describe only visible content and supplied connections; do not infer unstated priority, status, purpose, causality, or missing links from labels or proximity.",
     "",
     'Reply with JSON only, exactly this shape: {"label": string, "summary": string, "confirmedNodeIds": string[]}',
   ].join("\n");
@@ -237,20 +239,23 @@ function applyReply(
     );
   }
 
-  // Keep only ids that really exist in the cluster (models sometimes invent
-  // ids); an empty/invalid list falls back to the full geometric cluster.
+  // Reject unsupported membership claims instead of silently hiding model
+  // inventions and presenting the remaining summary as a valid refinement.
   const valid = new Set(cluster.nodeIds);
-  const confirmed = Array.isArray(parsed?.confirmedNodeIds)
-    ? parsed.confirmedNodeIds.filter(
-        (id): id is string =>
-          typeof id === "string" && valid.has(id) && listedNodeIds.has(id),
-      )
-    : [];
+  const confirmed = parsed?.confirmedNodeIds;
+  if (!Array.isArray(confirmed) || confirmed.some(
+    (id: unknown) => typeof id !== "string" || !valid.has(id) || !listedNodeIds.has(id),
+  )) {
+    throw new LlmInvalidJsonError(
+      `Vision model reply for ${cluster.id} has invalid "confirmedNodeIds"`,
+      "",
+    );
+  }
 
   // The model only has enough context to reject listed outliers. Preserve all
   // nodes hidden by either inventory limit; otherwise prompt truncation would
   // turn into silent data loss in downstream board context.
-  const confirmedSet = new Set(confirmed);
+  const confirmedSet = new Set<string>(confirmed);
   if (confirmed.length > 0) {
     for (const id of cluster.nodeIds) {
       if (!listedNodeIds.has(id)) {

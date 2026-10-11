@@ -1,0 +1,148 @@
+{
+  "schemaVersion": 1,
+  "scope": "Synthetic image-only vision fixtures; no private board data. Facts and arrows occur only in PNG pixels.",
+  "evaluationInstructions": [
+    "Pass only cluster, screenshots, nodes, signal and connections to the product function. Never put expected values, fixture id, filename or this manifest into model messages.",
+    "Each PNG is one source image node. The multiple notes/shapes are pixels inside that image, not separately extracted FigJam nodes.",
+    "Neutral node inventories deliberately contain no text and connections deliberately remain empty: all facts and arrows must be inferred from image pixels.",
+    "Review raw synthetic model JSON as well as applied RefinedCluster; invalid IDs may otherwise be hidden by product postprocessing.",
+    "Required facts and forbidden claims are hard semantic criteria. Record label/summary formatting separately. Do not infer semantic success from a valid JSON response alone."
+  ],
+  "fixtures": [
+    {
+      "id": "vision-01",
+      "image": {
+        "file": "fixture-01.png",
+        "mimeType": "image/png",
+        "width": 1200,
+        "height": 760,
+        "sha256": "8b1f862d49fa05b0759cb159e23ee460279b6596660a4afd29b770543a9ac86d",
+        "bytes": 29464
+      },
+      "nodes": [
+        {
+          "id": "1:1",
+          "name": "Bild 1",
+          "type": "RECTANGLE",
+          "x": 0,
+          "y": 0,
+          "width": 1200,
+          "height": 760,
+          "rotation": 0,
+          "imageRef": "synthetic-image-01",
+          "pageId": "0:1",
+          "renderNodeId": "1:1"
+        }
+      ],
+      "cluster": {
+        "id": "cluster_1",
+        "nodeIds": [
+          "1:1"
+        ],
+        "boundingBox": {
+          "x": 0,
+          "y": 0,
+          "width": 1200,
+          "height": 760
+        }
+      },
+      "connections": [],
+      "expected": {
+        "description": "Budget und Vorschlag aus rein visueller Quelle korrekt unterscheiden.",
+        "requiredFacts": [
+          "Das dargestellte Budget beträgt 8400 EUR.",
+          "20 zusätzliche Plätze anzubieten ist ein Vorschlag/eine Frage."
+        ],
+        "forbiddenClaims": [
+          "Die 20 zusätzlichen Plätze seien beschlossen, zugesagt oder bereits angeboten.",
+          "Erfundene Summe, Freigabe, Person, Frist oder Termin."
+        ],
+        "acceptedNumberVariants": [
+          "8400",
+          "8.400",
+          "8,400"
+        ],
+        "exactVisibleText": [
+          "Budget",
+          "8400 EUR",
+          "Vorschlag:",
+          "20 zusätzliche",
+          "Plätze anbieten?"
+        ],
+        "requiredConfirmedNodeIds": [
+          "1:1"
+        ],
+        "requiredSummarySource": "vision_llm",
+        "labelMaxWords": 6,
+        "summarySentencesMin": 3,
+        "summarySentencesMax": 5,
+        "reviewRequired": true
+      }
+    },
+    {
+      "id": "vision-02",
+      "image": {
+        "file": "fixture-02.png",
+        "mimeType": "image/png",
+        "width": 1200,
+        "height": 760,
+        "sha256": "f7c926d62b58ca4144d5d60be3bcd7012d774641dbfcb12499d2b444ae77b938",
+        "bytes": 13326
+      },
+      "nodes": [
+        {
+          "id": "2:1",
+          "name": "Bild 2",
+          "type": "RECTANGLE",
+          "x": 0,
+          "y": 0,
+          "width": 1200,
+          "height": 760,
+          "rotation": 0,
+          "imageRef": "synthetic-image-02",
+          "pageId": "0:1",
+          "renderNodeId": "2:1"
+        }
+      ],
+      "cluster": {
+        "id": "cluster_2",
+        "nodeIds": [
+          "2:1"
+        ],
+        "boundingBox": {
+          "x": 0,
+          "y": 0,
+          "width": 1200,
+          "height": 760
+        }
+      },
+      "connections": [],
+      "expected": {
+        "description": "Gerichteten Ablauf von separater Notiz anhand der Bildstruktur unterscheiden.",
+        "requiredFacts": [
+          "Ein Pfeil führt von Idee zu Test.",
+          "Parkplatz steht separat und ist mit keinem Pfeil angebunden."
+        ],
+        "forbiddenClaims": [
+          "Ein Pfeil führe von Test zu Idee.",
+          "Parkplatz sei der dritte Schritt des dargestellten Ablaufs.",
+          "Parkplatz sei mit Idee oder Test durch einen Pfeil verbunden.",
+          "Erfundene Prioritäten, Personen, Termine oder Statusbehauptungen."
+        ],
+        "exactVisibleText": [
+          "Idee",
+          "Test",
+          "Parkplatz"
+        ],
+        "requiredConfirmedNodeIds": [
+          "2:1"
+        ],
+        "requiredSummarySource": "vision_llm",
+        "labelMaxWords": 6,
+        "summarySentencesMin": 3,
+        "summarySentencesMax": 5,
+        "reviewRequired": true
+      }
+    }
+  ]
+}

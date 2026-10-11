@@ -37,6 +37,76 @@ describe("refineClusterWithVision", () => {
     await expect(pending).rejects.toMatchObject({ name: "LlmInvalidJsonError", rawReply: "" });
     await expect(pending).rejects.not.toThrow(/Private model output/);
   });
+
+  it.each([
+    ["missing", undefined],
+    ["non-array", "node-0"],
+    ["non-string member", ["node-0", 42]],
+    ["invented member", ["node-0", "private-invented-node"]],
+    ["only invented members", ["private-invented-node"]],
+  ])("rejects %s confirmed membership instead of hiding invalid output", async (_case, confirmedNodeIds) => {
+    const { refineClusterWithVision } = await import("../src/lib/visionInterpreter.js");
+    const node = normalizedNode(0);
+    chatJsonMock.mockResolvedValue({
+      label: "Private model label",
+      summary: "Private model summary",
+      confirmedNodeIds,
+    });
+
+    const pending = refineClusterWithVision(clusterFor([node]), [], [node]);
+
+    await expect(pending).rejects.toMatchObject({ name: "LlmInvalidJsonError", rawReply: "" });
+    await expect(pending).rejects.not.toThrow(/Private model|private-invented-node/);
+  });
+
+  it("rejects model confirmation of an omitted element even when it exists in the cluster", async () => {
+    const { refineClusterWithVision } = await import("../src/lib/visionInterpreter.js");
+    const listed = normalizedNode(0);
+    const omitted = { ...normalizedNode(1), id: "x".repeat(201) };
+    chatJsonMock.mockResolvedValue({
+      label: "Unseen element",
+      summary: "A model must not claim to have confirmed an omitted element.",
+      confirmedNodeIds: [listed.id, omitted.id],
+    });
+
+    await expect(refineClusterWithVision(clusterFor([listed, omitted]), [], [listed, omitted]))
+      .rejects.toMatchObject({ name: "LlmInvalidJsonError", rawReply: "" });
+  });
+
+  it("keeps original cluster data and records the model as the source of valid interpretation", async () => {
+    const { refineClusterWithVision } = await import("../src/lib/visionInterpreter.js");
+    const nodes = [normalizedNode(0), normalizedNode(1), normalizedNode(2)];
+    const cluster = clusterFor(nodes);
+    const originalCluster = structuredClone(cluster);
+    const originalNodes = structuredClone(nodes);
+    chatJsonMock.mockImplementation(async (_models, _messages, options) => {
+      options.onModelUsed("actual-vision-model");
+      return { label: " Diagram ", summary: " Visible diagram interpretation. ",
+        confirmedNodeIds: ["node-2", "node-0", "node-2"] };
+    });
+
+    const result = await refineClusterWithVision(cluster, [Buffer.from("synthetic crop")], nodes);
+
+    expect(result).toMatchObject({
+      label: "Diagram", summary: "Visible diagram interpretation.",
+      confirmedNodeIds: ["node-0", "node-2"],
+      summarySource: "vision_llm", modelId: "actual-vision-model",
+      nodeIds: originalCluster.nodeIds,
+    });
+    expect(cluster).toEqual(originalCluster);
+    expect(nodes).toEqual(originalNodes);
+  });
+
+  it("retains all geometric members when the model deliberately confirms none", async () => {
+    const { refineClusterWithVision } = await import("../src/lib/visionInterpreter.js");
+    const nodes = [normalizedNode(0), normalizedNode(1)];
+    chatJsonMock.mockResolvedValue({ label: "No grouping", summary: "No grouping is clear.", confirmedNodeIds: [] });
+
+    const result = await refineClusterWithVision(clusterFor(nodes), [], nodes);
+
+    expect(result.confirmedNodeIds).toEqual(["node-0", "node-1"]);
+  });
+
   it("uses an independently configurable, moderate vision reply budget", async () => {
     vi.stubEnv("LLM_VISION_MAX_OUTPUT_TOKENS", "2304");
     const { refineClusterWithVision } = await import("../src/lib/visionInterpreter.js");
