@@ -72,6 +72,23 @@ describe("chatJson", () => {
     await expect(pending).rejects.toMatchObject({ name: "LlmTimeoutError" });
     await expect(pending).rejects.not.toThrow(/Private provider details/);
   });
+  it("uses and reports the per-request deadline without changing later text requests", async () => {
+    vi.stubEnv("LLM_REQUEST_TIMEOUT_MS", "20000");
+    try {
+      const error = new Error("Private provider details"); error.name = "APIConnectionTimeoutError";
+      createMock.mockRejectedValueOnce(error).mockResolvedValueOnce(okCompletion('{"ok":true}'));
+      await expect(chatJson("vision-model", MESSAGES, { requestTimeoutMs: 60000 }))
+        .rejects.toThrow("LLM request timed out after 60s.");
+      await chatJson("text-model", MESSAGES);
+      expect(createMock.mock.calls.map(([, options]) => options.timeout)).toEqual([60000, 20000]);
+    } finally { vi.unstubAllEnvs(); }
+  });
+
+  it("rejects an unbounded request override before calling the provider", async () => {
+    await expect(chatJson("test-model", MESSAGES, { requestTimeoutMs: 0 }))
+      .rejects.toMatchObject({ name: "LLMConfigurationError" });
+    expect(createMock).not.toHaveBeenCalled();
+  });
   it("parses a normal completion", async () => {
     createMock.mockResolvedValueOnce(okCompletion('{"answer":42}'));
     await expect(chatJson("test-model", MESSAGES)).resolves.toEqual({ answer: 42 });

@@ -121,6 +121,18 @@ describe("refineClusterWithVision", () => {
     );
   });
 
+  it("passes its independent request deadline while preserving the caller signal", async () => {
+    vi.stubEnv("LLM_REQUEST_TIMEOUT_MS", "20000");
+    vi.stubEnv("LLM_VISION_REQUEST_TIMEOUT_MS", "60000");
+    const { refineClusterWithVision } = await import("../src/lib/visionInterpreter.js");
+    const node = normalizedNode(0);
+    const controller = new AbortController();
+
+    await refineClusterWithVision(clusterFor([node]), [], [node], controller.signal);
+
+    expect(chatJsonMock.mock.calls[0]?.[2]).toMatchObject({ requestTimeoutMs: 60000, signal: controller.signal });
+  });
+
   it("forwards caller cancellation to the shared LLM client", async () => {
     const { refineClusterWithVision } = await import("../src/lib/visionInterpreter.js");
     const node = normalizedNode(0);

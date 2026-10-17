@@ -40,6 +40,7 @@ vi.mock("../src/lib/visionInterpreter.js", () => ({
 }));
 
 vi.mock("../src/lib/persistentCache.js", () => ({
+  EXTRACTION_VERSION: 5,
   extractFigmaLastModified: () => "2026-07-04T00:00:00Z",
   hashNormalizedNodes: () => "node-hash",
   hashClusterNodes: fakeHashClusterNodes,
@@ -139,6 +140,7 @@ function visionPriorityTree() {
 
 function cachedBoard(): BoardData {
   return {
+    extractionVersion: 5,
     boardId: "AbC123",
     fileKey: "AbC123",
     docStructureHint: "freeform",
@@ -386,8 +388,8 @@ describe("ingestBoard", () => {
       return rawTree();
     });
     fetchScreenshotMock.mockImplementationOnce(async () => {
-      // The screenshot request itself crosses the 35 s vision deadline.
-      vi.setSystemTime(Date.now() + 35_001);
+      // The screenshot request itself crosses the 90 s vision deadline.
+      vi.setSystemTime(Date.now() + 90_001);
       return [Buffer.from("png")];
     });
 
@@ -425,12 +427,15 @@ describe("ingestBoard", () => {
       ingestMode: "max_quality",
     });
     await requestsStarted;
-    await vi.advanceTimersByTimeAsync(35_001);
+    await vi.advanceTimersByTimeAsync(60_001);
+    expect(signals.every((signal) => !signal.aborted)).toBe(true);
+    await vi.advanceTimersByTimeAsync(30_000);
     const output = await ingest;
 
     expect(refineClusterWithVisionMock).toHaveBeenCalledTimes(2);
     expect(signals).toHaveLength(2);
     expect(signals.every((signal) => signal.aborted)).toBe(true);
+    expect(signals.every((signal) => String(signal.reason).includes("90000 ms"))).toBe(true);
     expect(output.qualityReport).toMatchObject({ fallbackCount: 2, visionClusters: 0, fallbackReasons: { timeout: 2 } });
   });
 
@@ -455,7 +460,7 @@ describe("ingestBoard", () => {
       ingestMode: "max_quality",
     });
     await requestsStarted;
-    await vi.advanceTimersByTimeAsync(35_001);
+    await vi.advanceTimersByTimeAsync(90_001);
     const output = await ingest;
 
     expect(fetchScreenshotMock).toHaveBeenCalledTimes(2);
@@ -477,6 +482,19 @@ describe("ingestBoard", () => {
     expect(fetchScreenshotMock).not.toHaveBeenCalled();
     expect(refineClusterWithVisionMock).not.toHaveBeenCalled();
     expect(output.qualityReport?.cachedClusters).toBe(2);
+  });
+
+  it.each([undefined, 4])("does not reuse extraction %s even when metadata and refinement match", async (extractionVersion) => {
+    const legacy = { ...cachedBoard(), extractionVersion, figmaVersion: "v1" };
+    readCachedBoardMock.mockResolvedValueOnce(legacy);
+    readLatestBoardMock.mockResolvedValueOnce(legacy);
+    const output = await ingestBoard({ figmaFileUrl: "https://www.figma.com/board/AbC123/Test",
+      docStructureHint: "freeform", ingestMode: "max_quality" });
+    expect(fetchFileMetadataMock).not.toHaveBeenCalled();
+    expect(fetchFileTreeMock).toHaveBeenCalledTimes(1);
+    expect(refineClusterWithVisionMock).toHaveBeenCalledTimes(2);
+    expect(output.qualityReport).toMatchObject({ reusedClusters: 0, cachedClusters: 0 });
+    expect(persistBoardMock).toHaveBeenCalledWith(expect.objectContaining({ extractionVersion: 5 }), undefined);
   });
 
   it("extracts connector arrows as cluster relations", async () => {

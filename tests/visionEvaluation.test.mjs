@@ -15,17 +15,17 @@ const providerEnv = {
   ...process.env,
   LLM_BASE_URL: "https://synthetic-vision.invalid/v1", LLM_API_KEY: "synthetic-vision-key",
   LLM_VISION_MODELS: "synthetic-vision", LLM_VISION_MODEL: "", LLM_MODEL_PRESET: "student-free",
-  LLM_REQUEST_TIMEOUT_MS: "20000", LLM_VISION_MAX_OUTPUT_TOKENS: "4096",
+  LLM_REQUEST_TIMEOUT_MS: "20000", LLM_VISION_REQUEST_TIMEOUT_MS: "60000", LLM_VISION_MAX_OUTPUT_TOKENS: "4096",
   LLM_RATE_LIMIT_RETRIES: "0", LLM_PROVIDER_REQUIRE_PARAMETERS: "true",
 };
 
-async function runWithProvider(source) {
+async function runWithProvider(source, env = {}) {
   const directory = await mkdtemp(join(tmpdir(), "figjam-vision-eval-"));
   try {
     const provider = join(directory, "provider.mjs");
     await writeFile(provider, source);
     try {
-      const result = await execute(process.execPath, ["--import", "tsx", "--import", pathToFileURL(provider).href, script, "--with-llm"], { env: providerEnv });
+      const result = await execute(process.execPath, ["--import", "tsx", "--import", pathToFileURL(provider).href, script, "--with-llm"], { env: { ...providerEnv, ...env } });
       return { code: 0, ...result };
     } catch (error) {
       return { code: error.code, stdout: error.stdout, stderr: error.stderr };
@@ -61,7 +61,7 @@ const mockProvider = `
     const reply = { label: 'Synthetic response', summary: 'Synthetic summary. Needs review. No semantic pass.', confirmedNodeIds: [id] };
     return new Response(JSON.stringify({ id: 'synthetic-completion', object: 'chat.completion', created: 1, model: 'actual-vision-model',
       choices: [{ index: 0, finish_reason: 'stop', message: { role: 'assistant', content: JSON.stringify(reply) } }],
-      ...(calls === 3 ? {} : { usage: { prompt_tokens: 100, completion_tokens: 20, total_tokens: 120, cost: 0 } }),
+      ...(calls === 3 ? {} : { usage: { prompt_tokens: 100, completion_tokens: 20, total_tokens: 120, completion_tokens_details: { reasoning_tokens: 10 }, cost: 0 } }),
     }), { headers: { 'content-type': 'application/json' } });
   };
 `;
@@ -122,16 +122,17 @@ describe("vision evaluation CLI", () => {
     expect(execution.code, execution.stderr).toBe(0);
     const result = JSON.parse(execution.stdout);
     expect(result).toMatchObject({ mode: "explicit-provider-evaluation", fixtures: 2, apiCalls: 3, semanticReview: "required" });
-    expect(result.providerEvaluation).toMatchObject({ models: ["synthetic-vision"], sdkRetries: 0, perCaseTimeoutMs: 45000, maxOutputTokens: 4096 });
+    expect(result.providerEvaluation).toMatchObject({ models: ["synthetic-vision"], sdkRetries: 0, perCaseTimeoutMs: 75000, requestTimeoutMs: 60000, maxOutputTokens: 4096 });
     expect(result.tokenUsage).toMatchObject({ receivedCompletions: 2,
-      totalTokens: { reportedSum: 120, reportedCompletions: 1, missingCompletions: 1 } });
+      totalTokens: { reportedSum: 120, reportedCompletions: 1, missingCompletions: 1, missingAttempts: 2 },
+      reasoningTokens: { reportedSum: 10, missingAttempts: 2 }, providerReportedCost: { reportedSum: 0, missingAttempts: 2 } });
     expect(result.cases[0].attempts.map(attempt => attempt.httpStatus)).toEqual([400, 200]);
     expect(result.cases[0].attempts.map(attempt => attempt.responseFormat)).toEqual(["json_schema", "json_object"]);
     for (const item of result.cases) {
       expect(item.structuralIssues).toEqual([]);
       expect(item.output).toMatchObject({ summarySource: "vision_llm", modelId: "synthetic-vision" });
       const response = item.attempts.at(-1);
-      expect(response).toMatchObject({ responseComplete: true, completion: { actualModel: "actual-vision-model", rawIdValidation: "passed" } });
+      expect(response).toMatchObject({ bodyState: "complete", responseComplete: true, completion: { actualModel: "actual-vision-model", rawIdValidation: "passed" } });
       expect(JSON.parse(response.completion.rawContent)).toEqual(response.completion.rawJson);
       expect(response.completion.rawConfirmedNodeIds).toEqual(item.expected.requiredConfirmedNodeIds);
       expect(item).not.toHaveProperty("passed");
@@ -154,19 +155,61 @@ describe("vision evaluation CLI", () => {
   it("aborts a stalled response body at the case deadline and never claims a completion", async () => {
     const execution = await runWithProvider(`
       const timeout = AbortSignal.timeout.bind(AbortSignal);
-      AbortSignal.timeout = ms => { if (ms !== 45000) throw new Error('Unexpected deadline'); return timeout(100); };
+      AbortSignal.timeout = ms => { if (ms !== 75000) throw new Error('Unexpected deadline'); return timeout(100); };
       globalThis.fetch = async () => new Response(new ReadableStream({
         start(controller) { controller.enqueue(new TextEncoder().encode('{"choices":[')); },
       }), { headers: { 'content-type': 'application/json' } });
     `);
     expect(execution.code, execution.stderr).toBe(1);
     const result = JSON.parse(execution.stdout);
-    expect(result).toMatchObject({ apiCalls: 2, tokenUsage: { receivedCompletions: 0 } });
+    expect(result).toMatchObject({ apiCalls: 2, tokenUsage: { receivedCompletions: 0,
+      totalTokens: { missingAttempts: 2 }, providerReportedCost: { missingAttempts: 2 } } });
     for (const item of result.cases) {
       expect(item).toMatchObject({ error: "EvaluationTimeoutError", httpAttempts: 1 });
-      expect(item.attempts[0]).toMatchObject({ httpStatus: 200, responseComplete: false });
+      expect(item.attempts[0]).toMatchObject({ httpStatus: 200, bodyState: "aborted", responseComplete: false });
+      expect(item.attempts[0].elapsedMs).toBeGreaterThan(0);
       expect(item.attempts[0].completion).toBeUndefined();
       expect(item.output).toBeUndefined();
+    }
+  });
+
+  it("records SDK body timeouts separately from the later evaluation deadline", async () => {
+    const execution = await runWithProvider(`
+      globalThis.fetch = async () => new Response(new ReadableStream({
+        start(controller) { controller.enqueue(new TextEncoder().encode('{"choices":[')); },
+      }), { headers: { 'content-type': 'application/json' } });
+    `, { LLM_VISION_REQUEST_TIMEOUT_MS: "1000" });
+    expect(execution.code, execution.stderr).toBe(1);
+    const result = JSON.parse(execution.stdout);
+    expect(result.providerEvaluation).toMatchObject({ requestTimeoutMs: 1000, perCaseTimeoutMs: 75000 });
+    expect(result.apiCalls).toBe(2);
+    for (const item of result.cases) {
+      expect(item).toMatchObject({ error: "LlmTimeoutError", httpAttempts: 1 });
+      expect(item.attempts[0]).toMatchObject({ httpStatus: 200, bodyState: "aborted", responseComplete: false });
+      expect(item.attempts[0].elapsedMs).toBeGreaterThanOrEqual(900);
+      expect(item.attempts[0].elapsedMs).toBeLessThan(3000);
+      expect(item.attempts[0].completion).toBeUndefined();
+      expect(item.output).toBeUndefined();
+    }
+  });
+
+  it("records interrupted response bodies without inventing completion usage", async () => {
+    const execution = await runWithProvider(`
+      globalThis.fetch = async () => new Response(new ReadableStream({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode('{"choices":['));
+          setTimeout(() => controller.error(new Error('Synthetic read failure')), 25);
+        },
+      }), { headers: { 'content-type': 'application/json' } });
+    `);
+    expect(execution.code, execution.stderr).toBe(1);
+    const result = JSON.parse(execution.stdout);
+    expect(result).toMatchObject({ apiCalls: 2, tokenUsage: { receivedCompletions: 0,
+      totalTokens: { missingAttempts: 2 }, providerReportedCost: { missingAttempts: 2 } } });
+    for (const item of result.cases) {
+      expect(item.attempts[0]).toMatchObject({ httpStatus: 200, bodyState: "interrupted", responseComplete: false });
+      expect(item.attempts[0].elapsedMs).toBeGreaterThan(0);
+      expect(item.attempts[0].completion).toBeUndefined();
     }
   });
 });

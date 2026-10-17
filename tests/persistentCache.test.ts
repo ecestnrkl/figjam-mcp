@@ -22,7 +22,7 @@ describe("v4 persistence", () => {
     await expect(c.readLatestBoard(input.fileKey)).resolves.toBeUndefined();
     await c.persistBoard(input);
     const restored = await c.readLatestBoard(input.fileKey);
-    expect(restored).toMatchObject({ schemaVersion: 4, nodes: input.nodes, clusters: input.clusters, createdAt: 1 });
+    expect(restored).toMatchObject({ schemaVersion: 4, extractionVersion: 5, nodes: input.nodes, clusters: input.clusters, createdAt: 1 });
     const names = await readdir(path.join(root, "v4"));
     expect(names.some(n => n.startsWith("source-"))).toBe(true);
     expect(names.some(n => n.endsWith(".tmp"))).toBe(false);
@@ -42,6 +42,49 @@ describe("v4 persistence", () => {
     const history = await c.readBoardHistory("AbC123");
     expect(history).toHaveLength(1);
     expect(history[0]).toMatchObject({ cacheKey: "another-model", createdAt: 1 });
+  });
+  it.each([undefined, 4])("preserves historical extraction %s snapshots beside the new extraction", async (extractionVersion) => {
+    const c = await import("../src/lib/persistentCache.js");
+    const input = board();
+    const nodeHash = c.hashNormalizedNodes(input.nodes);
+    const snapshotId = c.buildSnapshotId(input.fileKey, nodeHash, 4);
+    const legacy = { ...input, schemaVersion: 4, extractionVersion, snapshotId, nodeHash };
+    const { nodes, connectorEdges, ...derived } = legacy;
+    const source = JSON.stringify({ schemaVersion: 4, extractionVersion, snapshotId, fileKey: input.fileKey, nodes, connectorEdges });
+    const refinement = JSON.stringify({ schemaVersion: 4, revisionId: "legacy", snapshotId, derived });
+    const directory = path.join(root, "v4");
+    await mkdir(directory);
+    await writeFile(path.join(directory, `source-${snapshotId}.json`), source);
+    await writeFile(path.join(directory, "refinement-legacy.json"), refinement);
+    await writeFile(path.join(directory, `board-${input.fileKey}.json`), JSON.stringify({ schemaVersion: 4,
+      latest: input.cacheKey, latestRevision: "legacy", history: [{ cacheKey: input.cacheKey, refinementId: "legacy", snapshotId, nodeHash, createdAt: 1 }] }));
+    const historical = await c.readLatestBoard(input.fileKey);
+    expect(historical).toMatchObject({ extractionVersion: 4, snapshotId, nodes: input.nodes });
+    await c.persistBoard({ ...input, cacheKey: "new-extraction", createdAt: 2 });
+    const current = await c.readLatestBoard(input.fileKey);
+    expect(current).toMatchObject({ extractionVersion: 5, createdAt: 2 });
+    expect(current?.snapshotId).not.toBe(snapshotId);
+    expect(await c.readBoardHistory(input.fileKey)).toHaveLength(2);
+    expect(await c.readBoardSnapshot(input.fileKey, snapshotId)).toEqual(historical);
+    expect(await readFile(path.join(directory, `source-${snapshotId}.json`), "utf8")).toBe(source);
+    expect(await readFile(path.join(directory, "refinement-legacy.json"), "utf8")).toBe(refinement);
+  });
+  it("rejects mismatched extraction versions and hashes instead of changing source identity", async () => {
+    const c = await import("../src/lib/persistentCache.js");
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    await c.persistBoard(board());
+    const current = (await c.readLatestBoard("AbC123"))!;
+    const entry = (await c.readBoardHistory("AbC123"))[0]!;
+    const sourcePath = path.join(root, "v4", `source-${current.snapshotId}.json`);
+    const refinementPath = path.join(root, "v4", `refinement-${entry.refinementId}.json`);
+    const source = JSON.parse(await readFile(sourcePath, "utf8"));
+    source.extractionVersion = 4;
+    await writeFile(sourcePath, JSON.stringify(source));
+    await expect(c.readLatestBoard("AbC123")).resolves.toBeUndefined();
+    const refinement = JSON.parse(await readFile(refinementPath, "utf8"));
+    refinement.derived.extractionVersion = 4;
+    await writeFile(refinementPath, JSON.stringify(refinement));
+    await expect(c.readLatestBoard("AbC123")).resolves.toBeUndefined();
   });
   // Each publication flushes real files; shared Windows runners need more than
   // the default five seconds for all 25 serialized publications.

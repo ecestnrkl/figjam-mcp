@@ -22,6 +22,7 @@ import {
   persistBoard,
   buildSnapshotId,
   getRefinementSignature,
+  EXTRACTION_VERSION,
 } from "../lib/persistentCache.js";
 
 /**
@@ -37,7 +38,7 @@ const MAX_SCREENSHOTS_PER_CLUSTER = 6;
  * Keep the expensive vision phase inside a local budget and fall back to a
  * deterministic text summary for remaining clusters.
  */
-const VISION_BUDGET_MS = readIntEnv("INGEST_BOARD_VISION_BUDGET_MS", 35000, 0);
+const VISION_BUDGET_MS = readIntEnv("INGEST_BOARD_VISION_BUDGET_MS", 90_000, 0);
 const MIN_VISION_SLOT_MS = readIntEnv("INGEST_BOARD_MIN_VISION_SLOT_MS", 10000, 0);
 
 /**
@@ -89,7 +90,7 @@ async function performIngest(input: IngestBoardInput, options: OperationOptions)
   let figmaLastModified: string | undefined;
   let figmaVersion: string | undefined;
   let unchanged = false;
-  if (previousBoard?.figmaVersion && !input.forceFullIngest) {
+  if (previousBoard?.figmaVersion && previousBoard.extractionVersion === EXTRACTION_VERSION && !input.forceFullIngest) {
     try {
       const metadata = await fetchFileMetadata(fileKey, token, signal);
       unchanged = metadata.version === previousBoard.figmaVersion;
@@ -120,7 +121,8 @@ async function performIngest(input: IngestBoardInput, options: OperationOptions)
   const refinementSignature = getRefinementSignature();
   const cacheKey = buildBoardCacheKey({ fileKey, nodeHash, docStructureHint: input.docStructureHint,
     customPhases: input.customPhases, ingestMode });
-  const cached = input.forceFullIngest ? undefined : await readCachedBoard(cacheKey, fileKey);
+  const cacheCandidate = input.forceFullIngest ? undefined : await readCachedBoard(cacheKey, fileKey);
+  const cached = cacheCandidate?.extractionVersion === EXTRACTION_VERSION ? cacheCandidate : undefined;
   if (cached && !cached.clusters.some(cluster => cluster.incomplete)) {
     const clusters = cached.clusters.map(cluster => ({ ...cluster, cacheHit: true }));
     const board: BoardData = { ...cached, clusters, freshnessCheckedAt, figmaVersion, figmaLastModified,
@@ -133,7 +135,7 @@ async function performIngest(input: IngestBoardInput, options: OperationOptions)
   }
   await progress("cluster", 2);
   const reuseBoard = cached ?? previousBoard;
-  const reuseIndex = input.forceFullIngest || reuseBoard?.refinementSignature !== refinementSignature
+  const reuseIndex = input.forceFullIngest || reuseBoard?.extractionVersion !== EXTRACTION_VERSION || reuseBoard?.refinementSignature !== refinementSignature
     ? new Map<string, RefinedCluster>() : buildReuseIndex(reuseBoard);
   const clusters = partitionedBoardClusters(nodes);
   if (!clusters.length) throw new Error(`Board ${fileKey} contains no content nodes to ingest`);
@@ -220,7 +222,7 @@ async function performIngest(input: IngestBoardInput, options: OperationOptions)
   const finalClusters = mapClustersToPhases(refined, input.docStructureHint, input.customPhases);
   const qualityReport = { ...buildQualityReport(finalClusters, reusedCount), reusedClusters: reusedCount };
   const board: BoardData = {
-    schemaVersion: 4, boardId: fileKey, fileKey, docStructureHint: input.docStructureHint,
+    schemaVersion: 4, extractionVersion: EXTRACTION_VERSION, boardId: fileKey, fileKey, docStructureHint: input.docStructureHint,
     customPhases: input.customPhases, ingestMode, cacheKey, snapshotId, figmaLastModified, figmaVersion,
     freshnessCheckedAt, nodeHash, refinementSignature, modelPreset: describeModelConfig().preset,
     qualityReport, nodes, clusters: finalClusters, connectorEdges,
@@ -310,7 +312,7 @@ function hasVisionBudget(deadline: number): boolean {
 
 class VisionDeadlineExceededError extends Error {
   constructor() {
-    super("Vision phase deadline exceeded");
+    super(`Vision phase deadline exceeded (${VISION_BUDGET_MS} ms)`);
     this.name = "VisionDeadlineExceededError";
   }
 }

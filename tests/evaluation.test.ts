@@ -64,7 +64,7 @@ describe("retrieval evaluation CLI", () => {
           const context = request.messages.find(message => message.role === "user").content;
           const id = context.match(/\\[(ev_[a-f0-9]+)\\]/)[1];
           return new Response(JSON.stringify({ id: "completion", object: "chat.completion", created: 1, model: request.model,
-            choices: [{ index: 0, finish_reason: "stop", message: { role: "assistant", content: JSON.stringify({ answer: calls > 19 ? "Nein, der Simulator ist nicht gebucht." : "Source excerpt.", evidenceIds: [id] }) } }],
+            choices: [{ index: 0, finish_reason: "stop", message: { role: "assistant", content: JSON.stringify({ kind: "answer", language: "en", answer: calls > 19 ? "Nein, der Simulator ist nicht gebucht." : "Source excerpt.", evidenceIds: [id] }) } }],
             ...(calls === 19 ? {} : { usage: { prompt_tokens: 100, completion_tokens: 20, total_tokens: 120 } }),
           }), { headers: { "content-type": "application/json" } });
         };
@@ -106,7 +106,7 @@ describe("retrieval evaluation CLI", () => {
           if (!context.includes("Question: Ist der Simulator") || ++calls > 5) throw new Error("Unexpected provider case");
           const ids = [...context.matchAll(/\\[(ev_[a-f0-9]+)\\]/g)].map(match => match[1]);
           return new Response(JSON.stringify({ id: "completion", object: "chat.completion", created: 1, model: request.model,
-            choices: [{ index: 0, finish_reason: "stop", message: { role: "assistant", content: JSON.stringify({ answer: "Synthetic answer requiring review.", evidenceIds: ids }) } }],
+            choices: [{ index: 0, finish_reason: "stop", message: { role: "assistant", content: JSON.stringify({ kind: "answer", language: "en", answer: "Synthetic answer requiring review.", evidenceIds: ids }) } }],
             usage: { prompt_tokens: 100, completion_tokens: 20, total_tokens: 120 },
           }), { headers: { "content-type": "application/json" } });
         };

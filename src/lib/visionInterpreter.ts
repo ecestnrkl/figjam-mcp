@@ -1,6 +1,7 @@
 import type OpenAI from "openai";
 import type { Cluster, NormalizedNode, RefinedCluster, ConnectorEdge } from "../types.js";
 import { readIntEnv } from "./env.js";
+import { getVisionRequestTimeoutMs } from "./llmTimeouts.js";
 import { chatJson, getVisionModels, LlmInvalidJsonError } from "./llmClient.js";
 
 /**
@@ -70,6 +71,7 @@ export async function refineClusterWithVision(
       schemaName: "figjam_cluster_refinement",
       jsonSchema: VISION_REPLY_SCHEMA,
       maxOutputTokens: VISION_MAX_OUTPUT_TOKENS,
+      requestTimeoutMs: getVisionRequestTimeoutMs(),
       signal,
       onModelUsed: (model) => {
         modelId = model;

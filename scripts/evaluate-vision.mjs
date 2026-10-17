@@ -7,7 +7,7 @@ import { performance } from "node:perf_hooks";
 import { pathToFileURL } from "node:url";
 
 const defaultFixtures = new URL("../tests/fixtures/vision/", import.meta.url);
-const perCaseTimeoutMs = 45_000;
+const perCaseTimeoutMs = 75_000;
 const maxObservedBytes = 1024 * 1024;
 const digest = bytes => createHash("sha256").update(bytes).digest("hex");
 
@@ -73,6 +73,7 @@ function recordCompletion(attempt, body) {
       promptTokens: numberOrNull(envelope.usage?.prompt_tokens),
       completionTokens: numberOrNull(envelope.usage?.completion_tokens),
       totalTokens: numberOrNull(envelope.usage?.total_tokens),
+      reasoningTokens: numberOrNull(envelope.usage?.completion_tokens_details?.reasoning_tokens),
       providerReportedCost: numberOrNull(envelope.usage?.cost),
     },
   };
@@ -81,7 +82,20 @@ const numberOrNull = value => Number.isFinite(value) ? value : null;
 
 /** Observe only bytes consumed by the SDK; do not start a second body reader. */
 function observeResponse(response, attempt, start, signal) {
-  if (!response.body) return response;
+  let finished = false;
+  const finish = state => {
+    if (finished) return;
+    finished = true;
+    attempt.bodyState = state;
+    attempt.responseComplete = state === "complete";
+    attempt.elapsedMs = roundMs(performance.now() - start);
+    signal?.removeEventListener("abort", onAbort);
+  };
+  const onAbort = () => finish("aborted");
+  if (!response.body) { finish("absent"); return response; }
+  attempt.bodyState = "reading";
+  signal?.addEventListener("abort", onAbort, { once: true });
+  if (signal?.aborted) onAbort();
   const chunks = [];
   let bytes = 0;
   const observer = new TransformStream({
@@ -92,12 +106,15 @@ function observeResponse(response, attempt, start, signal) {
       controller.enqueue(chunk);
     },
     flush() {
-      attempt.responseComplete = true;
-      attempt.elapsedMs = roundMs(performance.now() - start);
-      if (!attempt.captureTruncated && response.ok) recordCompletion(attempt, Buffer.concat(chunks).toString("utf8"));
+      finish("complete");
+      if (attempt.responseComplete && !attempt.captureTruncated && response.ok) recordCompletion(attempt, Buffer.concat(chunks).toString("utf8"));
     },
   });
-  return new Response(response.body.pipeThrough(observer, signal ? { signal } : undefined), {
+  // Observe pipeline settlement without consuming the body a second time. A
+  // rejected source or cancelled reader does not run TransformStream.flush().
+  void response.body.pipeTo(observer.writable, signal ? { signal } : undefined)
+    .catch(() => finish(signal?.aborted ? "aborted" : "interrupted"));
+  return new Response(observer.readable, {
     status: response.status, statusText: response.statusText, headers: response.headers,
   });
 }
@@ -114,6 +131,7 @@ function observedFetch(originalFetch, observation) {
       temperature: request.temperature ?? null,
       requestSha256: digest(JSON.stringify(request)),
       responseComplete: false,
+      bodyState: "awaiting_headers",
     };
     attempts.push(attempt);
     try {
@@ -123,6 +141,7 @@ function observedFetch(originalFetch, observation) {
       return observeResponse(response, attempt, attemptStart, init?.signal ? AbortSignal.any([signal, init.signal]) : signal);
     } catch (cause) {
       attempt.elapsedMs = roundMs(performance.now() - attemptStart);
+      attempt.bodyState = signal.aborted || init?.signal?.aborted ? "aborted" : "fetch_failed";
       // The product still receives its original error; no provider error body is recorded.
       throw cause;
     }
@@ -184,15 +203,18 @@ async function evaluateFixture(fixture, refineClusterWithVision, observation) {
 const roundMs = value => Number(value.toFixed(3));
 
 function aggregateUsage(cases) {
-  const completions = cases.flatMap(item => item.attempts?.flatMap(attempt => attempt.completion ? [attempt.completion] : []) ?? []);
+  const attempts = cases.flatMap(item => item.attempts ?? []);
+  const completions = attempts.flatMap(attempt => attempt.completion ? [attempt.completion] : []);
   return {
+    httpAttempts: attempts.length,
     receivedCompletions: completions.length,
-    ...Object.fromEntries(["promptTokens", "completionTokens", "totalTokens"].map(field => {
+    ...Object.fromEntries(["promptTokens", "completionTokens", "totalTokens", "reasoningTokens", "providerReportedCost"].map(field => {
       const reported = completions.filter(item => Number.isFinite(item.usage[field]));
       return [field, { reportedSum: reported.reduce((sum, item) => sum + item.usage[field], 0),
-        reportedCompletions: reported.length, missingCompletions: completions.length - reported.length }];
+        reportedCompletions: reported.length, missingCompletions: completions.length - reported.length,
+        missingAttempts: attempts.length - reported.length }];
     })),
-    note: "Only provider-reported usage is summed. Missing usage and failed attempts may still incur charges; currency costs are not independently measured.",
+    note: "Only provider-reported usage is summed. Reasoning tokens are included in completion tokens. Missing attempt usage and costs are unknown, not zero; currency costs are not independently measured.",
   };
 }
 
@@ -213,10 +235,11 @@ export async function main(flags = process.argv.slice(2)) {
     process.env.LLM_SDK_MAX_RETRIES = "0";
     const { getModelConfig } = await import("../src/lib/modelRegistry.ts");
     const { readIntEnv } = await import("../src/lib/env.ts");
+    const { getVisionRequestTimeoutMs } = await import("../src/lib/llmTimeouts.ts");
     providerEvaluation = {
       providerOrigin: new URL(process.env.LLM_BASE_URL).origin,
       models: getModelConfig().visionModels, providerRequireParameters: getModelConfig().providerRequireParameters,
-      perCaseTimeoutMs, requestTimeoutMs: readIntEnv("LLM_REQUEST_TIMEOUT_MS", 20000, 1000),
+      perCaseTimeoutMs, requestTimeoutMs: getVisionRequestTimeoutMs(),
       maxOutputTokens: readIntEnv("LLM_VISION_MAX_OUTPUT_TOKENS", 4096, 256),
       rateLimitRetries: readIntEnv("LLM_RATE_LIMIT_RETRIES", 1, 0),
       rateLimitMaxBackoffMs: readIntEnv("LLM_RATE_LIMIT_MAX_BACKOFF_MS", 5000, 0), sdkRetries: 0,

@@ -226,7 +226,7 @@ try {
         } else if (schema === 'figjam_evidence_answer') {
           const evidenceId = body.messages.find(message => message.role === 'user')?.content.match(/\\[(ev_[a-f0-9]+)\\]/)?.[1];
           assert(evidenceId, 'Answer request must contain an original evidence ID');
-          reply = { answer: 'Workshop finding version 2.', evidenceIds: [evidenceId] };
+          reply = { kind: 'answer', language: 'en', answer: 'Workshop finding version 2.', evidenceIds: [evidenceId] };
         } else if (schema === 'diagnose_text_json') reply = { result: 42 };
         else if (schema === 'diagnose_fast_text_json') reply = { result: 63 };
         else if (schema === 'diagnose_vision_json') reply = { dominantColor: 'blue' };

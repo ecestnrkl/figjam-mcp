@@ -2,6 +2,15 @@
 
 ## 0.4.0 — Unreleased
 
+- Recognize Figma LINE_ARROW direction and exclude page/canvas anchors from
+  semantic connections. Recompute upgraded extractions while retaining readable
+  historical snapshots.
+- Rank original text and metadata separately, support bounded compound-word
+  prefixes and protect primary excerpts from unrelated table/graph expansion.
+- Render cited task/question/proposal uncertainty explanations locally from the
+  internal answer classification; invalid replies fall back to source excerpts.
+- Add a separate 60-second vision request default with explicit global-override
+  compatibility, a 90-second vision phase and terminal response-body telemetry.
 - Distinguish unavailable models from unsupported JSON formats, avoiding repeated
   format attempts for a missing model. Verify response-body timeouts and caller
   cancellation against a real local HTTP server and the installed SDK.

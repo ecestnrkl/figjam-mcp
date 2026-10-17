@@ -1,6 +1,7 @@
 import type { DiagnoseLlmConfigOutput } from "../schemas/diagnoseLlmConfig.js";
 import { chatJson, getFastTextModels, getTextModels, getVisionModels } from "../lib/llmClient.js";
 import { describeModelConfig } from "../lib/modelRegistry.js";
+import { getVisionRequestTimeoutMs } from "../lib/llmTimeouts.js";
 
 const TEXT_DIAG_SCHEMA = {
   type: "object",
@@ -70,7 +71,7 @@ export async function diagnoseLlmConfig(options: { signal?: AbortSignal } = {}):
           },
         ],
       },
-    ], VISION_DIAG_SCHEMA, expectDominantColor("blue"), options.signal),
+    ], VISION_DIAG_SCHEMA, expectDominantColor("blue"), options.signal, getVisionRequestTimeoutMs()),
   );
 
   const ok = checks.every((check) => check.ok);
@@ -95,12 +96,14 @@ async function runCheck(
   jsonSchema: Record<string, unknown>,
   validateReply: ReplyValidator,
   signal?: AbortSignal,
+  requestTimeoutMs?: number,
 ): Promise<CheckResult> {
   signal?.throwIfAborted();
   let modelUsed: string | undefined;
   try {
     const reply = await chatJson(models, messages, {
       signal,
+      requestTimeoutMs,
       maxOutputTokens: 256,
       schemaName: `diagnose_${name}`,
       jsonSchema,

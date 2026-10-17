@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const { chatJsonMock } = vi.hoisted(() => ({ chatJsonMock: vi.fn() }));
 
@@ -24,6 +24,7 @@ const { diagnoseLlmConfig } = await import("../src/tools/diagnoseLlmConfig.js");
 beforeEach(() => {
   chatJsonMock.mockReset();
 });
+afterEach(() => vi.unstubAllEnvs());
 
 describe("diagnoseLlmConfig", () => {
   it("does not start diagnostics after cancellation", async () => {
@@ -45,6 +46,8 @@ describe("diagnoseLlmConfig", () => {
   });
 
   it("reports ok when text and vision checks pass", async () => {
+    vi.stubEnv("LLM_REQUEST_TIMEOUT_MS", "20000");
+    vi.stubEnv("LLM_VISION_REQUEST_TIMEOUT_MS", "60000");
     chatJsonMock
       .mockResolvedValueOnce({ result: 42 })
       .mockResolvedValueOnce({ result: 63 })
@@ -60,6 +63,8 @@ describe("diagnoseLlmConfig", () => {
       "vision_json",
     ]);
     expect(chatJsonMock.mock.calls[1]?.[0]).toEqual(["fast-model"]);
+    expect(chatJsonMock.mock.calls.map(([, , options]) => options.requestTimeoutMs)).toEqual([undefined, undefined, 60000]);
+    expect(chatJsonMock.mock.calls.map(([, , options]) => options.maxOutputTokens)).toEqual([256, 256, 256]);
     expect(result.summary).toContain("OK");
 
     const visionMessages = chatJsonMock.mock.calls[2]?.[1] as Array<{

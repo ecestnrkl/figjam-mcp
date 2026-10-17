@@ -147,6 +147,28 @@ describe("LLM requests through real local HTTP and the OpenAI SDK", () => {
     expect(onUsage).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ model: "available/model", totalTokens: 2 }));
   });
 
+  it("allows a longer request override through body completion and keeps the next text deadline unchanged", async () => {
+    vi.stubEnv("LLM_REQUEST_TIMEOUT_MS", "1000");
+    const closed = deferred();
+    const { chatJson } = await localClient(async (request, response) => {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.flushHeaders();
+      if (request.model === "longer/vision") {
+        await new Promise(resolve => setTimeout(resolve, 1250));
+        response.end(JSON.stringify({ choices: [{ message: { content: '{"ok":true}' }, finish_reason: "stop" }] }));
+      } else response.once("close", closed.resolve);
+    });
+    await expect(chatJson("longer/vision", messages, { ...schemaOptions, requestTimeoutMs: 2500 }))
+      .resolves.toEqual({ ok: true });
+    const started = performance.now();
+    await expect(chatJson("ordinary/text", messages, schemaOptions))
+      .rejects.toThrow("LLM request timed out after 1s.");
+    expect(performance.now() - started).toBeGreaterThanOrEqual(900);
+    expect(performance.now() - started).toBeLessThan(2000);
+    await closed.promise;
+    expect(requests.map(request => request.model)).toEqual(["longer/vision", "ordinary/text"]);
+  });
+
   it("cancels a stalled response body and preserves the caller reason without trying another model", async () => {
     const ready = deferred();
     const closed = deferred();
@@ -159,7 +181,7 @@ describe("LLM requests through real local HTTP and the OpenAI SDK", () => {
     });
     const controller = new AbortController();
     const reason = new Error("Caller stopped the synthetic request");
-    const pending = chatJson(["stalled/model", "unused/model"], messages, { ...schemaOptions, signal: controller.signal });
+    const pending = chatJson(["stalled/model", "unused/model"], messages, { ...schemaOptions, requestTimeoutMs: 60000, signal: controller.signal });
     const rejected = expect(pending).rejects.toBe(reason);
     await ready.promise;
     controller.abort(reason);

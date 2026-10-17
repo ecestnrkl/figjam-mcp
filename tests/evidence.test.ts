@@ -78,6 +78,72 @@ describe("source evidence", () => {
     expect(formatEvidence(result.evidence[1]!)).not.toMatch(/Row index|Column index/);
   });
 
+  it("keeps the primary boundary separate from same-row context and excludes other rows", () => {
+    const board = evidenceBoard("TableExactRow", [{ ...textNode("table", ""), type: "TABLE", table: { cells: [
+      { id: "unrelated-person", text: "Person A", row: 0, column: 0 },
+      { id: "target", text: "Budget", row: 4, column: 0 },
+      { id: "value", text: "999", row: 4, column: 1 },
+      { id: "other-date", text: "Friday", row: 5, column: 1 },
+    ] } }]);
+    const result = retrieveEvidence(board, { query: "Budget", limit: 1, includeNeighbors: true });
+    expect(result.evidence.map((item) => item.nodeId)).toEqual(["target", "value"]);
+    expect(result.primaryEvidenceIds).toEqual([result.evidence[0]!.evidenceId]);
+  });
+
+  it("does not attach arbitrary leading rows from a large table without coordinates", () => {
+    const board = evidenceBoard("LargeUnpositioned", [{ ...textNode("table", ""), type: "TABLE", table: { cells: [
+      ...Array.from({ length: 20 }, (_, i) => ({ id: `person:${i}`, text: `Person ${i}` })),
+      { id: "target", text: "Synthesis: slide 10, one minute" },
+    ] } }]);
+    const result = retrieveEvidence(board, { query: "synthesis", includeNeighbors: true });
+    expect(result.evidence.map((item) => item.nodeId)).toEqual(["target"]);
+    expect(result.evidence[0]!.row).toBeUndefined();
+  });
+
+  it("adds an unpositioned small table completely or not at all", () => {
+    const board = evidenceBoard("AtomicTable", [{ ...textNode("table", ""), type: "TABLE", table: { cells: [
+      { id: "label", text: "Budget" }, { id: "value", text: "999" }, { id: "unit", text: "EUR" },
+    ] } }]);
+    expect(retrieveEvidence(board, { query: "Budget", includeNeighbors: true, tableNeighborLimit: 1 })
+      .evidence.map((item) => item.nodeId)).toEqual(["label"]);
+    expect(retrieveEvidence(board, { query: "Budget", includeNeighbors: true, tableNeighborLimit: 2 })
+      .evidence.map((item) => item.nodeId)).toEqual(["label", "value", "unit"]);
+  });
+
+  it("does not use added table cells as new graph expansion anchors", () => {
+    const board = evidenceBoard("TableGraphBoundary", [
+      { ...textNode("table", ""), type: "TABLE", table: { cells: [
+        { id: "label", text: "Budget", row: 0, column: 0 },
+        { id: "value", text: "999", row: 0, column: 1 },
+      ] } },
+      textNode("direct", "Approval process"), textNode("indirect", "Unrelated department"),
+    ]);
+    board.connectorEdges = [
+      { connectorId: "edge:direct", fromNodeId: "label", toNodeId: "direct", direction: "reverse" },
+      { connectorId: "edge:indirect", fromNodeId: "value", toNodeId: "indirect" },
+    ];
+    const result = retrieveEvidence(board, { query: "Budget", limit: 1, includeNeighbors: true });
+    expect(result.evidence.map((item) => item.nodeId)).toEqual(["label", "value", "direct"]);
+    expect(result.connections).toHaveLength(1);
+    expect(result.connections[0]!.direction).toBe("reverse");
+  });
+
+  it("does not choose a prefix of a large graph-neighbor table", () => {
+    const board = evidenceBoard("GraphTableBound", [
+      textNode("source", "Payment finding"),
+      { ...textNode("table", ""), type: "TABLE", table: { cells:
+        Array.from({ length: 10 }, (_, i) => ({ id: `value:${i}`, text: `Cell ${i}` })),
+      } },
+      textNode("other", "Release plan"),
+    ]);
+    board.connectorEdges = [
+      { connectorId: "edge:table", fromNodeId: "source", toNodeId: "table" },
+      { connectorId: "edge:other", fromNodeId: "source", toNodeId: "other" },
+    ];
+    const result = retrieveEvidence(board, { query: "payment", limit: 1, includeNeighbors: true, neighborLimit: 3 });
+    expect(result.evidence.map((item) => item.nodeId)).toEqual(["source", "other"]);
+  });
+
   it("marks visual interpretations explicitly without replacing original text", () => {
     const board = evidenceBoard();
     board.nodes[0]!.imageRef = "image-hash";

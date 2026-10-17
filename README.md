@@ -257,15 +257,24 @@ The server now keeps provider calls bounded by default:
 - `FIGMA_REQUEST_TIMEOUT_MS=15000`
 - `FIGMA_FILE_REQUEST_TIMEOUT_MS=60000`
 - `LLM_REQUEST_TIMEOUT_MS=20000`
+- `LLM_VISION_REQUEST_TIMEOUT_MS=60000` (an explicit global request timeout is
+  inherited unless this vision-specific setting is also supplied)
 - `LLM_RATE_LIMIT_RETRIES=1`
 - `LLM_ANSWER_MAX_OUTPUT_TOKENS=2048` (includes any provider reasoning tokens)
 - `LLM_VISION_MAX_OUTPUT_TOKENS=4096`
 - `LLM_ANSWER_TOP_K=6`
 - `LLM_ANSWER_PROMPT_MAX_CHARS=24000`
-- `INGEST_BOARD_VISION_BUDGET_MS=35000`
+- `INGEST_BOARD_VISION_BUDGET_MS=90000`
 - `INGEST_BOARD_VISION_CONCURRENCY=3`
 - `FIGMA_SCREENSHOT_DOWNLOAD_CONCURRENCY=3`
 - `FIGJAM_MCP_MEMORY_CACHE_MAX_BOARDS=10`
+
+Vision diagnostics use the same vision request timeout. The phase deadline and
+client cancellation can end a request earlier; 60 seconds is a maximum, not a
+guaranteed slot for each cluster. A full ingest also includes Figma metadata,
+file loading and persistence. The acceptance client uses a bounded 180-second
+stdio deadline, while direct image evaluation uses 75 seconds per case.
+Existing explicit timeout and vision-budget overrides remain effective.
 
 `ingest_board` defaults to `ingestMode: "balanced"`: text-rich clusters use
 deterministic summaries, while image-heavy or low-text clusters use vision

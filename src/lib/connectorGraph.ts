@@ -14,10 +14,19 @@ import type { Cluster, ClusterRelation, ConnectorEdge, NormalizedNode, RefinedCl
  * without both endpoints there is no relation to express.
  */
 export function extractConnectorEdges(nodes: NormalizedNode[]): ConnectorEdge[] {
+  // Canvas endpoints are coordinate anchors, not claims about a document or page.
+  const nonContentIds = new Set(nodes
+    .filter(node => ["DOCUMENT", "CANVAS", "PAGE"].includes(node.type))
+    .map(node => node.id));
+  // Normalization retains page ancestry, but omits the outer document itself.
+  for (const node of nodes) {
+    if ((node.type === "CANVAS" || node.type === "PAGE") && node.parentId) nonContentIds.add(node.parentId);
+  }
   return nodes
     .filter(
       (node) =>
-        node.type === "CONNECTOR" && Boolean(node.connectorStartId) && Boolean(node.connectorEndId),
+        node.type === "CONNECTOR" && Boolean(node.connectorStartId) && Boolean(node.connectorEndId)
+        && !nonContentIds.has(node.connectorStartId!) && !nonContentIds.has(node.connectorEndId!),
     )
     .map((node) => ({
       connectorId: node.id,
@@ -33,7 +42,7 @@ function connectorDirection(node: NormalizedNode): NonNullable<ConnectorEdge["di
   if (node.connectorStartArrowhead === undefined && node.connectorEndArrowhead === undefined) {
     return "forward";
   }
-  const hasArrow = (cap: string | undefined) => Boolean(cap?.startsWith("ARROW_") || cap === "TRIANGLE_FILLED");
+  const hasArrow = (cap: string | undefined) => Boolean(cap?.startsWith("ARROW_") || cap === "TRIANGLE_FILLED" || cap === "LINE_ARROW");
   const start = hasArrow(node.connectorStartArrowhead);
   const end = hasArrow(node.connectorEndArrowhead);
   return start && end ? "bidirectional" : start ? "reverse" : end ? "forward" : "undirected";

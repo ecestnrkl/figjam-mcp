@@ -1,6 +1,7 @@
 import OpenAI from "openai";
 import { readIntEnv } from "./env.js";
 import { getModelConfig, getModelsForRole } from "./modelRegistry.js";
+import { getLlmRequestTimeoutMs } from "./llmTimeouts.js";
 
 /**
  * Shared LLM access for visionInterpreter.ts and answerFromBoard.ts.
@@ -39,6 +40,8 @@ export class LlmInvalidJsonError extends Error {
 
 export interface ChatJsonOptions {
   maxOutputTokens?: number;
+  /** Per-HTTP-attempt deadline, including the response body; caller cancellation can end it earlier. */
+  requestTimeoutMs?: number;
   schemaName?: string;
   jsonSchema?: JsonSchema;
   onModelUsed?: (model: string) => void;
@@ -75,7 +78,7 @@ export function getLlmClient(): OpenAI {
   if (!client || clientConfig !== config) client = new OpenAI({
     baseURL,
     apiKey,
-    timeout: LLM_REQUEST_TIMEOUT_MS,
+    timeout: getLlmRequestTimeoutMs(),
     maxRetries: LLM_SDK_MAX_RETRIES,
   });
   clientConfig = config;
@@ -112,7 +115,6 @@ const MAX_RATE_LIMIT_BACKOFF_MS = readIntEnv("LLM_RATE_LIMIT_MAX_BACKOFF_MS", 50
  * The OpenAI SDK defaults to 10 minutes and retries timeouts twice. MCP UI
  * clients usually give up much earlier, so keep LLM calls bounded here.
  */
-const LLM_REQUEST_TIMEOUT_MS = readIntEnv("LLM_REQUEST_TIMEOUT_MS", 20000, 1000);
 const LLM_SDK_MAX_RETRIES = readIntEnv("LLM_SDK_MAX_RETRIES", 0, 0);
 
 /**
@@ -335,12 +337,16 @@ async function createCompletion(
   options: ChatJsonOptions = {},
 ): Promise<OpenAI.ChatCompletion> {
   const { signal } = options;
+  const requestTimeoutMs = options.requestTimeoutMs ?? getLlmRequestTimeoutMs();
+  if (!Number.isInteger(requestTimeoutMs) || requestTimeoutMs < 1000) {
+    throw new LLMConfigurationError("requestTimeoutMs must be an integer >= 1000");
+  }
   for (let attempt = 0; ; attempt++) {
     throwIfAborted(signal);
     let completion: OpenAI.ChatCompletion;
     try {
       options.onRequest?.(params.model);
-      completion = await llm.chat.completions.create(params, signal ? { signal } : undefined);
+      completion = await llm.chat.completions.create(params, { signal, timeout: requestTimeoutMs });
       options.onUsage?.({ model: params.model, promptTokens: completion.usage?.prompt_tokens,
         completionTokens: completion.usage?.completion_tokens, totalTokens: completion.usage?.total_tokens });
     } catch (error) {
@@ -349,8 +355,9 @@ async function createCompletion(
       }
       if (isLlmTimeout(error)) {
         throw new LlmTimeoutError(
-          `LLM request timed out after ${Math.round(LLM_REQUEST_TIMEOUT_MS / 1000)}s. ` +
-            "Use a faster model, lower LLM_MAX_OUTPUT_TOKENS, or increase LLM_REQUEST_TIMEOUT_MS/client timeout.",
+          `LLM request timed out after ${requestTimeoutMs / 1000}s. ` +
+            "Check the model, output-token budget and caller deadline. " +
+            "Adjust LLM_VISION_REQUEST_TIMEOUT_MS for vision or LLM_REQUEST_TIMEOUT_MS for text.",
         );
       }
       if (!(error instanceof OpenAI.RateLimitError) || attempt >= MAX_RATE_LIMIT_RETRIES) {

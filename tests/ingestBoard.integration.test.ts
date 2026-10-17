@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { BoardData, Cluster, NormalizedNode, RefinedCluster } from "../src/types.js";
@@ -69,6 +69,48 @@ afterEach(async () => {
 });
 
 describe("offline ingest pipeline with actual persistent cache", () => {
+  it("re-extracts an unchanged legacy board and retains the original connector snapshot", async () => {
+    activeTree = boardTree([sticky("idea", "Idea", 0), sticky("test", "Test", 1000),
+      { id: "arrow", name: "Arrow", type: "CONNECTOR", connectorStart: { endpointNodeId: "idea" }, connectorEnd: { endpointNodeId: "test" }, connectorStartStrokeCap: "NONE", connectorEndStrokeCap: "LINE_ARROW" },
+      { id: "canvas-anchor", name: "Anchor", type: "CONNECTOR", connectorStart: { endpointNodeId: "page" }, connectorEnd: { endpointNodeId: "page" }, connectorEndStrokeCap: "LINE_ARROW" },
+    ]);
+    const { flattenNodeTree } = await import("../src/lib/nodeTree.js");
+    const { partitionedBoardClusters } = await import("../src/lib/spatialCluster.js");
+    const nodes = flattenNodeTree(activeTree);
+    const nodeHash = persistence.hashNormalizedNodes(nodes);
+    const snapshotId = persistence.buildSnapshotId(fileKey, nodeHash, 4);
+    const oldEdges = [
+      { connectorId: "arrow", fromNodeId: "idea", toNodeId: "test", direction: "undirected" },
+      { connectorId: "canvas-anchor", fromNodeId: "page", toNodeId: "page", direction: "undirected" },
+    ];
+    const derived = { boardId: fileKey, fileKey, docStructureHint: "freeform", ingestMode: "max_quality",
+      cacheKey: "legacy-cache", schemaVersion: 4, snapshotId, nodeHash, figmaVersion: "v1", createdAt: 1,
+      refinementSignature: "old-extraction-and-prompt", clusterRelations: [],
+      clusters: partitionedBoardClusters(nodes).map(cluster => refine(cluster, [], nodes)) };
+    const directory = path.join(cacheDirectory, "v4");
+    await mkdir(directory);
+    const source = JSON.stringify({ schemaVersion: 4, snapshotId, fileKey, nodes, connectorEdges: oldEdges });
+    await writeFile(path.join(directory, `source-${snapshotId}.json`), source);
+    await writeFile(path.join(directory, "refinement-legacy.json"), JSON.stringify({ schemaVersion: 4, revisionId: "legacy", snapshotId, derived }));
+    await writeFile(path.join(directory, `board-${fileKey}.json`), JSON.stringify({ schemaVersion: 4,
+      latest: "legacy-cache", latestRevision: "legacy", history: [{ cacheKey: "legacy-cache", refinementId: "legacy", snapshotId, nodeHash, createdAt: 1 }] }));
+    expect((await persistence.readLatestBoard(fileKey))?.extractionVersion).toBe(4);
+    const result = await ingestBoard(input);
+    expect(metadataMock).not.toHaveBeenCalled();
+    expect(fileTreeMock).toHaveBeenCalledTimes(1);
+    expect(visionMock).toHaveBeenCalledTimes(2);
+    expect(result.snapshotId).not.toBe(snapshotId);
+    expect(result.relationCount).toBe(1);
+    const context = await getBoardContext({ boardId: fileKey, nodeIds: ["idea", "test", "page"] });
+    expect(context.connections).toEqual([expect.objectContaining({ connectorId: "arrow", fromNodeId: "idea", toNodeId: "test", direction: "forward", url: "https://www.figma.com/board/OfflineBoard?node-id=arrow" })]);
+    const restored = await persistence.readLatestBoard(fileKey);
+    expect(restored?.extractionVersion).toBe(5);
+    expect(restored?.connectorEdges).toEqual([{ connectorId: "arrow", fromNodeId: "idea", toNodeId: "test", direction: "forward" }]);
+    expect(await persistence.readBoardHistory(fileKey)).toHaveLength(2);
+    expect((await persistence.readBoardSnapshot(fileKey, snapshotId))?.connectorEdges).toEqual(oldEdges);
+    expect(await readFile(path.join(directory, `source-${snapshotId}.json`), "utf8")).toBe(source);
+  });
+
   it("refreshes edited TABLE cells, source evidence and semantic diff", async () => {
     const before = await ingestBoard(input);
     activeTree = boardTree([table("Budget 999")], "v2");
@@ -121,6 +163,45 @@ describe("offline ingest pipeline with actual persistent cache", () => {
     expect(after.snapshotId).toBe(before.snapshotId);
     expect(after.qualityReport).toMatchObject({ cachedClusters: 1, visionClusters: 1, fallbackCount: 0 });
     expect((await persistence.readLatestBoard(fileKey))?.clusters[0]?.summarySource).toBe("vision_llm");
+  });
+
+  it("honors an explicit phase deadline and starts no queued request after it expires", async () => {
+    vi.stubEnv("INGEST_BOARD_VISION_BUDGET_MS", "25");
+    vi.stubEnv("INGEST_BOARD_MIN_VISION_SLOT_MS", "0");
+    vi.stubEnv("INGEST_BOARD_VISION_CONCURRENCY", "1");
+    vi.resetModules();
+    const { ingestBoard: configuredIngest } = await import("../src/tools/ingestBoard.js");
+    vi.useFakeTimers();
+    activeTree = boardTree([imageNode("first", 0), imageNode("queued", 1000)]);
+    let started!: () => void;
+    const entered = new Promise<void>(resolve => { started = resolve; });
+    let requestSignal: AbortSignal | undefined;
+    visionMock.mockImplementation((_cluster: Cluster, _images: Buffer[], _nodes: NormalizedNode[], signal: AbortSignal) => {
+      requestSignal = signal;
+      started();
+      return new Promise<never>((_resolve, reject) => signal.addEventListener("abort", () => reject(signal.reason), { once: true }));
+    });
+    const running = configuredIngest(input);
+    await entered;
+    await vi.advanceTimersByTimeAsync(24);
+    expect(requestSignal?.aborted).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    const output = await running;
+    expect(requestSignal?.aborted).toBe(true);
+    expect(String(requestSignal?.reason)).toContain("25 ms");
+    expect(screenshotMock).toHaveBeenCalledTimes(1);
+    expect(visionMock).toHaveBeenCalledTimes(1);
+    expect(output.qualityReport?.fallbackReasons).toEqual({ timeout: 1, time_budget: 1 });
+  });
+
+  it("preserves an explicit zero vision budget", async () => {
+    vi.stubEnv("INGEST_BOARD_VISION_BUDGET_MS", "0");
+    vi.resetModules();
+    const { ingestBoard: configuredIngest } = await import("../src/tools/ingestBoard.js");
+    const output = await configuredIngest(input);
+    expect(screenshotMock).not.toHaveBeenCalled();
+    expect(visionMock).not.toHaveBeenCalled();
+    expect(output.qualityReport?.fallbackReasons).toEqual({ time_budget: 1 });
   });
 
   it("records a new capture time when a historical source state returns", async () => {

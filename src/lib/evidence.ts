@@ -52,20 +52,35 @@ export interface EvidenceQuery {
 export interface EvidenceResult {
   snapshotId: string;
   evidence: Evidence[];
+  /** Internal selection boundary; never serialized as an MCP response field. */
+  primaryEvidenceIds: string[];
   connections: EvidenceConnection[];
   totalMatched: number;
 }
 
+const FIELD_WEIGHTS = { text: 1, node: 0.35, section: 0.20, page: 0.10, cluster: 0.05 } as const;
+type EvidenceField = keyof typeof FIELD_WEIGHTS;
+const FIELDS = Object.keys(FIELD_WEIGHTS) as EvidenceField[];
+const ORIGINAL_FIELDS = FIELDS.filter((field) => field !== "cluster");
+const MAX_PREFIX_TERMS = 32;
+const PREFIX_MATCH_WEIGHT = 0.6;
+
 interface IndexedEvidence {
   evidence: Evidence;
-  length: number;
+  lengths: Record<EvidenceField, number>;
+}
+
+interface FieldIndex {
+  postings: Map<string, Array<{ index: number; frequency: number }>>;
+  averageLength: number;
 }
 
 interface EvidenceIndex {
   snapshotId: string;
   entries: IndexedEvidence[];
-  postings: Map<string, Array<{ index: number; frequency: number }>>;
-  averageLength: number;
+  fields: Record<EvidenceField, FieldIndex>;
+  /** Original-field terms only; a derived label cannot consume the expansion budget. */
+  vocabulary: string[];
 }
 
 // A snapshot is immutable once published by ingest. Weak references let LRU eviction reclaim indexes.
@@ -80,6 +95,7 @@ const STOPWORDS = new Set([
   "die", "ein", "eine", "einen", "einer", "es", "für", "hat", "haben", "im", "ist", "mit",
   "nach", "nicht", "oder", "sich", "sie", "sind", "über", "um", "und", "vom", "von", "war",
   "welche", "welcher", "welches", "wer", "wie", "wo", "zu", "zum", "zur", "projekt", "bitte",
+  "dass", "laut", "bereits",
 ]);
 
 /** Unicode word segmentation supports accented words and scripts without whitespace. */
@@ -107,7 +123,7 @@ export function nodeLink(board: BoardData, nodeId: string): string {
   return `https://www.figma.com/board/${encodeURIComponent(board.fileKey)}?node-id=${encodeURIComponent(nodeId)}`;
 }
 
-/** Deterministic lexical BM25 over original node/cell chunks, with light label boosts. */
+/** Deterministic field-weighted BM25 over original chunks and source metadata. */
 export function retrieveEvidence(board: BoardData, options: EvidenceQuery = {}): EvidenceResult {
   const index = getIndex(board);
   let matches: IndexedEvidence[];
@@ -119,16 +135,9 @@ export function retrieveEvidence(board: BoardData, options: EvidenceQuery = {}):
   } else if (options.query?.trim()) {
     const queryTerms = [...new Set(evidenceTokens(options.query))];
     const scores = new Map<number, number>();
-    for (const term of queryTerms) {
-      const postings = index.postings.get(term) ?? [];
-      const idf = Math.log(1 + (index.entries.length - postings.length + 0.5) / (postings.length + 0.5));
-      for (const posting of postings) {
-        const document = index.entries[posting.index]!;
-        const normalization = 1.2 * (0.25 + 0.75 * document.length / index.averageLength);
-        const score = idf * posting.frequency * 2.2 / (posting.frequency + normalization);
-        scores.set(posting.index, (scores.get(posting.index) ?? 0) + score);
-      }
-    }
+    for (const field of ORIGINAL_FIELDS) addFieldScores(index, field, queryTerms, scores);
+    // Derived cluster labels can help rank an original match, never create one.
+    addFieldScores(index, "cluster", queryTerms, scores, new Set(scores.keys()));
     matches = [...scores.entries()]
       .sort(([a, aScore], [b, bScore]) => bScore - aScore || a - b)
       .map(([entry]) => index.entries[entry]!);
@@ -139,15 +148,17 @@ export function retrieveEvidence(board: BoardData, options: EvidenceQuery = {}):
   }
 
   const totalMatched = matches.length;
-  const selected = (options.limit === undefined ? matches : matches.slice(0, options.limit))
+  const primary = (options.limit === undefined ? matches : matches.slice(0, options.limit))
     .map((entry) => entry.evidence);
+  const selected = [...primary];
   if (options.includeNeighbors && selected.length > 0) {
     if (options.query?.trim()) addTableNeighbors(index, selected, options.tableNeighborLimit ?? 6);
-    addNeighbors(board, index, selected, options.neighborLimit ?? 6);
+    addNeighbors(board, index, primary, selected, options.neighborLimit ?? 6);
   }
   return {
     snapshotId: index.snapshotId,
     evidence: selected,
+    primaryEvidenceIds: primary.map((item) => item.evidenceId),
     connections: connectionsForEvidence(board, selected),
     totalMatched,
   };
@@ -223,43 +234,110 @@ export function boundedText(value: string, maxChars: number): string {
   return `${value.slice(0, end)}…`;
 }
 
+function addFieldScores(
+  index: EvidenceIndex, field: EvidenceField, queryTerms: string[], scores: Map<number, number>,
+  allowed?: Set<number>,
+): void {
+  const fieldIndex = index.fields[field];
+  for (const term of queryTerms) {
+    const alternatives = [{ term, weight: 1 }, ...compoundPrefixes(index.vocabulary, term)
+      .map((prefix) => ({ term: prefix, weight: PREFIX_MATCH_WEIGHT }))];
+    // A query word contributes once per field/chunk; several matching compounds
+    // must not turn a partial match into an unbounded frequency bonus.
+    const termScores = new Map<number, number>();
+    for (const alternative of alternatives) {
+      const postings = fieldIndex.postings.get(alternative.term) ?? [];
+      const idf = Math.log(1 + (index.entries.length - postings.length + 0.5) / (postings.length + 0.5));
+      for (const posting of postings) {
+        if (allowed && !allowed.has(posting.index)) continue;
+        const length = index.entries[posting.index]!.lengths[field];
+        const normalization = 1.2 * (0.25 + 0.75 * length / fieldIndex.averageLength);
+        const score = alternative.weight * FIELD_WEIGHTS[field] * idf * posting.frequency * 2.2 /
+          (posting.frequency + normalization);
+        termScores.set(posting.index, Math.max(termScores.get(posting.index) ?? 0, score));
+      }
+    }
+    for (const [entry, score] of termScores) scores.set(entry, (scores.get(entry) ?? 0) + score);
+  }
+}
+
+function compoundPrefixes(vocabulary: string[], term: string): string[] {
+  // This is a bounded lexical aid for compounds, not substring or fuzzy search.
+  // Short acronyms, numbers, and non-Latin segmentation retain exact matching.
+  if (term.length < 5 || !/^[\p{Script=Latin}\p{M}]+$/u.test(term)) return [];
+  let low = 0;
+  let high = vocabulary.length;
+  while (low < high) {
+    const middle = (low + high) >>> 1;
+    if (vocabulary[middle]! < term) low = middle + 1;
+    else high = middle;
+  }
+  const expanded: string[] = [];
+  for (let position = low; position < vocabulary.length && expanded.length < MAX_PREFIX_TERMS; position++) {
+    const word = vocabulary[position]!;
+    if (!word.startsWith(term)) break;
+    if (word.length >= term.length + 3 && /^[\p{Script=Latin}\p{M}]+$/u.test(word)) expanded.push(word);
+  }
+  return expanded;
+}
+
 function getIndex(board: BoardData): EvidenceIndex {
   const existing = indexes.get(board);
   if (existing) return existing;
   const snapshotId = snapshotIdForBoard(board);
   const evidence = buildEvidence(board, snapshotId);
   const nodesById = new Map(board.nodes.map((node) => [node.id, node]));
-  const metadataById = new Map(board.nodes.map((node) => [node.id, descriptiveMetadata(node, nodesById)]));
+  const emptyField = (): FieldIndex => ({ postings: new Map(), averageLength: 1 });
+  const fields: Record<EvidenceField, FieldIndex> = {
+    text: emptyField(), node: emptyField(), section: emptyField(), page: emptyField(), cluster: emptyField(),
+  };
+  const totalLengths: Record<EvidenceField, number> = { text: 0, node: 0, section: 0, page: 0, cluster: 0 };
   const entries: IndexedEvidence[] = [];
-  const postings: EvidenceIndex["postings"] = new Map();
-  let totalLength = 0;
   for (const item of evidence) {
-    const tokens = evidenceTokens(item.text);
-    const terms = new Map<string, number>();
-    for (const token of tokens) terms.set(token, (terms.get(token) ?? 0) + 1);
-    // Search node names and the source page/section names without replacing the
-    // original excerpt by a synthesized summary. Cells inherit their table metadata.
-    const metadata = metadataById.get(item.renderNodeId ?? item.nodeId) ?? "";
-    for (const token of new Set(evidenceTokens(metadata))) {
-      terms.set(token, (terms.get(token) ?? 0) + 0.5);
-    }
-    // Small label boosts preserve framework/topic discovery without discarding the original text.
-    for (const token of new Set(evidenceTokens(item.clusterLabel ?? ""))) {
-      terms.set(token, (terms.get(token) ?? 0) + 0.35);
-    }
-    const length = Math.max(1, tokens.length);
+    const node = nodesById.get(item.renderNodeId ?? item.nodeId);
+    const values = evidenceFields(item, node, nodesById);
+    const lengths = {} as Record<EvidenceField, number>;
     const position = entries.length;
-    entries.push({ evidence: item, length });
-    totalLength += length;
-    for (const [term, frequency] of terms) {
-      const list = postings.get(term) ?? [];
-      list.push({ index: position, frequency });
-      postings.set(term, list);
+    for (const field of FIELDS) {
+      const tokens = evidenceTokens(values[field]);
+      lengths[field] = tokens.length;
+      totalLengths[field] += tokens.length;
+      const frequencies = new Map<string, number>();
+      for (const token of tokens) frequencies.set(token, (frequencies.get(token) ?? 0) + 1);
+      for (const [term, frequency] of frequencies) {
+        const list = fields[field].postings.get(term) ?? [];
+        list.push({ index: position, frequency });
+        fields[field].postings.set(term, list);
+      }
     }
+    entries.push({ evidence: item, lengths });
   }
-  const index = { snapshotId, entries, postings, averageLength: totalLength / Math.max(1, entries.length) || 1 };
+  for (const field of FIELDS) {
+    fields[field].averageLength = totalLengths[field] / Math.max(1, entries.length) || 1;
+  }
+  const vocabulary = [...new Set(ORIGINAL_FIELDS.flatMap((field) => [...fields[field].postings.keys()]))].sort();
+  const index = { snapshotId, entries, fields, vocabulary };
   indexes.set(board, index);
   return index;
+}
+
+function evidenceFields(
+  item: Evidence, node: NormalizedNode | undefined, nodesById: Map<string, NormalizedNode>,
+): Record<EvidenceField, string> {
+  const normalize = (value: string) => value.normalize("NFKC").toLowerCase().replace(/\s+/g, " ").trim();
+  const name = normalize(node?.name ?? "");
+  const text = normalize(node?.text ?? "");
+  // Figma frequently derives the node name from its full text or its opening.
+  // Indexing that name on every chunk leaks a match into unrelated trailing text.
+  const nameDuplicatesText = Boolean(name && text && text.startsWith(name));
+  return {
+    text: item.text,
+    node: [item.sourceType === "board_metadata" || nameDuplicatesText ? "" : node?.name, node?.type]
+      .filter(Boolean).join("\n"),
+    section: (node?.sectionIds ?? []).map((id) => nodesById.get(id)?.name ?? "").join("\n"),
+    page: node?.pageId ? nodesById.get(node.pageId)?.name ?? "" : "",
+    cluster: item.clusterLabel ?? "",
+  };
 }
 
 function buildEvidence(board: BoardData, snapshotId: string): Evidence[] {
@@ -335,12 +413,6 @@ function buildEvidence(board: BoardData, snapshotId: string): Evidence[] {
   return evidence;
 }
 
-function descriptiveMetadata(node: NormalizedNode, nodesById: Map<string, NormalizedNode>): string {
-  return [node.name, node.type, node.pageId ? nodesById.get(node.pageId)?.name : undefined,
-    ...(node.sectionIds ?? []).map((id) => nodesById.get(id)?.name)]
-    .filter((value): value is string => Boolean(value)).join("\n");
-}
-
 function nodeProvenance(node: NormalizedNode | undefined, nodesById: Map<string, NormalizedNode>):
   Pick<Evidence, "pageId" | "sectionIds" | "renderNodeId" | "nodeName" | "pageName" | "sectionNames"> {
   const sectionIds = node?.sectionIds?.slice(-16);
@@ -376,76 +448,90 @@ function chunkText(text: string): string[] {
 
 /** A matching cell needs nearby labels/values to retain its table meaning. */
 function addTableNeighbors(index: EvidenceIndex, selected: Evidence[], limit: number): void {
-  const rowsByTable = new Map<string, Set<number>>();
+  if (limit <= 0) return;
   const rowGroups = new Map<string, Evidence[]>();
-  const tableGroups = new Map<string, Evidence[]>();
+  const unpositionedTables = new Set<string>();
   const rowKey = (tableId: string, row: number) => `${tableId}\0${row}`;
   for (const item of selected) {
     if (item.sourceType !== "table_cell" || !item.renderNodeId) continue;
-    const rows = rowsByTable.get(item.renderNodeId) ?? new Set<number>();
-    if (item.row !== undefined) {
-      rows.add(item.row);
-      const key = rowKey(item.renderNodeId, item.row);
-      if (!rowGroups.has(key)) rowGroups.set(key, []);
-    }
-    rowsByTable.set(item.renderNodeId, rows);
-    if (!tableGroups.has(item.renderNodeId)) tableGroups.set(item.renderNodeId, []);
+    if (item.row === undefined) unpositionedTables.add(item.renderNodeId);
+    else rowGroups.set(rowKey(item.renderNodeId, item.row), []);
   }
-  if (rowsByTable.size === 0 || limit <= 0) return;
-
   const existing = new Set(selected.map((item) => item.evidenceId));
+  const wholeTables = new Map<string, Evidence[]>();
   for (const { evidence: item } of index.entries) {
     if (item.sourceType !== "table_cell" || !item.renderNodeId || existing.has(item.evidenceId)) continue;
-    const rows = rowsByTable.get(item.renderNodeId);
-    if (!rows) continue;
-    const sameRow = item.row !== undefined && rows.has(item.row);
-    const group = sameRow ? rowGroups.get(rowKey(item.renderNodeId, item.row!)) : tableGroups.get(item.renderNodeId);
-    group!.push(item);
-  }
-  // Distribute context across matching rows/tables before giving a long row more
-  // excerpts. Missing coordinates never become inferred source positions.
-  let added = 0;
-  for (const groups of [rowGroups, tableGroups]) {
-    let active = [...groups.values()].filter((group) => group.length > 0);
-    for (let offset = 0; active.length && added < limit; offset++) {
-      const next: Evidence[][] = [];
-      for (const group of active) {
-        if (added >= limit) break;
-        selected.push(group[offset]!);
-        added++;
-        if (group.length > offset + 1) next.push(group);
-      }
-      active = next;
+    if (item.row !== undefined) rowGroups.get(rowKey(item.renderNodeId, item.row))?.push(item);
+    if (unpositionedTables.has(item.renderNodeId)) {
+      const group = wholeTables.get(item.renderNodeId) ?? [];
+      group.push(item);
+      wholeTables.set(item.renderNodeId, group);
     }
+  }
+  let added = 0;
+  let active = [...rowGroups.values()].filter((group) => group.length > 0);
+  for (let offset = 0; active.length && added < limit; offset++) {
+    const next: Evidence[][] = [];
+    for (const group of active) {
+      if (added >= limit) break;
+      const item = group[offset]!;
+      selected.push(item);
+      existing.add(item.evidenceId);
+      added++;
+      if (group.length > offset + 1) next.push(group);
+    }
+    active = next;
+  }
+  // Without recorded rows there is no justified "nearby" prefix. Keep a small
+  // table only when its complete remaining context fits; otherwise add none.
+  for (const group of wholeTables.values()) {
+    const missing = group.filter((item) => !existing.has(item.evidenceId));
+    if (missing.length > limit - added) continue;
+    selected.push(...missing);
+    for (const item of missing) existing.add(item.evidenceId);
+    added += missing.length;
   }
 }
 
-function addNeighbors(board: BoardData, index: EvidenceIndex, selected: Evidence[], limit: number): void {
-  const primaryNodes = new Set(selected.flatMap((item) => [item.nodeId, ...(item.renderNodeId ? [item.renderNodeId] : [])]));
+function addNeighbors(
+  board: BoardData, index: EvidenceIndex, primary: Evidence[], selected: Evidence[], limit: number,
+): void {
+  const primaryNodes = new Set(primary.flatMap((item) => [item.nodeId, ...(item.renderNodeId ? [item.renderNodeId] : [])]));
   const neighborIds = new Set<string>();
   for (const edge of board.connectorEdges ?? []) {
     if (primaryNodes.has(edge.fromNodeId)) neighborIds.add(edge.toNodeId);
     if (primaryNodes.has(edge.toNodeId)) neighborIds.add(edge.fromNodeId);
   }
   const existing = new Set(selected.map((item) => item.evidenceId));
-  const groups = new Map<string, Evidence[]>();
+  const groups = new Map<string, { items: Evidence[]; wholeTable: boolean }>();
   for (const { evidence: item } of index.entries) {
-    if (existing.has(item.evidenceId) || !(neighborIds.has(item.nodeId) || Boolean(item.renderNodeId && neighborIds.has(item.renderNodeId)))) continue;
+    const wholeTable = item.sourceType === "table_cell" && Boolean(item.renderNodeId && neighborIds.has(item.renderNodeId));
+    if (existing.has(item.evidenceId) || !(neighborIds.has(item.nodeId) || wholeTable ||
+      Boolean(item.renderNodeId && neighborIds.has(item.renderNodeId)))) continue;
     const key = item.renderNodeId ?? item.nodeId;
-    const group = groups.get(key) ?? [];
-    group.push(item);
+    const group = groups.get(key) ?? { items: [], wholeTable };
+    group.items.push(item);
+    group.wholeTable ||= wholeTable;
     groups.set(key, group);
   }
   let added = 0;
-  // Each connected node/table gets one excerpt before a long neighbor receives a second.
   let active = [...groups.values()];
+  // Each ordinary neighbor gets one excerpt before a long neighbor gets another.
+  // A directly connected table without a selected row is atomic, never a prefix.
   for (let offset = 0; active.length && added < limit; offset++) {
-    const next: Evidence[][] = [];
+    const next: typeof active = [];
     for (const group of active) {
       if (added >= limit) break;
-      selected.push(group[offset]!);
-      added++;
-      if (group.length > offset + 1) next.push(group);
+      if (group.wholeTable) {
+        if (group.items.length <= limit - added) {
+          selected.push(...group.items);
+          added += group.items.length;
+        }
+      } else {
+        selected.push(group.items[offset]!);
+        added++;
+        if (group.items.length > offset + 1) next.push(group);
+      }
     }
     active = next;
   }
