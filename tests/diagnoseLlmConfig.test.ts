@@ -45,6 +45,35 @@ describe("diagnoseLlmConfig", () => {
     expect(chatJsonMock).toHaveBeenCalledTimes(1);
   });
 
+  it("starts all checks before any reply and keeps the result order", async () => {
+    const replies: Array<(reply: unknown) => void> = [];
+    chatJsonMock.mockImplementation(() => new Promise((resolve) => replies.push(resolve)));
+
+    const running = diagnoseLlmConfig();
+    expect(chatJsonMock).toHaveBeenCalledTimes(3);
+    replies[2]!({ dominantColor: "blue" });
+    replies[1]!({ result: 63 });
+    replies[0]!({ result: 42 });
+    const result = await running;
+
+    expect(result.ok).toBe(true);
+    expect(result.checks.map((check) => check.name)).toEqual(["text_json", "fast_text_json", "vision_json"]);
+  });
+
+  it("cancels every in-flight check", async () => {
+    const controller = new AbortController();
+    chatJsonMock.mockImplementation((_models, _messages, options) => new Promise((_resolve, reject) => {
+      options.signal.addEventListener("abort", () => reject(options.signal.reason), { once: true });
+    }));
+
+    const running = diagnoseLlmConfig({ signal: controller.signal });
+    expect(chatJsonMock).toHaveBeenCalledTimes(3);
+    controller.abort(new Error("client cancelled"));
+
+    await expect(running).rejects.toThrow("client cancelled");
+    expect(chatJsonMock.mock.calls.every(([, , options]) => options.signal === controller.signal)).toBe(true);
+  });
+
   it("reports ok when text and vision checks pass", async () => {
     vi.stubEnv("LLM_REQUEST_TIMEOUT_MS", "20000");
     vi.stubEnv("LLM_VISION_REQUEST_TIMEOUT_MS", "60000");

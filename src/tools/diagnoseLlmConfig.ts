@@ -34,28 +34,25 @@ type ReplyValidator = (reply: unknown) => string | undefined;
 export async function diagnoseLlmConfig(options: { signal?: AbortSignal } = {}): Promise<DiagnoseLlmConfigOutput> {
   options.signal?.throwIfAborted();
   const config = describeModelConfig();
-  const checks: DiagnoseLlmConfigOutput["checks"] = [];
+  const visionRequestTimeoutMs = getVisionRequestTimeoutMs();
 
-  checks.push(
-    await runCheck("text_json", getTextModels(), [
+  // The checks are independent, so they run concurrently; Promise.all keeps their order.
+  const checks: DiagnoseLlmConfigOutput["checks"] = await Promise.all([
+    runCheck("text_json", getTextModels(), [
       {
         role: "user",
         content:
           'Calculate 17 + 25. Reply with one JSON object containing only a numeric field named "result".',
       },
     ], TEXT_DIAG_SCHEMA, expectNumericResult(42), options.signal),
-  );
-  checks.push(
-    await runCheck("fast_text_json", getFastTextModels(), [
+    runCheck("fast_text_json", getFastTextModels(), [
       {
         role: "user",
         content:
           'Calculate 9 * 7. Reply with one JSON object containing only a numeric field named "result".',
       },
     ], TEXT_DIAG_SCHEMA, expectNumericResult(63), options.signal),
-  );
-  checks.push(
-    await runCheck("vision_json", getVisionModels(), [
+    runCheck("vision_json", getVisionModels(), [
       {
         role: "user",
         content: [
@@ -71,8 +68,8 @@ export async function diagnoseLlmConfig(options: { signal?: AbortSignal } = {}):
           },
         ],
       },
-    ], VISION_DIAG_SCHEMA, expectDominantColor("blue"), options.signal, getVisionRequestTimeoutMs()),
-  );
+    ], VISION_DIAG_SCHEMA, expectDominantColor("blue"), options.signal, visionRequestTimeoutMs),
+  ]);
 
   const ok = checks.every((check) => check.ok);
   return {
