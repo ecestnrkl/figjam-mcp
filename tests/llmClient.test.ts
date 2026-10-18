@@ -186,6 +186,7 @@ describe("chatJson", () => {
   });
 
   it("uses strict json_schema and OpenRouter parameter requirements when a schema is supplied", async () => {
+    vi.stubEnv("LLM_BASE_URL", "https://openrouter.ai/api/v1");
     createMock.mockResolvedValueOnce(okCompletion('{"answer":42}'));
 
     await expect(
@@ -208,6 +209,18 @@ describe("chatJson", () => {
     expect(params.response_format?.json_schema?.name).toBe("answer");
     expect(params.response_format?.json_schema?.strict).toBe(true);
     expect(params.provider?.require_parameters).toBe(true);
+  });
+
+  it.each([
+    ["another OpenAI-compatible host", "https://models.github.ai/inference", "true"],
+    ["OpenRouter with the requirement disabled", "https://openrouter.ai/api/v1", "false"],
+  ])("does not send OpenRouter parameter requirements to %s", async (_case, baseUrl, requireParameters) => {
+    vi.stubEnv("LLM_BASE_URL", baseUrl);
+    vi.stubEnv("LLM_PROVIDER_REQUIRE_PARAMETERS", requireParameters);
+    createMock.mockResolvedValueOnce(okCompletion('{"ok":true}'));
+    await expect(chatJson("test-model", MESSAGES, SCHEMA_OPTIONS)).resolves.toEqual({ ok: true });
+    expect(createMock.mock.calls[0]?.[0]).toMatchObject({ response_format: { type: "json_schema" } });
+    expect(createMock.mock.calls[0]?.[0]).not.toHaveProperty("provider");
   });
 
   it.each([
@@ -240,6 +253,7 @@ describe("chatJson", () => {
   });
 
   it("reaches prompt-only JSON and removes require_parameters only after both format attempts fail", async () => {
+    vi.stubEnv("LLM_BASE_URL", "https://openrouter.ai/api/v1");
     createMock.mockRejectedValueOnce(providerError(404, "No endpoints found that support the requested parameters."))
       .mockRejectedValueOnce(providerError(400, "response_format is not supported"))
       .mockResolvedValueOnce(okCompletion('{"ok":true}'));

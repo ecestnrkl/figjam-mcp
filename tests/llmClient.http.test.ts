@@ -114,13 +114,15 @@ describe("LLM requests through real local HTTP and the OpenAI SDK", () => {
     const onRequest = vi.fn();
     await expect(chatJson(["missing/model", "available/model"], messages, { ...schemaOptions, onRequest }))
       .resolves.toEqual({ ok: true });
-    expect(requests.map(request => [request.model, request.response_format?.type, request.provider?.require_parameters]))
+    expect(requests.map(request => [request.model, request.response_format?.type]))
       .toEqual([
-        ["missing/model", "json_schema", true],
-        ["available/model", "json_schema", true],
-        ["available/model", "json_object", true],
-        ["available/model", undefined, undefined],
+        ["missing/model", "json_schema"],
+        ["available/model", "json_schema"],
+        ["available/model", "json_object"],
+        ["available/model", undefined],
       ]);
+    // OpenRouter's provider field never reaches another host.
+    expect(requests.every(request => request.provider === undefined)).toBe(true);
     expect(onRequest.mock.calls.map(([model]) => model)).toEqual(requests.map(request => request.model));
   });
 

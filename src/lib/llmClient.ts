@@ -205,11 +205,12 @@ async function createJsonCompletion(
     temperature: 0.2,
     max_tokens: options.maxOutputTokens ?? MAX_OUTPUT_TOKENS,
   };
+  const openRouter = isOpenRouter(llm);
   if (options.reasoningEffort !== undefined) {
     validateReasoningEffort(options.reasoningEffort, "reasoningEffort");
     // OpenRouter normalizes reasoning across providers; other compatible APIs
     // use the standard field. Neither is sent without an explicit opt-in.
-    if (new URL(llm.baseURL).hostname === "openrouter.ai") {
+    if (openRouter) {
       base.reasoning = { effort: options.reasoningEffort };
     } else base.reasoning_effort = options.reasoningEffort;
   }
@@ -218,7 +219,7 @@ async function createJsonCompletion(
   for (const responseFormat of formats) {
     try {
       const params = responseFormat ? { ...base, response_format: responseFormat } : base;
-      return await createCompletion(llm, withProviderRequirements(params), options);
+      return await createCompletion(llm, withProviderRequirements(params, openRouter), options);
     } catch (error) {
       if (!isUnsupportedParamError(error, options.reasoningEffort !== undefined) || responseFormat === formats.at(-1)) {
         throw error;
@@ -253,10 +254,17 @@ function responseFormatAttempts(options: ChatJsonOptions): Array<ResponseFormat 
   return [{ type: "json_object" }, undefined];
 }
 
+/** OpenRouter-only request fields must not reach other OpenAI-compatible providers. */
+function isOpenRouter(llm: OpenAI): boolean {
+  return new URL(llm.baseURL).hostname === "openrouter.ai";
+}
+
 function withProviderRequirements(
   params: ParamsWithOpenRouterProvider,
+  openRouter: boolean,
 ): ParamsWithOpenRouterProvider {
-  if ((!params.response_format && !params.reasoning && params.reasoning_effort === undefined) || !getModelConfig().providerRequireParameters) {
+  if (!openRouter || (!params.response_format && !params.reasoning && params.reasoning_effort === undefined) ||
+    !getModelConfig().providerRequireParameters) {
     return params;
   }
   return {
