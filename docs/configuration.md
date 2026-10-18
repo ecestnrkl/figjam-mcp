@@ -35,7 +35,7 @@ invalid JSON or an unavailable model. Changing any model setting or
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `INGEST_BOARD_VISION_BUDGET_MS` | `40000` | Time for the vision phase of one ingest. `0` starts no vision work; use `max_speed` for text-only ingests. |
-| `INGEST_BOARD_MIN_VISION_SLOT_MS` | `10000` | A cluster's render or model step starts only if this much budget is left. |
+| `INGEST_BOARD_MIN_VISION_SLOT_MS` | `10000` | A cluster's render or model step starts only if this much budget is left. Concurrency × budget ÷ slot (12 by default) is how many clusters are planned for rendering. |
 | `FIGMA_FILE_REQUEST_TIMEOUT_MS` | `60000` | Download of the board's file tree. |
 | `FIGMA_REQUEST_TIMEOUT_MS` | `15000` | Each other Figma request: version check, image render, image download. |
 | `LLM_REQUEST_TIMEOUT_MS` | `20000` | Each text request (answers, text diagnostics). |
@@ -97,7 +97,8 @@ deferred by the budget go before clusters that failed. Raise
 ## Limits
 
 - Figma file: 64 MiB, 100,000 nodes, 1,024 nesting levels.
-- Images: 8 MiB each and 64 MiB per ingest; up to 6 screenshots per cluster.
+- Images: 8 MiB each and 64 MiB per ingest; up to 6 screenshots per cluster,
+  rendered by Figma in requests of up to 18 nodes.
 - Vision text per cluster: 160 nodes and 24,000 characters (300 per node).
   Groups of more than 250 nodes are split before vision.
 - `get_board_context`: `limit` 20 (max 100) excerpts, `maxChars` 12,000 (max

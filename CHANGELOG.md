@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.1 — Unreleased
+
+- `ingest_board` renders screenshots of several clusters per Figma request (up to
+  18 nodes) instead of one request per cluster, saving Tier 1 Figma requests.
+- Vision summaries keep table values and statistical notation literally and name
+  a statistic such as a confidence interval only when a legend identifies it.
+
 ## 0.4.0 — 2026-10-18
 
 - New `student-free` defaults: text uses `nvidia/nemotron-3-super-120b-a12b:free`,
