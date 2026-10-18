@@ -14,8 +14,8 @@ still times out:
 
 1. Run it with `ingestMode: "max_speed"`. It makes no LLM calls and stores the
    full text, tables and arrows.
-2. Raise the request timeout in your client, if it has one. Claude Code applies
-   no per-request timeout to local stdio servers.
+2. Raise the request timeout in your client, if it has one. In Claude Code, the
+   time limit for tool calls is the `MCP_TOOL_TIMEOUT` setting (milliseconds).
 3. Lower `INGEST_BOARD_VISION_BUDGET_MS` (for example to `25000`) when the Figma
    download of a large board takes long.
 

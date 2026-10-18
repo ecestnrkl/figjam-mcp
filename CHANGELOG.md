@@ -3,11 +3,13 @@
 ## 0.4.0 — Unreleased
 
 - New `student-free` defaults: text uses `nvidia/nemotron-3-super-120b-a12b:free`,
-  then `openrouter/free`; vision uses `openrouter/free`.
+  then `openrouter/free`; vision uses `openrouter/free`. OpenRouter's
+  `provider.require_parameters` is no longer sent to other providers.
 - `ingest_board` fits a 60-second client timeout: the vision phase defaults to
   40 s (`INGEST_BOARD_VISION_BUDGET_MS`). Unfinished clusters continue on the
   next ingest, and the summary says so.
-- `diagnose_llm_config` runs its text, fast-text and image checks in parallel.
+- `diagnose_llm_config` runs its checks in parallel with the same output budgets
+  as the real calls and answers within 45 s.
 - Stable MCP TypeScript SDK v2 and Zod 4 with unchanged tool names and required
   fields; cancellation, ingest progress and tool annotations. Requires Node.js 22.12+.
 - Answers cite source nodes with exact quotes and Figma links, and report

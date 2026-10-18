@@ -52,7 +52,6 @@ invalid JSON or an unavailable model. Changing any model setting or
 | `LLM_VISION_MAX_OUTPUT_TOKENS` | `4096` | Tokens per image request, including reasoning tokens; also used by the image check of `diagnose_llm_config`. Minimum 256. |
 | `LLM_ANSWER_TOP_K` | `6` | Excerpts retrieved per question; at most 30. |
 | `LLM_ANSWER_PROMPT_MAX_CHARS` | `24000` | Prompt size for answers; 4096 to 24000. |
-| `LLM_MAX_OUTPUT_TOKENS` | `14096` | Fallback for calls without their own limit; every current tool sets one. |
 
 ### Concurrency and cache
 
