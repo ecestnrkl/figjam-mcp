@@ -126,6 +126,10 @@ describe("refineClusterWithVision", () => {
     expect(prompt).toContain(JSON.stringify(node.text));
     expect(prompt).toContain("A budget figure alone does not establish that funds are available, approved, allocated, sufficient, or spent");
     expect(prompt).toContain("An unconfirmed item proves neither completion nor non-completion");
+    // Unlabelled bracketed values must not become confidence intervals; the rule follows the status rule.
+    expect(prompt).toMatch(/say that the supplied evidence does not establish it\.\nFor tables and statistical notation, preserve visible values, units, column alignment, brackets, and parentheses\./);
+    expect(prompt).toContain("Name a statistic (such as median, mean, confidence interval, quartile, standard deviation, standard error, or sample size) only when an explicit legend or source label identifies it.");
+    expect(prompt).toContain("Never infer significance, equivalence, or causality from descriptive values alone.");
     expect(prompt).toContain("Visible positions, colors, and shapes can be described directly");
     expect(prompt).toContain("Thematic grouping is not evidence of a workflow, dependency, funding link, or decision");
     expect(prompt).toContain("Remove unsupported claims instead of softening them with uncertainty words");
