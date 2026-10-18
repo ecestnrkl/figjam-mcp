@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.4.0 — Unreleased
+## 0.4.0 — 2026-10-18
 
 - New `student-free` defaults: text uses `nvidia/nemotron-3-super-120b-a12b:free`,
   then `openrouter/free`; vision uses `openrouter/free`. OpenRouter's
