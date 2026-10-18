@@ -1,6 +1,14 @@
 import type { DiagnoseLlmConfigOutput } from "../schemas/diagnoseLlmConfig.js";
 import { chatJson, getFastTextModels, getTextModels, getVisionModels } from "../lib/llmClient.js";
 import { describeModelConfig } from "../lib/modelRegistry.js";
+import { getVisionRequestTimeoutMs } from "../lib/llmTimeouts.js";
+import { ANSWER_MAX_OUTPUT_TOKENS, VISION_MAX_OUTPUT_TOKENS } from "../lib/llmOutputBudgets.js";
+
+/**
+ * Each check ends after this time even if the provider hangs. The checks run in
+ * parallel, so the whole diagnosis answers inside a 60 s client timeout.
+ */
+const CHECK_DEADLINE_MS = 45_000;
 
 const TEXT_DIAG_SCHEMA = {
   type: "object",
@@ -33,28 +41,25 @@ type ReplyValidator = (reply: unknown) => string | undefined;
 export async function diagnoseLlmConfig(options: { signal?: AbortSignal } = {}): Promise<DiagnoseLlmConfigOutput> {
   options.signal?.throwIfAborted();
   const config = describeModelConfig();
-  const checks: DiagnoseLlmConfigOutput["checks"] = [];
+  const visionRequestTimeoutMs = getVisionRequestTimeoutMs();
 
-  checks.push(
-    await runCheck("text_json", getTextModels(), [
+  // The checks are independent, so they run concurrently; Promise.all keeps their order.
+  const checks: DiagnoseLlmConfigOutput["checks"] = await Promise.all([
+    runCheck("text_json", getTextModels(), [
       {
         role: "user",
         content:
           'Calculate 17 + 25. Reply with one JSON object containing only a numeric field named "result".',
       },
-    ], TEXT_DIAG_SCHEMA, expectNumericResult(42), options.signal),
-  );
-  checks.push(
-    await runCheck("fast_text_json", getFastTextModels(), [
+    ], TEXT_DIAG_SCHEMA, expectNumericResult(42), { maxOutputTokens: ANSWER_MAX_OUTPUT_TOKENS }, options.signal),
+    runCheck("fast_text_json", getFastTextModels(), [
       {
         role: "user",
         content:
           'Calculate 9 * 7. Reply with one JSON object containing only a numeric field named "result".',
       },
-    ], TEXT_DIAG_SCHEMA, expectNumericResult(63), options.signal),
-  );
-  checks.push(
-    await runCheck("vision_json", getVisionModels(), [
+    ], TEXT_DIAG_SCHEMA, expectNumericResult(63), { maxOutputTokens: ANSWER_MAX_OUTPUT_TOKENS }, options.signal),
+    runCheck("vision_json", getVisionModels(), [
       {
         role: "user",
         content: [
@@ -70,8 +75,9 @@ export async function diagnoseLlmConfig(options: { signal?: AbortSignal } = {}):
           },
         ],
       },
-    ], VISION_DIAG_SCHEMA, expectDominantColor("blue"), options.signal),
-  );
+    ], VISION_DIAG_SCHEMA, expectDominantColor("blue"),
+    { maxOutputTokens: VISION_MAX_OUTPUT_TOKENS, requestTimeoutMs: visionRequestTimeoutMs }, options.signal),
+  ]);
 
   const ok = checks.every((check) => check.ok);
   return {
@@ -94,20 +100,36 @@ async function runCheck(
   messages: Parameters<typeof chatJson>[1],
   jsonSchema: Record<string, unknown>,
   validateReply: ReplyValidator,
+  limits: { maxOutputTokens: number; requestTimeoutMs?: number },
   signal?: AbortSignal,
 ): Promise<CheckResult> {
   signal?.throwIfAborted();
   let modelUsed: string | undefined;
+  // One signal cancels the provider request and ends the race, even for a
+  // request that ignores the abort.
+  const deadline = new AbortController();
+  const requestSignal = signal ? AbortSignal.any([signal, deadline.signal]) : deadline.signal;
+  const aborted = new Promise<never>((_resolve, reject) => {
+    requestSignal.addEventListener("abort", () => reject(requestSignal.reason), { once: true });
+  });
+  const timer = setTimeout(
+    () => deadline.abort(new Error(`Check did not finish within ${CHECK_DEADLINE_MS / 1000} s.`)),
+    CHECK_DEADLINE_MS,
+  );
   try {
-    const reply = await chatJson(models, messages, {
-      signal,
-      maxOutputTokens: 256,
-      schemaName: `diagnose_${name}`,
-      jsonSchema,
-      onModelUsed: (model) => {
-        modelUsed = model;
-      },
-    });
+    const reply = await Promise.race([
+      chatJson(models, messages, {
+        signal: requestSignal,
+        requestTimeoutMs: limits.requestTimeoutMs,
+        maxOutputTokens: limits.maxOutputTokens,
+        schemaName: `diagnose_${name}`,
+        jsonSchema,
+        onModelUsed: (model) => {
+          modelUsed = model;
+        },
+      }),
+      aborted,
+    ]);
 
     const semanticError = validateReply(reply);
     if (semanticError) {
@@ -122,6 +144,8 @@ async function runCheck(
       modelUsed,
       error: error instanceof Error ? error.message : String(error),
     };
+  } finally {
+    clearTimeout(timer);
   }
 }
 

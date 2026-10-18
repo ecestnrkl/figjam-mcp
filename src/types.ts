@@ -141,6 +141,8 @@ export interface BoardData {
   modelPreset?: string;
   qualityReport?: IngestQualityReport;
   schemaVersion?: number;
+  /** Extraction rules for source identity; historical v4 caches omit this field. */
+  extractionVersion?: number;
   snapshotId?: string;
   figmaVersion?: string;
   freshnessCheckedAt?: number;

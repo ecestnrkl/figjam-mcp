@@ -59,6 +59,35 @@ describe("extractConnectorEdges", () => {
     expect(edges[0]?.label).toBeUndefined();
   });
 
+  it("excludes document and canvas anchors while preserving content self-connections", () => {
+    const nodes = [node("canvas", { type: "CANVAS", parentId: "omitted-document" }),
+      node("document", { type: "DOCUMENT" }), node("page", { type: "PAGE" }),
+      node("a"), node("section", { type: "SECTION" }),
+      ...["canvas", "document", "page", "omitted-document"].flatMap(id => [
+        connector(`${id}-start`, id, "a"), connector(`${id}-end`, "a", id), connector(`${id}-self`, id, id),
+      ]),
+      connector("content-self", "a", "a", "repeat"), connector("section-link", "a", "section"),
+    ];
+    expect(extractConnectorEdges(nodes).map(edge => edge.connectorId)).toEqual(["content-self", "section-link"]);
+    expect(formatNodeConnections(extractConnectorEdges(nodes), nodes)).toContain("a (a) → a (a) — repeat");
+  });
+
+  it.each([
+    ["NONE", "LINE_ARROW", "forward", "→", [["one", "two"]]],
+    ["LINE_ARROW", "NONE", "reverse", "←", [["two", "one"]]],
+    ["LINE_ARROW", "LINE_ARROW", "bidirectional", "↔", [["one", "two"], ["two", "one"]]],
+    ["NONE", "NONE", "undirected", "—", []],
+    ["NONE", "TRIANGLE_FILLED", "forward", "→", [["one", "two"]]],
+  ] as const)("keeps %s / %s caps consistent in node and cluster evidence", (start, end, direction, arrow, pairs) => {
+    const nodes = [node("a"), node("b"), { ...connector("edge", "a", "b"),
+      connectorStartArrowhead: start, connectorEndArrowhead: end }];
+    const edges = extractConnectorEdges(nodes);
+    expect(edges[0]?.direction).toBe(direction);
+    expect(formatNodeConnections(edges, nodes)).toEqual([`a (a) ${arrow} b (b)`]);
+    expect(buildClusterRelations(edges, [cluster("one", ["a"]), cluster("two", ["b"])])
+      .map(relation => [relation.fromClusterId, relation.toClusterId])).toEqual(pairs);
+  });
+
   it("preserves actual arrow direction and internal node evidence", () => {
     const nodes = [
       node("a", { text: "First" }), node("b", { text: "Second" }),

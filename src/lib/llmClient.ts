@@ -1,6 +1,7 @@
 import OpenAI from "openai";
 import { readIntEnv } from "./env.js";
 import { getModelConfig, getModelsForRole } from "./modelRegistry.js";
+import { getLlmRequestTimeoutMs } from "./llmTimeouts.js";
 
 /**
  * Shared LLM access for visionInterpreter.ts and answerFromBoard.ts.
@@ -39,6 +40,10 @@ export class LlmInvalidJsonError extends Error {
 
 export interface ChatJsonOptions {
   maxOutputTokens?: number;
+  /** Explicit opt-in; omitted requests retain the selected model's reasoning default. */
+  reasoningEffort?: LlmReasoningEffort;
+  /** Per-HTTP-attempt deadline, including the response body; caller cancellation can end it earlier. */
+  requestTimeoutMs?: number;
   schemaName?: string;
   jsonSchema?: JsonSchema;
   onModelUsed?: (model: string) => void;
@@ -49,6 +54,22 @@ export interface ChatJsonOptions {
 }
 
 export type JsonSchema = Record<string, unknown>;
+const REASONING_EFFORTS = ["none", "low", "medium", "high"] as const;
+export type LlmReasoningEffort = typeof REASONING_EFFORTS[number];
+
+/** Applies only to answer_from_board; vision and other roles keep their own defaults. */
+export function getAnswerReasoningEffort(): LlmReasoningEffort | undefined {
+  const value = process.env.LLM_ANSWER_REASONING_EFFORT?.trim();
+  if (!value) return undefined;
+  validateReasoningEffort(value, "LLM_ANSWER_REASONING_EFFORT");
+  return value;
+}
+
+function validateReasoningEffort(value: unknown, name: string): asserts value is LlmReasoningEffort {
+  if (!REASONING_EFFORTS.includes(value as LlmReasoningEffort)) {
+    throw new LLMConfigurationError(`${name} must be one of: ${REASONING_EFFORTS.join(", ")}`);
+  }
+}
 
 /** Reads a required env var or fails with a setup hint. */
 function requireEnv(name: string): string {
@@ -75,7 +96,7 @@ export function getLlmClient(): OpenAI {
   if (!client || clientConfig !== config) client = new OpenAI({
     baseURL,
     apiKey,
-    timeout: LLM_REQUEST_TIMEOUT_MS,
+    timeout: getLlmRequestTimeoutMs(),
     maxRetries: LLM_SDK_MAX_RETRIES,
   });
   clientConfig = config;
@@ -112,7 +133,6 @@ const MAX_RATE_LIMIT_BACKOFF_MS = readIntEnv("LLM_RATE_LIMIT_MAX_BACKOFF_MS", 50
  * The OpenAI SDK defaults to 10 minutes and retries timeouts twice. MCP UI
  * clients usually give up much earlier, so keep LLM calls bounded here.
  */
-const LLM_REQUEST_TIMEOUT_MS = readIntEnv("LLM_REQUEST_TIMEOUT_MS", 20000, 1000);
 const LLM_SDK_MAX_RETRIES = readIntEnv("LLM_SDK_MAX_RETRIES", 0, 0);
 
 /**
@@ -129,9 +149,9 @@ const MAX_OUTPUT_TOKENS = readIntEnv("LLM_MAX_OUTPUT_TOKENS", 14096, 1);
 /**
  * Runs a chat completion that must yield a JSON object.
  *
- * Strategy: first try with `response_format: { type: "json_object" }`; if the
- * endpoint rejects that (4xx — not every model supports it), retry once
- * without it and rely on the prompt's "reply with JSON only" instruction.
+ * Try the requested JSON schema, then JSON mode, then prompt-only JSON, but
+ * only downgrade when the provider identifies a formatting incompatibility.
+ * An unavailable model goes straight to the next configured candidate.
  * The reply is parsed defensively (markdown fences stripped, first {...}
  * block extracted) and failures surface as clear errors.
  */
@@ -179,20 +199,29 @@ async function createJsonCompletion(
   messages: OpenAI.ChatCompletionMessageParam[],
   options: ChatJsonOptions,
 ): Promise<OpenAI.ChatCompletion> {
-  const base: OpenAI.ChatCompletionCreateParamsNonStreaming = {
+  const base: ParamsWithOpenRouterProvider = {
     model,
     messages,
     temperature: 0.2,
     max_tokens: options.maxOutputTokens ?? MAX_OUTPUT_TOKENS,
   };
+  const openRouter = isOpenRouter(llm);
+  if (options.reasoningEffort !== undefined) {
+    validateReasoningEffort(options.reasoningEffort, "reasoningEffort");
+    // OpenRouter normalizes reasoning across providers; other compatible APIs
+    // use the standard field. Neither is sent without an explicit opt-in.
+    if (openRouter) {
+      base.reasoning = { effort: options.reasoningEffort };
+    } else base.reasoning_effort = options.reasoningEffort;
+  }
 
   const formats = responseFormatAttempts(options);
   for (const responseFormat of formats) {
     try {
       const params = responseFormat ? { ...base, response_format: responseFormat } : base;
-      return await createCompletion(llm, withProviderRequirements(params), options);
+      return await createCompletion(llm, withProviderRequirements(params, openRouter), options);
     } catch (error) {
-      if (!isUnsupportedParamError(error) || responseFormat === formats.at(-1)) {
+      if (!isUnsupportedParamError(error, options.reasoningEffort !== undefined) || responseFormat === formats.at(-1)) {
         throw error;
       }
     }
@@ -204,6 +233,7 @@ async function createJsonCompletion(
 type ResponseFormat = NonNullable<OpenAI.ChatCompletionCreateParamsNonStreaming["response_format"]>;
 type ParamsWithOpenRouterProvider = OpenAI.ChatCompletionCreateParamsNonStreaming & {
   provider?: { require_parameters?: boolean };
+  reasoning?: { effort: LlmReasoningEffort };
 };
 
 function responseFormatAttempts(options: ChatJsonOptions): Array<ResponseFormat | undefined> {
@@ -224,10 +254,17 @@ function responseFormatAttempts(options: ChatJsonOptions): Array<ResponseFormat 
   return [{ type: "json_object" }, undefined];
 }
 
+/** OpenRouter-only request fields must not reach other OpenAI-compatible providers. */
+function isOpenRouter(llm: OpenAI): boolean {
+  return new URL(llm.baseURL).hostname === "openrouter.ai";
+}
+
 function withProviderRequirements(
-  params: OpenAI.ChatCompletionCreateParamsNonStreaming,
-): OpenAI.ChatCompletionCreateParamsNonStreaming {
-  if (!params.response_format || !getModelConfig().providerRequireParameters) {
+  params: ParamsWithOpenRouterProvider,
+  openRouter: boolean,
+): ParamsWithOpenRouterProvider {
+  if (!openRouter || (!params.response_format && !params.reasoning && params.reasoning_effort === undefined) ||
+    !getModelConfig().providerRequireParameters) {
     return params;
   }
   return {
@@ -236,16 +273,52 @@ function withProviderRequirements(
   } as ParamsWithOpenRouterProvider;
 }
 
-function isUnsupportedParamError(error: unknown): boolean {
-  return (
-    error instanceof OpenAI.APIError &&
-    typeof error.status === "number" &&
-    error.status >= 400 &&
-    error.status < 500 &&
-    error.status !== 401 &&
-    error.status !== 403 &&
-    error.status !== 429
-  );
+function isUnsupportedParamError(error: unknown, hasExplicitReasoning = false): boolean {
+  if (!(error instanceof OpenAI.APIError) || ![400, 404, 422].includes(error.status ?? 0)) return false;
+  const detail = providerErrorDetail(error);
+  // OpenRouter can use 404 both for missing models and for endpoints excluded
+  // by require_parameters. Status alone cannot decide whether less strict JSON
+  // formatting will help. Never treat unrelated billing/policy/input failures
+  // as permission to downgrade the requested format.
+  const format = /\b(?:response[_ -]?format|json[_ -]?(?:schema|object|mode)|structured[_ -]?outputs?)\b/i;
+  const unsupported = /unsupported|not[_ -]supported|does(?:n't| not) support|do(?:n't| not) support|cannot support|only supports|no (?:available )?endpoints|unavailable|not available|unrecognized|unknown (?:parameter|argument|field)|not (?:allowed|permitted|compatible)/i;
+  // With two requested capabilities, generic parameter-routing errors no
+  // longer identify JSON as the problem. Never strip formatting to mask an
+  // unsupported reasoning setting, nor silently remove that setting.
+  if (hasExplicitReasoning && /\b(?:reasoning(?:[_ -]effort)?|thinking)\b/i.test(detail)) return false;
+  if (format.test(detail) && unsupported.test(detail)) return true;
+  if (hasExplicitReasoning) return false;
+  return (/\brequire[_ -]?parameters\b/i.test(detail) && unsupported.test(detail)) ||
+    /no (?:available )?endpoints.*(?:support|match|handle).*\b(?:requested|required) parameters\b/i.test(detail) ||
+    /\bFilter by Parameters\b/i.test(detail);
+}
+
+function isUnavailableModelError(error: unknown): boolean {
+  if (!(error instanceof OpenAI.APIError) || ![400, 404, 410, 422].includes(error.status ?? 0)) return false;
+  const detail = providerErrorDetail(error);
+  return /\b(?:model[_ -]not[_ -]found|invalid[_ -]model|model[_ -]unavailable)\b|\bno (?:available )?endpoints\b|\bmodel\b.*\b(?:not found|does not exist|not available|unavailable|not a valid|decommissioned)\b|\b(?:unknown|invalid|unavailable|not a valid) model\b/i.test(detail);
+}
+
+/** Inspect only known error fields; provider details never enter our logs/errors. */
+function providerErrorDetail(error: InstanceType<typeof OpenAI.APIError>): string {
+  const body = error.error && typeof error.error === "object" ? error.error as Record<string, unknown> : {};
+  const metadata = body.metadata && typeof body.metadata === "object" ? body.metadata as Record<string, unknown> : {};
+  // OpenRouter can wrap the actual format error in metadata.raw while its
+  // top-level message says only "Provider returned error". Parse a bounded JSON
+  // envelope, not arbitrary provider text or recursively nested metadata.
+  let raw: unknown = metadata.raw;
+  if (typeof raw === "string") {
+    try { raw = raw.length <= 16_384 ? JSON.parse(raw) : undefined; }
+    catch { raw = undefined; }
+  }
+  const rawBody = raw && typeof raw === "object" ? raw as Record<string, unknown> : {};
+  const nested = rawBody.error && typeof rawBody.error === "object" ? rawBody.error as Record<string, unknown> : {};
+  return [body.message ?? error.message, error.param, error.code, error.type,
+    metadata.error_type, metadata.provider_code, metadata.failed_routing_step,
+    rawBody.message, rawBody.param, rawBody.code, rawBody.type, nested.message, nested.param, nested.code, nested.type]
+    .filter((value): value is string => typeof value === "string")
+    .map(value => value.slice(0, 4096))
+    .join(" ");
 }
 
 function shouldTryNextModel(error: unknown): boolean {
@@ -257,7 +330,8 @@ function shouldTryNextModel(error: unknown): boolean {
     return true;
   }
   if (error instanceof OpenAI.APIError) {
-    return error.status === 429 || error.status >= 500 || isUnsupportedParamError(error);
+    return error.status === 408 || error.status === 429 || error.status >= 500 ||
+      isUnavailableModelError(error) || isUnsupportedParamError(error);
   }
   if (error instanceof Error) {
     return /429|provider returned error|rate limit|no endpoints|empty response|no choices|timed out|unsupported|response contained/i.test(
@@ -304,12 +378,16 @@ async function createCompletion(
   options: ChatJsonOptions = {},
 ): Promise<OpenAI.ChatCompletion> {
   const { signal } = options;
+  const requestTimeoutMs = options.requestTimeoutMs ?? getLlmRequestTimeoutMs();
+  if (!Number.isInteger(requestTimeoutMs) || requestTimeoutMs < 1000) {
+    throw new LLMConfigurationError("requestTimeoutMs must be an integer >= 1000");
+  }
   for (let attempt = 0; ; attempt++) {
     throwIfAborted(signal);
     let completion: OpenAI.ChatCompletion;
     try {
       options.onRequest?.(params.model);
-      completion = await llm.chat.completions.create(params, signal ? { signal } : undefined);
+      completion = await llm.chat.completions.create(params, { signal, timeout: requestTimeoutMs });
       options.onUsage?.({ model: params.model, promptTokens: completion.usage?.prompt_tokens,
         completionTokens: completion.usage?.completion_tokens, totalTokens: completion.usage?.total_tokens });
     } catch (error) {
@@ -318,8 +396,9 @@ async function createCompletion(
       }
       if (isLlmTimeout(error)) {
         throw new LlmTimeoutError(
-          `LLM request timed out after ${Math.round(LLM_REQUEST_TIMEOUT_MS / 1000)}s. ` +
-            "Use a faster model, lower LLM_MAX_OUTPUT_TOKENS, or increase LLM_REQUEST_TIMEOUT_MS/client timeout.",
+          `LLM request timed out after ${requestTimeoutMs / 1000}s. ` +
+            "Check the model, output-token budget and caller deadline. " +
+            "Adjust LLM_VISION_REQUEST_TIMEOUT_MS for vision or LLM_REQUEST_TIMEOUT_MS for text.",
         );
       }
       if (!(error instanceof OpenAI.RateLimitError) || attempt >= MAX_RATE_LIMIT_RETRIES) {

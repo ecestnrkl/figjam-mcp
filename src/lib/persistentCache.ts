@@ -9,8 +9,8 @@ import { getModelConfigSignature } from "./modelRegistry.js";
 import { MAX_BOARD_NODES } from "./nodeTree.js";
 
 export const CACHE_SCHEMA_VERSION = 4;
-export const EXTRACTION_VERSION = 4;
-export const PROMPT_VERSION = 4;
+export const EXTRACTION_VERSION = 5;
+export const PROMPT_VERSION = 7;
 const defaultRoot = process.platform === "darwin"
   ? path.join(homedir(), "Library", "Caches", "figjam-context-mcp")
   : process.platform === "win32"
@@ -23,6 +23,7 @@ const HISTORY_LIMIT = 20;
 let mutationQueue: Promise<unknown> = Promise.resolve();
 const key = z.string().regex(/^[A-Za-z0-9_-]{1,128}$/);
 const finite = z.number().finite();
+const extractionVersionSchema = z.number().int().min(4).default(4);
 const nodeSchema = z.object({
   id: z.string(), name: z.string(), type: z.string(), x: finite, y: finite,
   width: finite, height: finite, rotation: finite, text: z.string().optional(),
@@ -43,7 +44,7 @@ const clusterSchema = z.object({
   incomplete: z.boolean().optional(), fallbackReason: z.string().optional(), retryAfter: finite.optional(),
 }).passthrough();
 const boardSchema = z.object({
-  schemaVersion: z.literal(4), snapshotId: key, boardId: key, fileKey: key,
+  schemaVersion: z.literal(4), extractionVersion: extractionVersionSchema, snapshotId: key, boardId: key, fileKey: key,
   docStructureHint: z.enum(["freeform", "double_diamond", "lean_canvas", "retro", "user_journey"]),
   nodes: z.array(nodeSchema).max(MAX_BOARD_NODES), clusters: z.array(clusterSchema).max(MAX_BOARD_NODES), createdAt: finite,
   connectorEdges: z.array(edgeSchema).optional(),
@@ -75,8 +76,8 @@ export function hashClusterNodes(nodes: NormalizedNode[]): string {
 export function hashNormalizedNodes(nodes: NormalizedNode[]): string {
   return hash(stableStringify([...nodes].sort((a, b) => a.id.localeCompare(b.id))));
 }
-export function buildSnapshotId(fileKey: string, nodeHash: string): string {
-  return hash(JSON.stringify([fileKey, EXTRACTION_VERSION, nodeHash]));
+export function buildSnapshotId(fileKey: string, nodeHash: string, extractionVersion = EXTRACTION_VERSION): string {
+  return hash(JSON.stringify([fileKey, extractionVersion, nodeHash]));
 }
 export function getRefinementSignature(): string {
   return hash(JSON.stringify([getModelConfigSignature(), process.env.LLM_BASE_URL ?? "", EXTRACTION_VERSION, PROMPT_VERSION]));
@@ -91,11 +92,11 @@ async function writeBoardLocked(cacheKey: string, revisionId: string, board: Boa
   key.parse(cacheKey);
   const nodeHash = board.nodeHash ?? hashNormalizedNodes(board.nodes);
   const snapshotId = buildSnapshotId(board.fileKey, nodeHash);
-  const normalized = boardSchema.parse({ ...board, schemaVersion: 4, snapshotId, nodeHash, cacheKey }) as BoardData;
+  const normalized = boardSchema.parse({ ...board, schemaVersion: 4, extractionVersion: EXTRACTION_VERSION, snapshotId, nodeHash, cacheKey }) as BoardData;
   const { nodes, connectorEdges, ...derived } = normalized;
   const sourcePath = path.join(CACHE_DIR, `source-${snapshotId}.json`);
   // Rewriting identical source bytes repairs corruption without changing source identity.
-  await atomicWrite(sourcePath, { schemaVersion: 4, snapshotId, fileKey: board.fileKey, nodes, connectorEdges }, signal);
+  await atomicWrite(sourcePath, { schemaVersion: 4, extractionVersion: EXTRACTION_VERSION, snapshotId, fileKey: board.fileKey, nodes, connectorEdges }, signal);
   await atomicWrite(cachePath(revisionId), { schemaVersion: 4, revisionId, snapshotId, derived }, signal);
   return normalized;
 }
@@ -110,9 +111,9 @@ export async function readCachedBoard(cacheKey: string, fileKey?: string): Promi
       revisionId = entry.refinementId ?? entry.cacheKey;
     }
     const envelope = z.object({ schemaVersion: z.literal(4), revisionId: key, snapshotId: key, derived: z.record(z.string(), z.unknown()) }).parse(await readJson(cachePath(revisionId)));
-    const source = z.object({ schemaVersion: z.literal(4), snapshotId: key, fileKey: key, nodes: z.array(nodeSchema).max(MAX_BOARD_NODES), connectorEdges: z.array(edgeSchema).optional() }).parse(await readJson(path.join(CACHE_DIR, `source-${envelope.snapshotId}.json`)));
+    const source = z.object({ schemaVersion: z.literal(4), extractionVersion: extractionVersionSchema, snapshotId: key, fileKey: key, nodes: z.array(nodeSchema).max(MAX_BOARD_NODES), connectorEdges: z.array(edgeSchema).optional() }).parse(await readJson(path.join(CACHE_DIR, `source-${envelope.snapshotId}.json`)));
     const board = boardSchema.parse({ ...envelope.derived, nodes: source.nodes, connectorEdges: source.connectorEdges }) as BoardData;
-    if (envelope.revisionId !== revisionId || (fileKey && (board.fileKey !== fileKey || board.cacheKey !== cacheKey)) || board.snapshotId !== source.snapshotId || board.fileKey !== source.fileKey || board.boardId !== board.fileKey || buildSnapshotId(board.fileKey, hashNormalizedNodes(board.nodes)) !== board.snapshotId) throw new Error("Cache identity mismatch");
+    if (envelope.revisionId !== revisionId || (fileKey && (board.fileKey !== fileKey || board.cacheKey !== cacheKey)) || board.snapshotId !== envelope.snapshotId || board.snapshotId !== source.snapshotId || board.extractionVersion !== source.extractionVersion || board.fileKey !== source.fileKey || board.boardId !== board.fileKey || buildSnapshotId(board.fileKey, hashNormalizedNodes(board.nodes), board.extractionVersion) !== board.snapshotId) throw new Error("Cache identity mismatch");
     return board;
   } catch (error) {
     if (!isMissing(error)) console.error("Persistent cache entry is invalid; run ingest_board to rebuild it.");
@@ -158,7 +159,7 @@ export async function persistBoard(board: BoardData, signal?: AbortSignal): Prom
 }
 function updateHistory(manifest: Manifest, entry: BoardHistoryEntry): void {
   const last = manifest.history.at(-1);
-  if (last && (last.nodeHash === entry.nodeHash || last.cacheKey === entry.cacheKey)) {
+  if (last && last.snapshotId === entry.snapshotId && (last.nodeHash === entry.nodeHash || last.cacheKey === entry.cacheKey)) {
     manifest.history[manifest.history.length - 1] = { ...entry, createdAt: last.createdAt };
   } else manifest.history.push(entry);
   manifest.history = manifest.history.slice(-HISTORY_LIMIT);

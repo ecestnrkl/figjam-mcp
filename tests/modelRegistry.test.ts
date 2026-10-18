@@ -15,9 +15,9 @@ describe("modelRegistry", () => {
   it("uses the student-free preset by default", () => {
     const config = describeModelConfig();
     expect(config.preset).toBe("student-free");
-    expect(config.visionModels[0]).toBe("google/gemma-4-26b-a4b-it:free");
-    expect(config.textModels[0]).toBe("qwen/qwen3-next-80b-a3b-instruct:free");
-    expect(config.fastTextModels[0]).toBe("nvidia/nemotron-nano-9b-v2:free");
+    expect(config.visionModels).toEqual(["openrouter/free"]);
+    expect(config.textModels).toEqual(["nvidia/nemotron-3-super-120b-a12b:free", "openrouter/free"]);
+    expect(config.fastTextModels).toEqual(config.textModels);
     expect(config.providerRequireParameters).toBe(true);
   });
 
@@ -45,7 +45,7 @@ describe("modelRegistry", () => {
 
   it("reads and normalizes comma-separated role model lists", () => {
     process.env.LLM_TEXT_MODELS = ", ,";
-    expect(getModelsForRole("text")[0]).toBe("qwen/qwen3-next-80b-a3b-instruct:free");
+    expect(getModelsForRole("text")[0]).toBe("nvidia/nemotron-3-super-120b-a12b:free");
 
     process.env.LLM_TEXT_MODELS = "model-a, , model-b, model-a";
     process.env.LLM_FAST_TEXT_MODELS = "fast-a, fast-b";

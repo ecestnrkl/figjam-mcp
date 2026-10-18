@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import OpenAI from "openai";
 
 /**
  * These tests exercise chatJson against a stubbed OpenAI client. The focus is
@@ -17,7 +18,8 @@ vi.mock("openai", async (importActual) => {
   // the static error classes used by instanceof checks are preserved.
   class MockOpenAI {
     chat = { completions: { create: createMock } };
-    constructor(opts?: unknown) { constructorMock(opts); }
+    baseURL: string;
+    constructor(opts: { baseURL: string }) { constructorMock(opts); this.baseURL = opts.baseURL; }
     static RateLimitError = Real.RateLimitError;
     static APIError = Real.APIError;
     static APIConnectionTimeoutError = Real.APIConnectionTimeoutError;
@@ -28,13 +30,18 @@ vi.mock("openai", async (importActual) => {
 process.env.LLM_BASE_URL = "http://test.local/v1";
 process.env.LLM_API_KEY = "test-key";
 
-const { chatJson } = await import("../src/lib/llmClient.js");
+const { chatJson, getAnswerReasoningEffort } = await import("../src/lib/llmClient.js");
 
 const MESSAGES = [{ role: "user" as const, content: "hi" }];
 
 /** A well-formed completion carrying `content` as its first choice. */
 function okCompletion(content: string, finishReason = "stop") {
   return { choices: [{ message: { content }, finish_reason: finishReason }] };
+}
+
+const SCHEMA_OPTIONS = { jsonSchema: { type: "object", properties: { ok: { type: "boolean" } } } };
+function providerError(status: number, message: string, fields: Record<string, unknown> = {}) {
+  return new OpenAI.APIError(status, { message, ...fields }, message, new Headers());
 }
 
 beforeEach(() => {
@@ -44,10 +51,58 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.useRealTimers();
+  vi.unstubAllEnvs();
   vi.restoreAllMocks();
 });
 
 describe("chatJson", () => {
+  it.each([
+    [undefined, undefined], ["", undefined], ["  ", undefined],
+    ["none", "none"], [" low ", "low"], ["medium", "medium"], ["high", "high"],
+  ])("reads the optional answer reasoning setting %s without choosing a new default", (setting, expected) => {
+    vi.stubEnv("LLM_ANSWER_REASONING_EFFORT", setting);
+    expect(getAnswerReasoningEffort()).toBe(expected);
+    expect(createMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects invalid explicit reasoning configuration before any provider request", async () => {
+    vi.stubEnv("LLM_ANSWER_REASONING_EFFORT", "invented");
+    expect(getAnswerReasoningEffort).toThrow("LLM_ANSWER_REASONING_EFFORT must be one of:");
+    await expect(chatJson("test-model", MESSAGES, { reasoningEffort: "invented" as "none" }))
+      .rejects.toMatchObject({ name: "LLMConfigurationError" });
+    expect(createMock).not.toHaveBeenCalled();
+  });
+
+  it("preserves explicit OpenRouter reasoning through every actual format downgrade", async () => {
+    vi.stubEnv("LLM_BASE_URL", "https://openrouter.ai/api/v1");
+    createMock.mockRejectedValueOnce(providerError(400, "json_schema response format is not supported"))
+      .mockRejectedValueOnce(providerError(400, "json_object response format is not supported"))
+      .mockResolvedValueOnce(okCompletion('{"ok":true}'))
+      .mockResolvedValueOnce(okCompletion('{"ok":true}'));
+    await expect(chatJson("test-model", MESSAGES, { ...SCHEMA_OPTIONS, reasoningEffort: "none" })).resolves.toEqual({ ok: true });
+    expect(createMock.mock.calls.slice(0, 3).map(([params]) => [params.response_format?.type, params.reasoning, params.reasoning_effort, params.provider]))
+      .toEqual([
+        ["json_schema", { effort: "none" }, undefined, { require_parameters: true }],
+        ["json_object", { effort: "none" }, undefined, { require_parameters: true }],
+        [undefined, { effort: "none" }, undefined, { require_parameters: true }],
+      ]);
+    // The cached client must not carry answer-only settings into another role.
+    await chatJson("vision-model", MESSAGES, SCHEMA_OPTIONS);
+    expect(createMock.mock.calls[3]?.[0]).not.toHaveProperty("reasoning");
+    expect(createMock.mock.calls[3]?.[0]).not.toHaveProperty("reasoning_effort");
+  });
+
+  it.each([
+    [400, "reasoning_effort is not supported; response_format json_schema is accepted"],
+    [404, "No endpoints found that support the requested parameters."],
+  ])("does not mistake an ambiguous or reasoning-related rejection for a format error (%s)", async (status, message) => {
+    createMock.mockRejectedValueOnce(providerError(status, message));
+    await expect(chatJson("test-model", MESSAGES, { ...SCHEMA_OPTIONS, reasoningEffort: "none" }))
+      .rejects.toMatchObject({ name: "Error", status });
+    expect(createMock).toHaveBeenCalledOnce();
+    expect(createMock.mock.calls[0]?.[0]).toMatchObject({ response_format: { type: "json_schema" }, reasoning_effort: "none" });
+  });
+
   it("detects missing configuration without making any provider request", async () => {
     const { validateLlmConfiguration } = await import("../src/lib/llmClient.js");
     const previous = process.env.LLM_API_KEY;
@@ -65,6 +120,23 @@ describe("chatJson", () => {
     const pending = chatJson("test-model", MESSAGES);
     await expect(pending).rejects.toMatchObject({ name: "LlmTimeoutError" });
     await expect(pending).rejects.not.toThrow(/Private provider details/);
+  });
+  it("uses and reports the per-request deadline without changing later text requests", async () => {
+    vi.stubEnv("LLM_REQUEST_TIMEOUT_MS", "20000");
+    try {
+      const error = new Error("Private provider details"); error.name = "APIConnectionTimeoutError";
+      createMock.mockRejectedValueOnce(error).mockResolvedValueOnce(okCompletion('{"ok":true}'));
+      await expect(chatJson("vision-model", MESSAGES, { requestTimeoutMs: 60000 }))
+        .rejects.toThrow("LLM request timed out after 60s.");
+      await chatJson("text-model", MESSAGES);
+      expect(createMock.mock.calls.map(([, options]) => options.timeout)).toEqual([60000, 20000]);
+    } finally { vi.unstubAllEnvs(); }
+  });
+
+  it("rejects an unbounded request override before calling the provider", async () => {
+    await expect(chatJson("test-model", MESSAGES, { requestTimeoutMs: 0 }))
+      .rejects.toMatchObject({ name: "LLMConfigurationError" });
+    expect(createMock).not.toHaveBeenCalled();
   });
   it("parses a normal completion", async () => {
     createMock.mockResolvedValueOnce(okCompletion('{"answer":42}'));
@@ -114,6 +186,7 @@ describe("chatJson", () => {
   });
 
   it("uses strict json_schema and OpenRouter parameter requirements when a schema is supplied", async () => {
+    vi.stubEnv("LLM_BASE_URL", "https://openrouter.ai/api/v1");
     createMock.mockResolvedValueOnce(okCompletion('{"answer":42}'));
 
     await expect(
@@ -136,6 +209,81 @@ describe("chatJson", () => {
     expect(params.response_format?.json_schema?.name).toBe("answer");
     expect(params.response_format?.json_schema?.strict).toBe(true);
     expect(params.provider?.require_parameters).toBe(true);
+  });
+
+  it.each([
+    ["another OpenAI-compatible host", "https://models.github.ai/inference", "true"],
+    ["OpenRouter with the requirement disabled", "https://openrouter.ai/api/v1", "false"],
+  ])("does not send OpenRouter parameter requirements to %s", async (_case, baseUrl, requireParameters) => {
+    vi.stubEnv("LLM_BASE_URL", baseUrl);
+    vi.stubEnv("LLM_PROVIDER_REQUIRE_PARAMETERS", requireParameters);
+    createMock.mockResolvedValueOnce(okCompletion('{"ok":true}'));
+    await expect(chatJson("test-model", MESSAGES, SCHEMA_OPTIONS)).resolves.toEqual({ ok: true });
+    expect(createMock.mock.calls[0]?.[0]).toMatchObject({ response_format: { type: "json_schema" } });
+    expect(createMock.mock.calls[0]?.[0]).not.toHaveProperty("provider");
+  });
+
+  it.each([
+    [404, "No endpoints found for missing/model."],
+    [400, "missing/model is not a valid model ID"],
+  ])("tries an unavailable model only once before the next configured candidate (%s)", async (status, message) => {
+    createMock.mockRejectedValueOnce(providerError(status, message))
+      .mockResolvedValueOnce(okCompletion('{"ok":true}'));
+    const onRequest = vi.fn();
+    await expect(chatJson(["missing/model", "available/model"], MESSAGES, { ...SCHEMA_OPTIONS, onRequest }))
+      .resolves.toEqual({ ok: true });
+    expect(onRequest.mock.calls).toEqual([["missing/model"], ["available/model"]]);
+    expect(createMock.mock.calls.map(([params]) => [params.model, params.response_format?.type]))
+      .toEqual([["missing/model", "json_schema"], ["available/model", "json_schema"]]);
+  });
+
+  it.each([
+    [404, "No endpoints found that support structured outputs.", {}],
+    [404, "No endpoints found that support the requested parameters.", {}],
+    [404, "No endpoints found that can handle the requested parameters. To learn more about provider routing, visit: https://openrouter.ai/docs/guides/routing/provider-selection", { metadata: { failed_routing_step: "Filter by Parameters" } }],
+    [400, "Provider returned error", { metadata: { raw: JSON.stringify({ code: 400, reason: "INVALID_REQUEST_BODY", message: "Model 'apodex/apodex-1.1-mini' does not support 'json_schema' response format. Supported formats: json_object.", metadata: {} }) } }],
+    [400, "Unsupported value", { param: "response_format", code: "unsupported_value" }],
+    [422, "This model does not support json_schema.", {}],
+  ])("retains format fallback when the provider identifies a format incompatibility (%s: %s)", async (status, message, fields) => {
+    createMock.mockRejectedValueOnce(providerError(status, message, fields))
+      .mockResolvedValueOnce(okCompletion('{"ok":true}'));
+    await expect(chatJson("available/model", MESSAGES, SCHEMA_OPTIONS)).resolves.toEqual({ ok: true });
+    expect(createMock.mock.calls.map(([params]) => [params.model, params.response_format?.type]))
+      .toEqual([["available/model", "json_schema"], ["available/model", "json_object"]]);
+  });
+
+  it("reaches prompt-only JSON and removes require_parameters only after both format attempts fail", async () => {
+    vi.stubEnv("LLM_BASE_URL", "https://openrouter.ai/api/v1");
+    createMock.mockRejectedValueOnce(providerError(404, "No endpoints found that support the requested parameters."))
+      .mockRejectedValueOnce(providerError(400, "response_format is not supported"))
+      .mockResolvedValueOnce(okCompletion('{"ok":true}'));
+    await expect(chatJson("available/model", MESSAGES, SCHEMA_OPTIONS)).resolves.toEqual({ ok: true });
+    expect(createMock.mock.calls.map(([params]) => [params.response_format?.type, params.provider?.require_parameters]))
+      .toEqual([["json_schema", true], ["json_object", true], [undefined, undefined]]);
+  });
+
+  it.each([
+    [400, "Invalid schema: missing required property"],
+    [404, "The requested API path does not exist"],
+    [404, "Not Found"],
+    [401, "Authentication failed; response_format unsupported"],
+    [402, "Insufficient credits; response_format unsupported"],
+    [403, "Permission denied; response_format unsupported"],
+  ])("does not retry unrelated request failures or expose their details (%s)", async (status, message) => {
+    createMock.mockRejectedValueOnce(providerError(status, message));
+    const pending = chatJson(["first-model", "second-model"], MESSAGES, SCHEMA_OPTIONS);
+    await expect(pending).rejects.toMatchObject({ status });
+    await expect(pending).rejects.not.toThrow(message);
+    expect(createMock).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    '{"message":"response_format unsupported"',
+    JSON.stringify({ message: "response_format unsupported", padding: "x".repeat(16_384) }),
+  ])("does not interpret malformed or oversized raw provider metadata", async raw => {
+    createMock.mockRejectedValueOnce(providerError(400, "Provider returned error", { metadata: { raw } }));
+    await expect(chatJson(["first-model", "second-model"], MESSAGES, SCHEMA_OPTIONS)).rejects.toMatchObject({ status: 400 });
+    expect(createMock).toHaveBeenCalledTimes(1);
   });
 
   it("falls back to the next model when the first model returns invalid JSON", async () => {

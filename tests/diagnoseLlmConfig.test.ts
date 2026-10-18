@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const { chatJsonMock } = vi.hoisted(() => ({ chatJsonMock: vi.fn() }));
 
@@ -24,6 +24,10 @@ const { diagnoseLlmConfig } = await import("../src/tools/diagnoseLlmConfig.js");
 beforeEach(() => {
   chatJsonMock.mockReset();
 });
+afterEach(() => {
+  vi.useRealTimers();
+  vi.unstubAllEnvs();
+});
 
 describe("diagnoseLlmConfig", () => {
   it("does not start diagnostics after cancellation", async () => {
@@ -36,15 +40,77 @@ describe("diagnoseLlmConfig", () => {
   it("stops after an in-flight provider call is cancelled", async () => {
     const controller = new AbortController();
     chatJsonMock.mockImplementationOnce(async (_models, _messages, options) => {
-      expect(options.signal).toBe(controller.signal);
       controller.abort();
-      throw controller.signal.reason;
+      expect(options.signal.aborted).toBe(true);
+      throw options.signal.reason;
     });
     await expect(diagnoseLlmConfig({ signal: controller.signal })).rejects.toBeDefined();
     expect(chatJsonMock).toHaveBeenCalledTimes(1);
   });
 
+  it("starts all checks before any reply and keeps the result order", async () => {
+    const replies: Array<(reply: unknown) => void> = [];
+    chatJsonMock.mockImplementation(() => new Promise((resolve) => replies.push(resolve)));
+
+    const running = diagnoseLlmConfig();
+    expect(chatJsonMock).toHaveBeenCalledTimes(3);
+    replies[2]!({ dominantColor: "blue" });
+    replies[1]!({ result: 63 });
+    replies[0]!({ result: 42 });
+    const result = await running;
+
+    expect(result.ok).toBe(true);
+    expect(result.checks.map((check) => check.name)).toEqual(["text_json", "fast_text_json", "vision_json"]);
+  });
+
+  it("cancels every in-flight check", async () => {
+    const controller = new AbortController();
+    chatJsonMock.mockImplementation((_models, _messages, options) => new Promise((_resolve, reject) => {
+      options.signal.addEventListener("abort", () => reject(options.signal.reason), { once: true });
+    }));
+
+    const running = diagnoseLlmConfig({ signal: controller.signal });
+    expect(chatJsonMock).toHaveBeenCalledTimes(3);
+    controller.abort(new Error("client cancelled"));
+
+    await expect(running).rejects.toThrow("client cancelled");
+    expect(chatJsonMock.mock.calls.every(([, , options]) => options.signal.aborted)).toBe(true);
+  });
+
+  it("answers within 45 s when the provider hangs", async () => {
+    vi.useFakeTimers();
+    chatJsonMock.mockImplementation(() => new Promise(() => {}));
+    let settled = false;
+    const running = diagnoseLlmConfig().finally(() => { settled = true; });
+
+    await vi.advanceTimersByTimeAsync(44_999);
+    expect(settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    const result = await running;
+
+    expect(result.ok).toBe(false);
+    expect(result.checks.map((check) => check.error)).toEqual(Array(3).fill("Check did not finish within 45 s."));
+    expect(chatJsonMock.mock.calls.every(([, , options]) => options.signal.aborted)).toBe(true);
+  });
+
+  it("uses the configured answer and vision output budgets", async () => {
+    vi.stubEnv("LLM_ANSWER_MAX_OUTPUT_TOKENS", "1500");
+    vi.stubEnv("LLM_VISION_MAX_OUTPUT_TOKENS", "3000");
+    vi.resetModules();
+    const { diagnoseLlmConfig: configuredDiagnose } = await import("../src/tools/diagnoseLlmConfig.js");
+    chatJsonMock
+      .mockResolvedValueOnce({ result: 42 })
+      .mockResolvedValueOnce({ result: 63 })
+      .mockResolvedValueOnce({ dominantColor: "blue" });
+
+    await configuredDiagnose();
+
+    expect(chatJsonMock.mock.calls.map(([, , options]) => options.maxOutputTokens)).toEqual([1500, 1500, 3000]);
+  });
+
   it("reports ok when text and vision checks pass", async () => {
+    vi.stubEnv("LLM_REQUEST_TIMEOUT_MS", "20000");
+    vi.stubEnv("LLM_VISION_REQUEST_TIMEOUT_MS", "60000");
     chatJsonMock
       .mockResolvedValueOnce({ result: 42 })
       .mockResolvedValueOnce({ result: 63 })
@@ -60,6 +126,8 @@ describe("diagnoseLlmConfig", () => {
       "vision_json",
     ]);
     expect(chatJsonMock.mock.calls[1]?.[0]).toEqual(["fast-model"]);
+    expect(chatJsonMock.mock.calls.map(([, , options]) => options.requestTimeoutMs)).toEqual([undefined, undefined, 60000]);
+    expect(chatJsonMock.mock.calls.map(([, , options]) => options.maxOutputTokens)).toEqual([2048, 2048, 4096]);
     expect(result.summary).toContain("OK");
 
     const visionMessages = chatJsonMock.mock.calls[2]?.[1] as Array<{

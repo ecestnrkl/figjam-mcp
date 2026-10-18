@@ -19,14 +19,15 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
-      - run: npm run package:smoke
       - run: npm run security:check
-      - run: npm pack --ignore-scripts
+      - run: npm run package:smoke -- --long --artifact-dir .cache/release-candidate
       - uses: actions/upload-artifact@v7.0.2
         with:
           name: release-candidate
           path: |
-            *.tgz
+            .cache/release-candidate/*.tgz
+            .cache/release-candidate/SHA256SUMS
             CHANGELOG.md
             server.json
+          include-hidden-files: true
           if-no-files-found: error
