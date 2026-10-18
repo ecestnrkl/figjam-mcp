@@ -7,6 +7,10 @@ updates:
     groups:
       compatible-updates:
         update-types: [minor, patch]
+    ignore:
+      # @types/node must match the minimum supported Node.js major version (22).
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
     open-pull-requests-limit: 5
   - package-ecosystem: github-actions
     directory: /
