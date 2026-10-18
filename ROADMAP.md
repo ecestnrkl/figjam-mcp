@@ -11,6 +11,7 @@ installable in two minutes, documented, and used on real boards.
 
 ## 0.4.x — proven in real use
 
+- [ ] Render all screenshots of an ingest in one Figma request (View/Collab seats get 20 Tier 1 requests per month)
 - [ ] Public demo board and a screen recording in a real MCP client
 - [ ] Use it in real workshops; fix what gets in the way
 - [ ] npm trusted publishing from CI
