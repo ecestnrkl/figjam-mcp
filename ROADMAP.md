@@ -17,10 +17,13 @@ installable in two minutes, documented, and used on real boards.
 - [ ] Use it in real workshops; fix what gets in the way
 - [ ] npm trusted publishing from CI
 
-## 0.5.0 — complete image interpretation, safer provider calls
+## 0.5.0 — safer provider calls
+
+- [x] Redact explicit credentials (e.g. "Passwort: …", "API key: …") before board text reaches the cache, tool output or an LLM provider
+
+## 0.6.0 — complete image interpretation
 
 - [ ] Continue image interpretation in the background after ingest_board returns, capped so free-tier quotas stay usable for answers
-- [ ] Redact explicit credentials (e.g. "Passwort: …", "token: …") before board text reaches an LLM provider
 
 ## Later — only when real usage asks for it
 

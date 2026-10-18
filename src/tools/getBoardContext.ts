@@ -5,6 +5,7 @@ import {
   type GetBoardContextOutput,
 } from "../schemas/getBoardContext.js";
 import { getBoardOrRestore } from "../lib/cache.js";
+import { redactBoard } from "../lib/redact.js";
 import {
   boundedText, connectionsForEvidence, countConnectionsForEvidence, formatEvidence,
   formatEvidenceConnection, MAX_CONTEXT_RESPONSE_BYTES,
@@ -28,8 +29,10 @@ export async function getBoardContext(input: GetBoardContextInput): Promise<GetB
   if (cursor && (cursor.query !== query || (options.snapshotId && cursor.snapshot !== options.snapshotId))) {
     throw new Error("Cursor does not match this query, snapshot, or page settings. Start a new context request.");
   }
-  const board = await getBoardOrRestore(options.boardId, options.snapshotId ?? cursor?.snapshot);
-  if (!board) throw new Error(`Board "${options.boardId}" not found — run ingest_board first.`);
+  const stored = await getBoardOrRestore(options.boardId, options.snapshotId ?? cursor?.snapshot);
+  if (!stored) throw new Error(`Board "${options.boardId}" not found — run ingest_board first.`);
+  // Snapshots cached before redaction existed are redacted here too.
+  const board = redactBoard(stored);
   const retrieved = retrieveEvidence(board, {
     query: options.topic, nodeIds: options.nodeIds,
     includeNeighbors: Boolean(options.topic), neighborLimit: 6,

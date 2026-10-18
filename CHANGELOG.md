@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.5.0 — 2026-10-19
+
+- Explicit credentials are redacted as `[redacted]` during extraction, before they
+  reach the cache, tool output or an LLM provider: labelled values such as
+  `Passwort: …`, `PIN: …`, `API key: …` or `Client Secret: …` up to the end of the
+  line, in node names, text and table cells, and known key formats (GitHub,
+  OpenAI/OpenRouter, Figma, AWS, Slack, private key blocks). Snapshots cached by
+  earlier versions are redacted when `get_board_context`, `answer_from_board` and
+  `diff_board` read them. Turn it off with `FIGJAM_MCP_REDACT_CREDENTIALS=false`.
+- **Re-ingest each board once** so its cached snapshot is stored redacted; the
+  next `ingest_board` re-extracts even when Figma reports no change.
+- The release workflow waits until npm serves the new version before publishing
+  to the MCP Registry, retries that step, and creates the GitHub release independently.
+
 ## 0.4.1 — 2026-10-19
 
 - `answer_from_board` waits up to 40 s per model request (`LLM_ANSWER_REQUEST_TIMEOUT_MS`)

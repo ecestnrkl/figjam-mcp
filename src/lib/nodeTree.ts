@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { redactCredentials } from "./redact.js";
 import type { NormalizedNode, TableCell } from "../types.js";
 
 interface RawFigmaNode {
@@ -162,7 +163,7 @@ export function flattenNodeTree(rawFigmaJson: unknown): NormalizedNode[] {
   }
   for (const entry of entries) {
     if (entry.tableOwner === undefined || entry.raw.type !== "TABLE_CELL") continue;
-    const cell: TableCell = { id: entry.raw.id, text: cellText(entry, entries) };
+    const cell: TableCell = { id: entry.raw.id, text: redactCredentials(cellText(entry, entries)) };
     // Only report positions explicitly present in the source; IDs are opaque.
     if (Number.isInteger(entry.raw.rowIndex) && Number(entry.raw.rowIndex) >= 0) cell.row = Number(entry.raw.rowIndex);
     if (Number.isInteger(entry.raw.columnIndex) && Number(entry.raw.columnIndex) >= 0) cell.column = Number(entry.raw.columnIndex);
@@ -177,11 +178,13 @@ export function flattenNodeTree(rawFigmaJson: unknown): NormalizedNode[] {
     const node = entry.raw;
     const box = node.absoluteBoundingBox ?? { x: 0, y: 0, width: 0, height: 0 };
     const cells = node.type === "TABLE" ? cellsByTable.get(index) ?? [] : undefined;
+    // FigJam names text nodes after their content, so names need the same redaction as text.
+    const characters = node.characters === undefined ? undefined : redactCredentials(node.characters);
     result.push({
-      id: node.id, name: node.name, type: node.type,
+      id: node.id, name: redactCredentials(node.name), type: node.type,
       x: box.x, y: box.y, width: box.width, height: box.height,
       rotation: node.rotation ?? 0, imageRef: extractImageRef(node),
-      text: cells ? [node.characters, ...cells.map((cell) => cell.text)].filter((text) => text !== undefined && text !== "").join("\n") : node.characters,
+      text: cells ? [characters, ...cells.map((cell) => cell.text)].filter((text) => text !== undefined && text !== "").join("\n") : characters,
       parentId: entry.parentId, pageId: entry.pageId, sectionIds: entry.sectionIds,
       renderNodeId: node.id, table: cells ? { cells } : undefined,
       contentFingerprint: entry.contentFingerprint,

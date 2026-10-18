@@ -3,6 +3,7 @@ import type { Cluster, NormalizedNode, RefinedCluster, ConnectorEdge } from "../
 import { getVisionRequestTimeoutMs } from "./llmTimeouts.js";
 import { chatJson, getVisionModels, LlmInvalidJsonError } from "./llmClient.js";
 import { VISION_MAX_OUTPUT_TOKENS } from "./llmOutputBudgets.js";
+import { redactCredentials } from "./redact.js";
 
 /**
  * Hard prompt bounds for one cluster. These are intentionally fixed safety
@@ -229,8 +230,9 @@ function applyReply(
     confirmedNodeIds?: unknown;
   } | null;
 
-  const label = typeof parsed?.label === "string" ? parsed.label.trim() : "";
-  const summary = typeof parsed?.summary === "string" ? parsed.summary.trim() : "";
+  // Screenshots are not redacted; keep credentials a model read from them out of the cache.
+  const label = typeof parsed?.label === "string" ? redactCredentials(parsed.label.trim()) : "";
+  const summary = typeof parsed?.summary === "string" ? redactCredentials(parsed.summary.trim()) : "";
   if (!label || !summary) {
     throw new LlmInvalidJsonError(
       `Vision model reply for ${cluster.id} is missing "label" or "summary"`,

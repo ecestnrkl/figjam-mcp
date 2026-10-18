@@ -1,6 +1,7 @@
 import type { DiffBoardInput, DiffBoardOutput } from "../schemas/diffBoard.js";
 import { diffBoards } from "../lib/boardDiff.js";
 import { readBoardHistory, readCachedBoard } from "../lib/persistentCache.js";
+import { redactBoard } from "../lib/redact.js";
 
 /**
  * diff_board — "what changed since the last workshop?".
@@ -41,7 +42,8 @@ export async function diffBoard(input: DiffBoardInput): Promise<DiffBoardOutput>
     );
   }
 
-  const diff = diffBoards(baseline, current);
+  // A baseline cached before redaction existed must not leak through the diff.
+  const diff = diffBoards(redactBoard(baseline), redactBoard(current));
 
   return {
     boardId: input.boardId,
