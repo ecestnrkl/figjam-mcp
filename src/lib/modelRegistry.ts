@@ -16,15 +16,21 @@ interface RoleModelDefaults {
   fastTextModels: string[];
 }
 
+/**
+ * Free OpenRouter models (checked against /api/v1/models in October 2026).
+ * Text starts with Nemotron 3 Super, a free model with structured outputs, and
+ * falls back to the openrouter/free router. Vision uses only the router: it
+ * picks a free model that accepts images and structured outputs, so the preset
+ * does not depend on one free vision model staying available. fastText is only
+ * used by diagnose_llm_config and mirrors text.
+ */
+const STUDENT_FREE_TEXT_MODELS = ["nvidia/nemotron-3-super-120b-a12b:free", "openrouter/free"];
+
 const MODEL_PRESETS: Record<string, RoleModelDefaults> = {
   "student-free": {
-    visionModels: ["google/gemma-4-26b-a4b-it:free", "openrouter/free"],
-    textModels: [
-      "qwen/qwen3-next-80b-a3b-instruct:free",
-      "nvidia/nemotron-nano-9b-v2:free",
-      "openrouter/free",
-    ],
-    fastTextModels: ["nvidia/nemotron-nano-9b-v2:free", "liquid/lfm-2.5-1.2b-instruct:free"],
+    visionModels: ["openrouter/free"],
+    textModels: STUDENT_FREE_TEXT_MODELS,
+    fastTextModels: STUDENT_FREE_TEXT_MODELS,
   },
 };
 
