@@ -1,7 +1,7 @@
 import type { DiagnoseLlmConfigOutput } from "../schemas/diagnoseLlmConfig.js";
 import { chatJson, getFastTextModels, getTextModels, getVisionModels } from "../lib/llmClient.js";
 import { describeModelConfig } from "../lib/modelRegistry.js";
-import { getVisionRequestTimeoutMs } from "../lib/llmTimeouts.js";
+import { getAnswerRequestTimeoutMs, getVisionRequestTimeoutMs } from "../lib/llmTimeouts.js";
 import { ANSWER_MAX_OUTPUT_TOKENS, VISION_MAX_OUTPUT_TOKENS } from "../lib/llmOutputBudgets.js";
 
 /**
@@ -42,6 +42,12 @@ export async function diagnoseLlmConfig(options: { signal?: AbortSignal } = {}):
   options.signal?.throwIfAborted();
   const config = describeModelConfig();
   const visionRequestTimeoutMs = getVisionRequestTimeoutMs();
+  // Text checks run under the same deadline as answer_from_board, the production text path.
+  const textLimits = {
+    maxOutputTokens: ANSWER_MAX_OUTPUT_TOKENS,
+    requestTimeoutMs: getAnswerRequestTimeoutMs(),
+    timeoutSetting: "LLM_ANSWER_REQUEST_TIMEOUT_MS",
+  };
 
   // The checks are independent, so they run concurrently; Promise.all keeps their order.
   const checks: DiagnoseLlmConfigOutput["checks"] = await Promise.all([
@@ -51,14 +57,14 @@ export async function diagnoseLlmConfig(options: { signal?: AbortSignal } = {}):
         content:
           'Calculate 17 + 25. Reply with one JSON object containing only a numeric field named "result".',
       },
-    ], TEXT_DIAG_SCHEMA, expectNumericResult(42), { maxOutputTokens: ANSWER_MAX_OUTPUT_TOKENS }, options.signal),
+    ], TEXT_DIAG_SCHEMA, expectNumericResult(42), textLimits, options.signal),
     runCheck("fast_text_json", getFastTextModels(), [
       {
         role: "user",
         content:
           'Calculate 9 * 7. Reply with one JSON object containing only a numeric field named "result".',
       },
-    ], TEXT_DIAG_SCHEMA, expectNumericResult(63), { maxOutputTokens: ANSWER_MAX_OUTPUT_TOKENS }, options.signal),
+    ], TEXT_DIAG_SCHEMA, expectNumericResult(63), textLimits, options.signal),
     runCheck("vision_json", getVisionModels(), [
       {
         role: "user",
@@ -76,7 +82,11 @@ export async function diagnoseLlmConfig(options: { signal?: AbortSignal } = {}):
         ],
       },
     ], VISION_DIAG_SCHEMA, expectDominantColor("blue"),
-    { maxOutputTokens: VISION_MAX_OUTPUT_TOKENS, requestTimeoutMs: visionRequestTimeoutMs }, options.signal),
+    {
+      maxOutputTokens: VISION_MAX_OUTPUT_TOKENS,
+      requestTimeoutMs: visionRequestTimeoutMs,
+      timeoutSetting: "LLM_VISION_REQUEST_TIMEOUT_MS",
+    }, options.signal),
   ]);
 
   const ok = checks.every((check) => check.ok);
@@ -100,7 +110,7 @@ async function runCheck(
   messages: Parameters<typeof chatJson>[1],
   jsonSchema: Record<string, unknown>,
   validateReply: ReplyValidator,
-  limits: { maxOutputTokens: number; requestTimeoutMs?: number },
+  limits: { maxOutputTokens: number; requestTimeoutMs: number; timeoutSetting: string },
   signal?: AbortSignal,
 ): Promise<CheckResult> {
   signal?.throwIfAborted();
@@ -121,6 +131,7 @@ async function runCheck(
       chatJson(models, messages, {
         signal: requestSignal,
         requestTimeoutMs: limits.requestTimeoutMs,
+        timeoutSetting: limits.timeoutSetting,
         maxOutputTokens: limits.maxOutputTokens,
         schemaName: `diagnose_${name}`,
         jsonSchema,

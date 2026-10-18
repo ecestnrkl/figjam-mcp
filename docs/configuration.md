@@ -38,7 +38,8 @@ invalid JSON or an unavailable model. Changing any model setting or
 | `INGEST_BOARD_MIN_VISION_SLOT_MS` | `10000` | A cluster's render or model step starts only if this much budget is left. Concurrency × budget ÷ slot (12 by default) is how many clusters are planned for rendering. |
 | `FIGMA_FILE_REQUEST_TIMEOUT_MS` | `60000` | Download of the board's file tree. |
 | `FIGMA_REQUEST_TIMEOUT_MS` | `15000` | Each other Figma request: version check, image render, image download. |
-| `LLM_REQUEST_TIMEOUT_MS` | `20000` | Each text request (answers, text diagnostics). |
+| `LLM_REQUEST_TIMEOUT_MS` | — | When set, each LLM request whose role has no value of its own. |
+| `LLM_ANSWER_REQUEST_TIMEOUT_MS` | `40000` | Each answer request and the text checks of `diagnose_llm_config`. Without it, an explicit `LLM_REQUEST_TIMEOUT_MS` applies. `answer_from_board` stops after 50 s across all model candidates (or this value, if larger); a fallback candidate gets only the time left. |
 | `LLM_VISION_REQUEST_TIMEOUT_MS` | `60000` | Each image request. Without it, an explicit `LLM_REQUEST_TIMEOUT_MS` applies. |
 | `LLM_RATE_LIMIT_RETRIES` | `1` | Retries of a request after HTTP 429. |
 | `LLM_RATE_LIMIT_MAX_BACKOFF_MS` | `5000` | Longest wait before such a retry, including `Retry-After`. |

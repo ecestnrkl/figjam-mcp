@@ -113,7 +113,7 @@ export function createServer(): McpServer {
     {
       title: "Get Board Context",
       description:
-        "Read bounded text and structured clusters from a previously ingested local board snapshot. Use topic filtering and pagination for focused context; no network or LLM calls. Does not refresh Figma content. Use answer_from_board for a synthesized answer and ingest_board to refresh the snapshot.",
+        "Read source-cited context from an ingested board snapshot: original text, table cells, cluster summaries and arrows, each with a Figma link. Start here for overviews, summaries and documentation: page through results with cursor, or narrow them with topic or nodeIds, and synthesize the answer yourself. No network or LLM calls; does not refresh Figma content (use ingest_board).",
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       inputSchema: getBoardContextInputSchema,
       outputSchema: z.object(getBoardContextOutputShape),
@@ -132,7 +132,7 @@ export function createServer(): McpServer {
     {
       title: "Answer From Board",
       description:
-        "Answer a question using evidence retrieved from a previously ingested local board snapshot. Sends the question and selected board content to the configured LLM provider; calls may incur charges. Returns validated source citations or an insufficient-evidence response. Use get_board_context for deterministic context without an LLM call.",
+        "Answer one specific question, such as a number, a status or a decision, from the most relevant excerpts of an ingested board, with validated source citations or an insufficient-evidence result. It reads only a handful of excerpts, so it does not suit summaries of a whole board; use get_board_context for those. Sends the question and the selected excerpts to the configured LLM provider; calls may incur charges.",
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: false, openWorldHint: true },
       inputSchema: answerFromBoardInputSchema,
       outputSchema: z.object(answerFromBoardOutputShape),

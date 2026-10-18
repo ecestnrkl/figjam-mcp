@@ -2,6 +2,7 @@ import type { AnswerFromBoardInput, AnswerFromBoardOutput } from "../schemas/ans
 import { getBoardOrRestore } from "../lib/cache.js";
 import { chatJson, getAnswerReasoningEffort, getTextModels, LlmInvalidJsonError, type ChatJsonOptions } from "../lib/llmClient.js";
 import { readIntEnv } from "../lib/env.js";
+import { getAnswerRequestTimeoutMs, getAnswerTotalTimeoutMs } from "../lib/llmTimeouts.js";
 import {
   boundedText, connectionsForEvidence, formatEvidence, formatEvidenceConnection, retrieveEvidence,
   type Evidence,
@@ -87,6 +88,9 @@ export async function answerFromBoard(
     ], {
       maxOutputTokens: ANSWER_MAX_OUTPUT_TOKENS,
       reasoningEffort: getAnswerReasoningEffort(),
+      requestTimeoutMs: getAnswerRequestTimeoutMs(),
+      totalTimeoutMs: getAnswerTotalTimeoutMs(),
+      timeoutSetting: "LLM_ANSWER_REQUEST_TIMEOUT_MS",
       schemaName: "figjam_evidence_answer",
       jsonSchema: ANSWER_REPLY_SCHEMA,
       signal: options.signal,
