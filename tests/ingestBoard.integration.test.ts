@@ -106,7 +106,7 @@ describe("offline ingest pipeline with actual persistent cache", () => {
     const context = await getBoardContext({ boardId: fileKey, nodeIds: ["idea", "test", "page"] });
     expect(context.connections).toEqual([expect.objectContaining({ connectorId: "arrow", fromNodeId: "idea", toNodeId: "test", direction: "forward", url: "https://www.figma.com/board/OfflineBoard?node-id=arrow" })]);
     const restored = await persistence.readLatestBoard(fileKey);
-    expect(restored?.extractionVersion).toBe(5);
+    expect(restored?.extractionVersion).toBe(6);
     expect(restored?.connectorEdges).toEqual([{ connectorId: "arrow", fromNodeId: "idea", toNodeId: "test", direction: "forward" }]);
     expect(await persistence.readBoardHistory(fileKey)).toHaveLength(2);
     expect((await persistence.readBoardSnapshot(fileKey, snapshotId))?.connectorEdges).toEqual(oldEdges);

@@ -22,7 +22,7 @@ describe("v4 persistence", () => {
     await expect(c.readLatestBoard(input.fileKey)).resolves.toBeUndefined();
     await c.persistBoard(input);
     const restored = await c.readLatestBoard(input.fileKey);
-    expect(restored).toMatchObject({ schemaVersion: 4, extractionVersion: 5, nodes: input.nodes, clusters: input.clusters, createdAt: 1 });
+    expect(restored).toMatchObject({ schemaVersion: 4, extractionVersion: 6, nodes: input.nodes, clusters: input.clusters, createdAt: 1 });
     const names = await readdir(path.join(root, "v4"));
     expect(names.some(n => n.startsWith("source-"))).toBe(true);
     expect(names.some(n => n.endsWith(".tmp"))).toBe(false);
@@ -62,7 +62,7 @@ describe("v4 persistence", () => {
     expect(historical).toMatchObject({ extractionVersion: 4, snapshotId, nodes: input.nodes });
     await c.persistBoard({ ...input, cacheKey: "new-extraction", createdAt: 2 });
     const current = await c.readLatestBoard(input.fileKey);
-    expect(current).toMatchObject({ extractionVersion: 5, createdAt: 2 });
+    expect(current).toMatchObject({ extractionVersion: 6, createdAt: 2 });
     expect(current?.snapshotId).not.toBe(snapshotId);
     expect(await c.readBoardHistory(input.fileKey)).toHaveLength(2);
     expect(await c.readBoardSnapshot(input.fileKey, snapshotId)).toEqual(historical);

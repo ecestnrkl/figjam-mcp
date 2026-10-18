@@ -14,6 +14,12 @@ the client win. Restart the server after a change.
 | `LLM_BASE_URL` | none | OpenAI-compatible endpoint, for example `https://openrouter.ai/api/v1`. Required for every LLM call. |
 | `LLM_API_KEY` | none | Provider key. Required for every LLM call. |
 
+### Privacy
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `FIGJAM_MCP_REDACT_CREDENTIALS` | `true` | Replaces explicit credentials with `[redacted]` before they reach the cache, tool output or an LLM provider: labelled values such as `Passwort: …`, `PIN: …` or `API key: …` up to the end of the line, and known key formats (GitHub, OpenAI/OpenRouter, Figma, AWS, Slack, private key blocks). Set `false` to turn it off. |
+
 ### Models
 
 | Variable | Default | Purpose |

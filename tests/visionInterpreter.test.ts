@@ -29,6 +29,17 @@ afterEach(() => {
 });
 
 describe("refineClusterWithVision", () => {
+  it("redacts credentials the model read from a screenshot before they are cached", async () => {
+    const { refineClusterWithVision } = await import("../src/lib/visionInterpreter.js");
+    chatJsonMock.mockResolvedValue({
+      label: "Login PIN: 4711", summary: "The screenshot shows the line Passwort: Sommer2024! on a sticky.", confirmedNodeIds: ["node-0"],
+    });
+    const node = normalizedNode(0);
+    const refined = await refineClusterWithVision(clusterFor([node]), [], [node]);
+    expect(refined.label).toBe("Login PIN: [redacted]");
+    expect(refined.summary).toBe("The screenshot shows the line Passwort: [redacted]");
+  });
+
   it("classifies invalid model fields without exposing the returned content", async () => {
     const { refineClusterWithVision } = await import("../src/lib/visionInterpreter.js");
     chatJsonMock.mockResolvedValue({ label: "", summary: "Private model output", confirmedNodeIds: [] });

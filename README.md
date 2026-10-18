@@ -114,6 +114,11 @@ and time out.
   to an LLM provider.
 - Snapshots stay in a private per-user cache on your machine. Delete the cache
   directory to remove them.
+- Explicit credentials such as `Passwort: …` or API keys are redacted before they
+  reach the cache, tool output or an LLM provider
+  ([`FIGJAM_MCP_REDACT_CREDENTIALS`](docs/configuration.md#privacy)). This is a
+  safety net, not a guarantee: screenshots are not redacted, so keep credentials
+  off the board.
 - Keep tokens in the client's environment. A token passed as a tool argument can
   appear in client logs.
 

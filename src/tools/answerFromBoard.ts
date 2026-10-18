@@ -1,5 +1,6 @@
 import type { AnswerFromBoardInput, AnswerFromBoardOutput } from "../schemas/answerFromBoard.js";
 import { getBoardOrRestore } from "../lib/cache.js";
+import { redactBoard } from "../lib/redact.js";
 import { chatJson, getAnswerReasoningEffort, getTextModels, LlmInvalidJsonError, type ChatJsonOptions } from "../lib/llmClient.js";
 import { readIntEnv } from "../lib/env.js";
 import { getAnswerRequestTimeoutMs, getAnswerTotalTimeoutMs } from "../lib/llmTimeouts.js";
@@ -53,8 +54,10 @@ export async function answerFromBoard(
   options: AnswerFromBoardOptions = {},
 ): Promise<AnswerFromBoardOutput> {
   options.signal?.throwIfAborted();
-  const board = await getBoardOrRestore(input.boardId, input.snapshotId);
-  if (!board) throw new Error(`Board "${input.boardId}" not found — run ingest_board first.`);
+  const stored = await getBoardOrRestore(input.boardId, input.snapshotId);
+  if (!stored) throw new Error(`Board "${input.boardId}" not found — run ingest_board first.`);
+  // Snapshots cached before redaction existed must not reach the provider unredacted.
+  const board = redactBoard(stored);
   const retrieved = retrieveEvidence(board, {
     query: isOverviewQuestion(input.question) ? undefined : input.question,
     limit: isOverviewQuestion(input.question) ? 20 : ANSWER_TOP_K,

@@ -9,7 +9,7 @@ import { getModelConfigSignature } from "./modelRegistry.js";
 import { MAX_BOARD_NODES } from "./nodeTree.js";
 
 export const CACHE_SCHEMA_VERSION = 4;
-export const EXTRACTION_VERSION = 5;
+export const EXTRACTION_VERSION = 6;
 export const PROMPT_VERSION = 8;
 const defaultRoot = process.platform === "darwin"
   ? path.join(homedir(), "Library", "Caches", "figjam-context-mcp")
