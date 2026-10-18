@@ -6,10 +6,9 @@ import {
   boundedText, connectionsForEvidence, formatEvidence, formatEvidenceConnection, retrieveEvidence,
   type Evidence,
 } from "../lib/evidence.js";
+import { ANSWER_MAX_OUTPUT_TOKENS } from "../lib/llmOutputBudgets.js";
 import type { OperationOptions } from "../types.js";
 
-// This budget also covers hidden reasoning tokens on compatible providers.
-const ANSWER_MAX_OUTPUT_TOKENS = readIntEnv("LLM_ANSWER_MAX_OUTPUT_TOKENS", 2048, 1);
 const ANSWER_TOP_K = Math.min(readIntEnv("LLM_ANSWER_TOP_K", 6, 1), 30);
 const ANSWER_PROMPT_MAX_CHARS = Math.min(readIntEnv("LLM_ANSWER_PROMPT_MAX_CHARS", 24000, 4096), 24000);
 const ANSWER_KINDS = ["answer", "unresolved_task", "unresolved_question", "unresolved_proposal", "unsupported"] as const;

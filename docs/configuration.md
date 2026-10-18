@@ -48,8 +48,8 @@ invalid JSON or an unavailable model. Changing any model setting or
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `LLM_ANSWER_MAX_OUTPUT_TOKENS` | `2048` | Answer tokens, including reasoning tokens. |
-| `LLM_VISION_MAX_OUTPUT_TOKENS` | `4096` | Tokens per image request, including reasoning tokens. Minimum 256. |
+| `LLM_ANSWER_MAX_OUTPUT_TOKENS` | `2048` | Answer tokens, including reasoning tokens. The text checks of `diagnose_llm_config` use the same budget. |
+| `LLM_VISION_MAX_OUTPUT_TOKENS` | `4096` | Tokens per image request, including reasoning tokens; also used by the image check of `diagnose_llm_config`. Minimum 256. |
 | `LLM_ANSWER_TOP_K` | `6` | Excerpts retrieved per question; at most 30. |
 | `LLM_ANSWER_PROMPT_MAX_CHARS` | `24000` | Prompt size for answers; 4096 to 24000. |
 | `LLM_MAX_OUTPUT_TOKENS` | `14096` | Fallback for calls without their own limit; every current tool sets one. |
@@ -85,6 +85,9 @@ download, clustering, the vision phase and saving; only the vision phase has a
 budget. With the 40-second default, 20 seconds of a 60-second client timeout
 remain for everything else. For very large boards or a slow Figma API, see
 [troubleshooting](troubleshooting.md#client-timeouts).
+
+`diagnose_llm_config` runs its three checks in parallel and stops each after 45
+seconds, so it answers within a 60-second client timeout even if a provider hangs.
 
 Vision requests still running at the deadline are cancelled. Clusters that did
 not finish keep their extracted text, are marked incomplete

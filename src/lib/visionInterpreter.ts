@@ -1,8 +1,8 @@
 import type OpenAI from "openai";
 import type { Cluster, NormalizedNode, RefinedCluster, ConnectorEdge } from "../types.js";
-import { readIntEnv } from "./env.js";
 import { getVisionRequestTimeoutMs } from "./llmTimeouts.js";
 import { chatJson, getVisionModels, LlmInvalidJsonError } from "./llmClient.js";
+import { VISION_MAX_OUTPUT_TOKENS } from "./llmOutputBudgets.js";
 
 /**
  * Hard prompt bounds for one cluster. These are intentionally fixed safety
@@ -13,13 +13,6 @@ const MAX_INVENTORY_NODES = 160;
 const MAX_INVENTORY_CHARS = 24_000;
 const MAX_NODE_TEXT_CHARS = 300;
 const MAX_NODE_ID_CHARS = 200;
-
-/**
- * Vision refinement returns only a label, a short summary, and a bounded ID
- * list. Give reasoning models enough room to reach that JSON without using
- * the much larger global Q&A cap for every image request.
- */
-const VISION_MAX_OUTPUT_TOKENS = readIntEnv("LLM_VISION_MAX_OUTPUT_TOKENS", 4096, 256);
 
 const VISION_REPLY_SCHEMA = {
   type: "object",
