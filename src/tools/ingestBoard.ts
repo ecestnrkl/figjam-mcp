@@ -2,7 +2,7 @@ import type { IngestBoardInput, IngestBoardOutput } from "../schemas/ingestBoard
 import { setImmediate as yieldToRequests } from "node:timers/promises";
 import { extractFigmaFileKeyFromUrl } from "../schemas/common.js";
 import type { Cluster, IngestMode, IngestQualityReport, NormalizedNode, RefinedCluster, BoardData, OperationOptions } from "../types.js";
-import { fetchFileTree, fetchScreenshot, fetchFileMetadata, FigmaApiError, FigmaDownloadBudgetError, FigmaTimeoutError, INGEST_IMAGE_MAX_BYTES } from "../lib/figmaApi.js";
+import { fetchFileTree, fetchRenderUrls, downloadRenders, fetchFileMetadata, FigmaApiError, FigmaDownloadBudgetError, FigmaTimeoutError, INGEST_IMAGE_MAX_BYTES, type RenderUrls } from "../lib/figmaApi.js";
 import { LLMConfigurationError, LlmInvalidJsonError, LlmRequestError, LlmTimeoutError, validateLlmConfiguration } from "../lib/llmClient.js";
 import { flattenNodeTree } from "../lib/nodeTree.js";
 import { partitionedBoardClusters } from "../lib/spatialCluster.js";
@@ -49,6 +49,18 @@ const MIN_VISION_SLOT_MS = readIntEnv("INGEST_BOARD_MIN_VISION_SLOT_MS", 10000, 
  * provider rate limits.
  */
 const VISION_CONCURRENCY = readIntEnv("INGEST_BOARD_VISION_CONCURRENCY", 3, 1);
+
+/**
+ * Figma's image render endpoint is Tier 1 (View/Collab seats: 20 requests per
+ * month; Full/Dev seats: 10–20 per minute), so one request renders the
+ * screenshots of several clusters. Render time grows with the node count:
+ * measured cold on a real board, 3–5 nodes took 2.6–3.5 s, 12–24 nodes 4–8 s
+ * and 71 nodes 24 s, beyond the 15 s FIGMA_REQUEST_TIMEOUT_MS. 18 nodes are
+ * three full clusters (one per default worker), start the first vision call
+ * only seconds later than a single-cluster render, and stay well inside the
+ * request timeout. Larger batches would delay every vision call of the ingest.
+ */
+const MAX_RENDER_BATCH_NODES = 18;
 
 /**
  * ingest_board — full pipeline: fetch the Figma file, flatten + filter the
@@ -174,6 +186,31 @@ async function performIngest(input: IngestBoardInput, options: OperationOptions)
   await progress("interpret", 3);
   const deadline = Date.now() + VISION_BUDGET_MS;
   const imageBudget = { usedBytes: 0, maxBytes: INGEST_IMAGE_MAX_BYTES };
+  const screenshotNodes = new Map(visionQueue.map(index => [index, pickScreenshotNodes(clusterNodesByIndex[index]!)]));
+  // Only clusters the budget can realistically reach share the first batches.
+  const plannedClusters = MIN_VISION_SLOT_MS > 0 ? Math.floor(VISION_CONCURRENCY * VISION_BUDGET_MS / MIN_VISION_SLOT_MS) : Infinity;
+  const { batches: renderBatches, plannedBatches } = planRenderBatches(visionQueue, screenshotNodes, plannedClusters);
+  const batchOfCluster = new Map(renderBatches.flatMap((batch, number) => batch.map(index => [index, number] as const)));
+  const renderRequests: Array<Promise<RenderUrls>> = [];
+  // Render requests are shared by several clusters, so they end with the vision
+  // phase or the ingest rather than with one cluster's work.
+  const renderPhase = new AbortController();
+  const renderSignal = signal ? AbortSignal.any([signal, renderPhase.signal]) : renderPhase.signal;
+  const renderPhaseTimer = setTimeout(() => renderPhase.abort(new VisionDeadlineExceededError()), Math.max(0, deadline - Date.now()));
+  const renderBatch = (batch: number): Promise<RenderUrls> => {
+    let request = renderRequests[batch];
+    if (!request) {
+      request = fetchRenderUrls(fileKey, renderBatches[batch]!.flatMap(index => screenshotNodes.get(index)!), token!, renderSignal, figmaVersion);
+      // Workers observe the outcome; a prefetch may end unobserved.
+      request.catch(() => undefined);
+      renderRequests[batch] = request;
+    }
+    return request;
+  };
+  // Stays one batch ahead of the workers, and only within the planned batches.
+  const prefetchRenderBatch = (batch: number) => {
+    if (batch < plannedBatches && !renderRequests[batch] && !sharedFailure && hasVisionBudget(deadline)) void renderBatch(batch);
+  };
   let queueCursor = 0;
   let sharedFailure: { reason: VisionFallbackReason; retryAfter?: number } | undefined;
   const currentSharedFailure = (): typeof sharedFailure => sharedFailure;
@@ -196,8 +233,13 @@ async function performIngest(input: IngestBoardInput, options: OperationOptions)
       if (!hasVisionBudget(deadline)) { fallback(index, "time_budget"); continue; }
       let stage: VisionStage = "render";
       try {
-        const screenshots = await withinVisionDeadline(phaseSignal => fetchScreenshot(fileKey, pickScreenshotNodes(members), token!,
-          signal ? AbortSignal.any([signal, phaseSignal]) : phaseSignal, imageBudget, figmaVersion), deadline, signal);
+        const batch = batchOfCluster.get(index)!;
+        const screenshots = await withinVisionDeadline(async phaseSignal => {
+          const renderUrls = await renderBatch(batch);
+          prefetchRenderBatch(batch + 1);
+          return downloadRenders(screenshotNodes.get(index)!, renderUrls,
+            signal ? AbortSignal.any([signal, phaseSignal]) : phaseSignal, imageBudget);
+        }, deadline, signal);
         const failureAfterRendering = currentSharedFailure();
         if (failureAfterRendering) { fallback(index, failureAfterRendering.reason, failureAfterRendering.retryAfter); continue; }
         if (!hasVisionBudget(deadline)) { fallback(index, "time_budget"); continue; }
@@ -218,7 +260,8 @@ async function performIngest(input: IngestBoardInput, options: OperationOptions)
       }
     }
   }
-  await Promise.all(Array.from({ length: Math.min(VISION_CONCURRENCY, visionQueue.length) }, worker));
+  try { await Promise.all(Array.from({ length: Math.min(VISION_CONCURRENCY, visionQueue.length) }, worker)); }
+  finally { clearTimeout(renderPhaseTimer); renderPhase.abort(); }
   signal?.throwIfAborted();
   const finalClusters = mapClustersToPhases(refined, input.docStructureHint, input.customPhases);
   const qualityReport = { ...buildQualityReport(finalClusters, reusedCount), reusedClusters: reusedCount };
@@ -301,6 +344,30 @@ function pickScreenshotNodes(clusterNodes: NormalizedNode[]): string[] {
     return areaDiff !== 0 ? areaDiff : compareStrings(a.id, b.id);
   });
   return ranked.slice(0, MAX_SCREENSHOTS_PER_CLUSTER).map((node) => node.id);
+}
+
+/**
+ * Splits the vision queue, in priority order, into render batches of whole
+ * clusters with at most MAX_RENDER_BATCH_NODES nodes. Clusters beyond the
+ * planned count start a new batch, so they are rendered only when reached.
+ */
+function planRenderBatches(queue: number[], screenshotNodes: Map<number, string[]>, plannedClusters: number): { batches: number[][]; plannedBatches: number } {
+  const batches: number[][] = [];
+  let plannedBatches = 0;
+  let batchNodes = 0;
+  queue.forEach((index, position) => {
+    const nodeCount = screenshotNodes.get(index)!.length;
+    const current = batches.at(-1);
+    if (!current || batchNodes + nodeCount > MAX_RENDER_BATCH_NODES || position === plannedClusters) {
+      batches.push([index]);
+      batchNodes = nodeCount;
+    } else {
+      current.push(index);
+      batchNodes += nodeCount;
+    }
+    if (position < plannedClusters) plannedBatches = batches.length;
+  });
+  return { batches, plannedBatches };
 }
 
 function hasVisionBudget(deadline: number): boolean {

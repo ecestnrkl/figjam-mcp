@@ -99,14 +99,21 @@ export async function fetchImageRefs(fileKey: string, token: string, signal?: Ab
   const data = await readJson<{ meta?: { images?: Record<string, string> }; images?: Record<string, string> }>(await figmaFetch(apiPath, token, FIGMA_REQUEST_TIMEOUT_MS, signal), apiPath, FIGMA_REQUEST_TIMEOUT_MS, signal);
   return data.meta?.images ?? data.images ?? {};
 }
-export async function fetchScreenshot(fileKey: string, nodeIds: string[], token: string, signal?: AbortSignal, budget?: DownloadBudget, version?: string): Promise<Buffer[]> {
-  if (!nodeIds.length) throw new Error("fetchScreenshot: nodeIds must not be empty");
+export type RenderUrls = Record<string, string | null | undefined>;
+/** One GET /v1/images request (Tier 1) for all given nodes; images are downloaded separately. */
+export async function fetchRenderUrls(fileKey: string, nodeIds: string[], token: string, signal?: AbortSignal, version?: string): Promise<RenderUrls> {
+  if (!nodeIds.length) throw new Error("fetchRenderUrls: nodeIds must not be empty");
   const params = new URLSearchParams({ ids: nodeIds.join(","), format: "png", scale: "1" });
   if (version) params.set("version", version);
   const apiPath = `/images/${fileKey}?${params}`;
-  const data = await readJson<{ images?: Record<string, string | null>; err?: string }>(await figmaFetch(apiPath, token, FIGMA_REQUEST_TIMEOUT_MS, signal), apiPath, FIGMA_REQUEST_TIMEOUT_MS, signal);
+  const data = await readJson<{ images?: RenderUrls; err?: string }>(await figmaFetch(apiPath, token, FIGMA_REQUEST_TIMEOUT_MS, signal), apiPath, FIGMA_REQUEST_TIMEOUT_MS, signal);
   if (data.err) throw new Error("Figma could not render the requested nodes");
-  const urls = nodeIds.map(id => data.images?.[id]).filter((url): url is string => Boolean(url));
+  return data.images ?? {};
+}
+/** Downloads the rendered images of `nodeIds` in order; every node needs a render URL. */
+export async function downloadRenders(nodeIds: string[], renderUrls: RenderUrls, signal?: AbortSignal, budget?: DownloadBudget): Promise<Buffer[]> {
+  if (!nodeIds.length) throw new Error("downloadRenders: nodeIds must not be empty");
+  const urls = nodeIds.map(id => renderUrls[id]).filter((url): url is string => Boolean(url));
   if (!urls.length) throw new Error("Figma image render returned no URLs for the requested nodes");
   if (urls.length !== nodeIds.length) throw new Error("Figma image render was incomplete; some requested nodes have no image URL");
   let index = 0;

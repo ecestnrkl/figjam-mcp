@@ -6,7 +6,8 @@ import { LLMConfigurationError, LlmInvalidJsonError, LlmRequestError, LlmTimeout
 const {
   fetchFileTreeMock,
   fetchFileMetadataMock,
-  fetchScreenshotMock,
+  fetchRenderUrlsMock,
+  downloadRendersMock,
   refineClusterWithVisionMock,
   readCachedBoardMock,
   persistBoardMock,
@@ -15,7 +16,8 @@ const {
 } = vi.hoisted(() => ({
   fetchFileTreeMock: vi.fn(),
   fetchFileMetadataMock: vi.fn(),
-  fetchScreenshotMock: vi.fn(),
+  fetchRenderUrlsMock: vi.fn(),
+  downloadRendersMock: vi.fn(),
   refineClusterWithVisionMock: vi.fn(),
   readCachedBoardMock: vi.fn(),
   persistBoardMock: vi.fn(),
@@ -32,7 +34,8 @@ vi.mock("../src/lib/figmaApi.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/lib/figmaApi.js")>()),
   fetchFileTree: fetchFileTreeMock,
   fetchFileMetadata: fetchFileMetadataMock,
-  fetchScreenshot: fetchScreenshotMock,
+  fetchRenderUrls: fetchRenderUrlsMock,
+  downloadRenders: downloadRendersMock,
 }));
 
 vi.mock("../src/lib/visionInterpreter.js", () => ({
@@ -166,7 +169,11 @@ beforeEach(() => {
   vi.stubEnv("LLM_BASE_URL", "https://offline.invalid/v1");
   vi.stubEnv("LLM_API_KEY", "offline-test-only");
   fetchFileTreeMock.mockResolvedValue(rawTree());
-  fetchScreenshotMock.mockResolvedValue([Buffer.from("png")]);
+  fetchRenderUrlsMock.mockImplementation(async (_key: string, ids: string[]) =>
+    Object.fromEntries(ids.map(id => [id, `https://cdn.example/${id}`])));
+  // Each image carries its render URL, so tests can check which cluster receives it.
+  downloadRendersMock.mockImplementation(async (ids: string[], urls: Record<string, string>) =>
+    ids.map(id => Buffer.from(urls[id]!)));
   refineClusterWithVisionMock.mockImplementation(
     async (cluster: Cluster, _screenshots: Buffer[], _nodes: NormalizedNode[]) => ({
       ...cluster,
@@ -250,7 +257,7 @@ describe("ingestBoard", () => {
     });
 
     expect(refineClusterWithVisionMock).not.toHaveBeenCalled();
-    expect(fetchScreenshotMock).not.toHaveBeenCalled();
+    expect(fetchRenderUrlsMock).not.toHaveBeenCalled();
     expect(output.qualityReport?.deterministicClusters).toBe(2);
     expect(output.ingestMode).toBe("max_speed");
     expect(output.summary).toContain("ingestMode=max_speed");
@@ -262,7 +269,7 @@ describe("ingestBoard", () => {
     vi.stubEnv("LLM_API_KEY", "");
     const output = await ingestBoard({ figmaFileUrl: "https://www.figma.com/board/AbC123/Test",
       docStructureHint: "freeform", ingestMode: "balanced" });
-    expect(fetchScreenshotMock).not.toHaveBeenCalled();
+    expect(fetchRenderUrlsMock).not.toHaveBeenCalled();
     expect(refineClusterWithVisionMock).not.toHaveBeenCalled();
     expect(output.qualityReport).toMatchObject({ fallbackCount: 1, fallbackReasons: { config: 1 } });
     expect(output.summary).toContain("Original extracted texts, tables and node references remain available");
@@ -277,7 +284,7 @@ describe("ingestBoard", () => {
     readLatestBoardMock.mockResolvedValueOnce(previous);
     const output = await ingestBoard({ figmaFileUrl: "https://www.figma.com/board/AbC123/Test",
       docStructureHint: "freeform", ingestMode: "max_speed" });
-    expect(fetchScreenshotMock).not.toHaveBeenCalled();
+    expect(fetchRenderUrlsMock).not.toHaveBeenCalled();
     expect(output.qualityReport).toMatchObject({ fallbackCount: 0, incompleteClusters: 0, fallbackReasons: {} });
     const persisted = persistBoardMock.mock.calls[0]?.[0] as BoardData;
     expect(persisted.clusters.every(cluster => !cluster.incomplete && cluster.retryAfter === undefined)).toBe(true);
@@ -292,24 +299,27 @@ describe("ingestBoard", () => {
     readLatestBoardMock.mockResolvedValueOnce(previous);
     const output = await ingestBoard({ figmaFileUrl: "https://www.figma.com/board/AbC123/Test",
       docStructureHint: "freeform", ingestMode: "balanced" });
-    expect(fetchScreenshotMock).not.toHaveBeenCalled();
+    expect(fetchRenderUrlsMock).not.toHaveBeenCalled();
     expect(output.qualityReport?.fallbackReasons).toEqual({ vision_failed: 1 });
     expect(output.summary).toContain("older cached failures (cause not recorded)");
   });
 
   it.each([
     ["render", new Error("private provider body"), "render_failed"],
+    ["download", new Error("private provider body"), "render_failed"],
     ["model", new Error("private provider body"), "model_failed"],
     ["render", new FigmaTimeoutError("private provider body"), "timeout"],
+    ["download", new FigmaTimeoutError("private provider body"), "timeout"],
     ["model", new LlmTimeoutError("private provider body"), "timeout"],
     ["model", new LLMConfigurationError("private provider body"), "config"],
     ["model", new LlmRequestError("private provider body", 401), "auth"],
     ["render", new FigmaApiError("private provider body", 403), "auth"],
+    ["render", new FigmaApiError("private provider body", 429), "rate_limit"],
     ["model", new LlmRequestError("private provider body", 429), "rate_limit"],
     ["model", new LlmInvalidJsonError("private provider body", "private reply text"), "invalid_reply"],
-    ["render", new FigmaDownloadBudgetError(), "download_budget"],
+    ["download", new FigmaDownloadBudgetError(), "download_budget"],
   ] as const)("classifies %s failure without exposing provider text (case %#)", async (stage, error, reason) => {
-    (stage === "render" ? fetchScreenshotMock : refineClusterWithVisionMock).mockRejectedValueOnce(error);
+    ({ render: fetchRenderUrlsMock, download: downloadRendersMock, model: refineClusterWithVisionMock })[stage].mockRejectedValueOnce(error);
     const output = await ingestBoard({ figmaFileUrl: "https://www.figma.com/board/AbC123/Test",
       docStructureHint: "freeform", ingestMode: "balanced" });
     expect(output.qualityReport?.fallbackReasons).toEqual({ [reason]: 1 });
@@ -330,11 +340,94 @@ describe("ingestBoard", () => {
     const before = Date.now();
     const output = await ingestBoard({ figmaFileUrl: "https://www.figma.com/board/AbC123/Test",
       docStructureHint: "freeform", ingestMode: "balanced" });
-    expect(fetchScreenshotMock).toHaveBeenCalledTimes(3);
+    expect(fetchRenderUrlsMock).toHaveBeenCalledTimes(1);
+    expect(downloadRendersMock).toHaveBeenCalledTimes(3);
     expect(refineClusterWithVisionMock).toHaveBeenCalledTimes(3);
     expect(output.qualityReport?.fallbackReasons).toEqual({ rate_limit: 8 });
     expect(output.qualityReport?.nextRetryAt).toBeGreaterThanOrEqual(before + 90_000);
     expect(output.summary).toContain("Retry after");
+  });
+
+  function imageClusterTree(count: number) {
+    const tree = rawTree();
+    tree.document.children[0]!.children = Array.from({ length: count }, (_, index) => ({
+      id: `image:${index}`, name: "Image", type: "SHAPE_WITH_TEXT",
+      absoluteBoundingBox: { x: index * 1000, y: 0, width: 100, height: 100 },
+      fills: [{ type: "IMAGE", imageRef: `image-${index}` }],
+    }));
+    return tree;
+  }
+
+  it("renders the screenshots of many vision clusters in few requests and hands each cluster its own images", async () => {
+    fetchFileTreeMock.mockResolvedValueOnce(imageClusterTree(25));
+    const output = await ingestBoard({ figmaFileUrl: "https://www.figma.com/board/AbC123/Test",
+      docStructureHint: "freeform", ingestMode: "balanced" });
+    // 3 workers × 40 s / 10 s slot = 12 planned clusters share the first request;
+    // the rest is rendered in a second request once the workers reach it.
+    expect(fetchRenderUrlsMock).toHaveBeenCalledTimes(2);
+    expect(fetchRenderUrlsMock.mock.calls.map(call => (call[1] as string[]).length)).toEqual([12, 13]);
+    expect(fetchRenderUrlsMock.mock.calls.flatMap(call => call[1] as string[]).sort())
+      .toEqual(Array.from({ length: 25 }, (_, index) => `image:${index}`).sort());
+    expect(downloadRendersMock).toHaveBeenCalledTimes(25);
+    for (const [cluster, screenshots] of refineClusterWithVisionMock.mock.calls as Array<[Cluster, Buffer[]]>) {
+      expect(screenshots.map(String)).toEqual(cluster.nodeIds.map(id => `https://cdn.example/${id}`));
+    }
+    expect(output.qualityReport).toMatchObject({ visionClusters: 25, fallbackCount: 0 });
+  });
+
+  it("renders clusters beyond the planned budget only when the workers reach them", async () => {
+    fetchFileTreeMock.mockResolvedValueOnce(imageClusterTree(12));
+    vi.stubEnv("INGEST_BOARD_VISION_CONCURRENCY", "1");
+    vi.resetModules();
+    const { ingestBoard: configuredIngest } = await import("../src/tools/ingestBoard.js");
+    const { LlmRequestError } = await import("../src/lib/llmClient.js");
+    // 1 worker × 40 s / 10 s = 4 planned clusters; the other 8 are never reached.
+    let calls = 0;
+    refineClusterWithVisionMock.mockImplementation(async (cluster: Cluster) => {
+      if (++calls === 4) throw new LlmRequestError("private provider body", 429, 30);
+      return { ...cluster, label: "Vision", summary: "Vision summary.", confirmedNodeIds: [...cluster.nodeIds],
+        summarySource: "vision_llm", modelId: "vision-model" };
+    });
+    const output = await configuredIngest({ figmaFileUrl: "https://www.figma.com/board/AbC123/Test",
+      docStructureHint: "freeform", ingestMode: "balanced" });
+    expect(fetchRenderUrlsMock).toHaveBeenCalledTimes(1);
+    expect((fetchRenderUrlsMock.mock.calls[0]![1] as string[])).toHaveLength(4);
+    expect(output.qualityReport?.fallbackReasons).toEqual({ rate_limit: 9 });
+  });
+
+  it("splits large clusters into 18-node render batches and stops prefetching after a failure", async () => {
+    const tree = rawTree();
+    tree.document.children[0]!.children = Array.from({ length: 12 }, (_, cluster) => Array.from({ length: 6 }, (_, item) => ({
+      id: `image:${cluster}:${item}`, name: "Image", type: "SHAPE_WITH_TEXT",
+      absoluteBoundingBox: { x: cluster * 5000 + item * 110, y: 0, width: 100, height: 100 },
+      fills: [{ type: "IMAGE", imageRef: `image-${cluster}-${item}` }],
+    }))).flat();
+    fetchFileTreeMock.mockResolvedValue(tree);
+    const complete = await ingestBoard({ figmaFileUrl: "https://www.figma.com/board/AbC123/Test",
+      docStructureHint: "freeform", ingestMode: "balanced" });
+    expect(complete.qualityReport).toMatchObject({ visionClusters: 12, fallbackCount: 0 });
+    expect(fetchRenderUrlsMock.mock.calls.map(call => (call[1] as string[]).length)).toEqual([18, 18, 18, 18]);
+
+    fetchRenderUrlsMock.mockClear();
+    refineClusterWithVisionMock.mockRejectedValue(new LlmRequestError("private provider body", 429, 30));
+    const limited = await ingestBoard({ figmaFileUrl: "https://www.figma.com/board/AbC123/Test",
+      docStructureHint: "freeform", ingestMode: "max_quality", forceFullIngest: true });
+    // The first batch plus at most the one batch prefetched while it was in use.
+    expect(fetchRenderUrlsMock.mock.calls.length).toBeLessThanOrEqual(2);
+    expect(limited.qualityReport?.fallbackReasons).toEqual({ rate_limit: 12 });
+  });
+
+  it("marks every cluster of a rate-limited render batch as rate_limit and keeps the cooldown", async () => {
+    fetchFileTreeMock.mockResolvedValueOnce(imageClusterTree(5));
+    fetchRenderUrlsMock.mockRejectedValueOnce(new FigmaApiError("private provider body", 429, 30));
+    const before = Date.now();
+    const output = await ingestBoard({ figmaFileUrl: "https://www.figma.com/board/AbC123/Test",
+      docStructureHint: "freeform", ingestMode: "balanced" });
+    expect(fetchRenderUrlsMock).toHaveBeenCalledTimes(1);
+    expect(downloadRendersMock).not.toHaveBeenCalled();
+    expect(refineClusterWithVisionMock).not.toHaveBeenCalled();
+    expect(output.qualityReport?.fallbackReasons).toEqual({ rate_limit: 5 });
+    expect(output.qualityReport?.nextRetryAt).toBeGreaterThanOrEqual(before + 30_000);
   });
 
   it("tries previously budget-deferred clusters before repeatedly failing clusters", async () => {
@@ -349,7 +442,7 @@ describe("ingestBoard", () => {
     readLatestBoardMock.mockResolvedValueOnce(previous);
     await ingestBoard({ figmaFileUrl: "https://www.figma.com/board/AbC123/Test",
       docStructureHint: "freeform", ingestMode: "max_quality" });
-    expect(fetchScreenshotMock.mock.calls.map(call => call[1])).toEqual([["1:2"], ["1:1"], ["1:3"]]);
+    expect(fetchRenderUrlsMock.mock.calls.map(call => call[1])).toEqual([["1:2", "1:1", "1:3"]]);
   });
 
   it("max_quality mode uses vision for every cluster", async () => {
@@ -372,11 +465,7 @@ describe("ingestBoard", () => {
       ingestMode: "max_quality",
     });
 
-    expect(fetchScreenshotMock.mock.calls.map((call) => call[1])).toEqual([
-      ["1:3"],
-      ["1:2"],
-      ["1:1"],
-    ]);
+    expect(fetchRenderUrlsMock.mock.calls.map((call) => call[1])).toEqual([["1:3", "1:2", "1:1"]]);
   });
 
   it("starts the vision deadline after Figma fetch and re-checks it after screenshots", async () => {
@@ -387,10 +476,10 @@ describe("ingestBoard", () => {
       vi.setSystemTime(Date.now() + 60_000);
       return rawTree();
     });
-    fetchScreenshotMock.mockImplementationOnce(async () => {
-      // The screenshot request itself crosses the 40 s vision deadline.
+    fetchRenderUrlsMock.mockImplementationOnce(async () => {
+      // The render request itself crosses the 40 s vision deadline.
       vi.setSystemTime(Date.now() + 40_001);
-      return [Buffer.from("png")];
+      return { "1:2": "https://cdn.example/1:2" };
     });
 
     const output = await ingestBoard({
@@ -401,7 +490,7 @@ describe("ingestBoard", () => {
 
     // The screenshot starts, proving the earlier Figma fetch did not consume
     // the vision budget; the LLM does not start after that budget expires.
-    expect(fetchScreenshotMock).toHaveBeenCalledTimes(1);
+    expect(fetchRenderUrlsMock).toHaveBeenCalledTimes(1);
     expect(refineClusterWithVisionMock).not.toHaveBeenCalled();
     expect(output.qualityReport).toMatchObject({ fallbackCount: 1, visionClusters: 0, fallbackReasons: { time_budget: 1 } });
   });
@@ -445,10 +534,10 @@ describe("ingestBoard", () => {
     const signals: AbortSignal[] = [];
     let started!: () => void;
     const requestsStarted = new Promise<void>(resolve => { started = resolve; });
-    fetchScreenshotMock.mockImplementation((...args: unknown[]) => {
+    fetchRenderUrlsMock.mockImplementation((...args: unknown[]) => {
       const signal = args[3] as AbortSignal;
       signals.push(signal);
-      if (signals.length === 2) started();
+      started();
       return new Promise<never>((_resolve, reject) => {
         signal.addEventListener("abort", () => reject(signal.reason), { once: true });
       });
@@ -463,8 +552,9 @@ describe("ingestBoard", () => {
     await vi.advanceTimersByTimeAsync(40_001);
     const output = await ingest;
 
-    expect(fetchScreenshotMock).toHaveBeenCalledTimes(2);
-    expect(signals).toHaveLength(2);
+    // Both clusters share one render request, which ends at the deadline.
+    expect(fetchRenderUrlsMock).toHaveBeenCalledTimes(1);
+    expect(signals).toHaveLength(1);
     expect(signals.every((signal) => signal.aborted)).toBe(true);
     expect(refineClusterWithVisionMock).not.toHaveBeenCalled();
     expect(output.qualityReport).toMatchObject({ fallbackCount: 2, visionClusters: 0, fallbackReasons: { timeout: 2 } });
@@ -479,7 +569,7 @@ describe("ingestBoard", () => {
       ingestMode: "balanced",
     });
 
-    expect(fetchScreenshotMock).not.toHaveBeenCalled();
+    expect(fetchRenderUrlsMock).not.toHaveBeenCalled();
     expect(refineClusterWithVisionMock).not.toHaveBeenCalled();
     expect(output.qualityReport?.cachedClusters).toBe(2);
   });

@@ -4,14 +4,15 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import type { BoardData, Cluster, NormalizedNode, RefinedCluster } from "../src/types.js";
 
-const { fileTreeMock, metadataMock, screenshotMock, visionMock } = vi.hoisted(() => ({
-  fileTreeMock: vi.fn(), metadataMock: vi.fn(), screenshotMock: vi.fn(), visionMock: vi.fn(),
+const { fileTreeMock, metadataMock, screenshotMock, downloadMock, visionMock } = vi.hoisted(() => ({
+  fileTreeMock: vi.fn(), metadataMock: vi.fn(), screenshotMock: vi.fn(), downloadMock: vi.fn(), visionMock: vi.fn(),
 }));
 // Only the external boundaries are mocked. Normalization, hashes, clustering,
 // source snapshots, refinement cache, history, context and diff run together.
 vi.mock("../src/lib/figmaApi.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/lib/figmaApi.js")>()),
-  fetchFileTree: fileTreeMock, fetchFileMetadata: metadataMock, fetchScreenshot: screenshotMock,
+  fetchFileTree: fileTreeMock, fetchFileMetadata: metadataMock,
+  fetchRenderUrls: screenshotMock, downloadRenders: downloadMock,
 }));
 vi.mock("../src/lib/visionInterpreter.js", () => ({ refineClusterWithVision: visionMock }));
 
@@ -53,7 +54,8 @@ beforeEach(async () => {
   activeTree = boardTree([table("Budget 100")]);
   fileTreeMock.mockImplementation(async () => activeTree);
   metadataMock.mockImplementation(async () => ({ version: activeTree.version }));
-  screenshotMock.mockResolvedValue([Buffer.from("offline-image")]);
+  screenshotMock.mockImplementation(async (_key: string, ids: string[]) => Object.fromEntries(ids.map(id => [id, `https://offline-images.invalid/${id}`])));
+  downloadMock.mockImplementation(async (ids: string[]) => ids.map(() => Buffer.from("offline-image")));
   visionMock.mockImplementation(refine);
   ({ ingestBoard } = await import("../src/tools/ingestBoard.js"));
   ({ getBoardContext } = await import("../src/tools/getBoardContext.js"));

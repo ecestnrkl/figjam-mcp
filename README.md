@@ -96,8 +96,9 @@ and time out.
 - Figma limits file downloads and image renders by seat and plan: Dev and Full
   seats on paid plans get 10–20 requests per minute, View and Collab seats and
   files in Starter plans at most 20 per month
-  ([rate limits](https://developers.figma.com/docs/rest-api/rate-limits/));
-  each cluster sent to the vision model uses one render.
+  ([rate limits](https://developers.figma.com/docs/rest-api/rate-limits/)).
+  One render request covers up to 18 screenshots (about three clusters), so a
+  default ingest usually needs at most four; `max_speed` needs none.
 - For a team, configure your own model: `LLM_BASE_URL` takes any
   OpenAI-compatible endpoint, and `LLM_TEXT_MODELS` / `LLM_VISION_MODELS` set
   the model lists.
