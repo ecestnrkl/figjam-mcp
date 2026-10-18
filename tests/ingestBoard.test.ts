@@ -388,8 +388,8 @@ describe("ingestBoard", () => {
       return rawTree();
     });
     fetchScreenshotMock.mockImplementationOnce(async () => {
-      // The screenshot request itself crosses the 90 s vision deadline.
-      vi.setSystemTime(Date.now() + 90_001);
+      // The screenshot request itself crosses the 40 s vision deadline.
+      vi.setSystemTime(Date.now() + 40_001);
       return [Buffer.from("png")];
     });
 
@@ -427,15 +427,15 @@ describe("ingestBoard", () => {
       ingestMode: "max_quality",
     });
     await requestsStarted;
-    await vi.advanceTimersByTimeAsync(60_001);
+    await vi.advanceTimersByTimeAsync(39_999);
     expect(signals.every((signal) => !signal.aborted)).toBe(true);
-    await vi.advanceTimersByTimeAsync(30_000);
+    await vi.advanceTimersByTimeAsync(1);
     const output = await ingest;
 
     expect(refineClusterWithVisionMock).toHaveBeenCalledTimes(2);
     expect(signals).toHaveLength(2);
     expect(signals.every((signal) => signal.aborted)).toBe(true);
-    expect(signals.every((signal) => String(signal.reason).includes("90000 ms"))).toBe(true);
+    expect(signals.every((signal) => String(signal.reason).includes("40000 ms"))).toBe(true);
     expect(output.qualityReport).toMatchObject({ fallbackCount: 2, visionClusters: 0, fallbackReasons: { timeout: 2 } });
   });
 
@@ -460,7 +460,7 @@ describe("ingestBoard", () => {
       ingestMode: "max_quality",
     });
     await requestsStarted;
-    await vi.advanceTimersByTimeAsync(90_001);
+    await vi.advanceTimersByTimeAsync(40_001);
     const output = await ingest;
 
     expect(fetchScreenshotMock).toHaveBeenCalledTimes(2);

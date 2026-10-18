@@ -34,11 +34,12 @@ import {
 const MAX_SCREENSHOTS_PER_CLUSTER = 6;
 
 /**
- * MCP UI clients often time out a tool call before slow Figma/LLM providers do.
- * Keep the expensive vision phase inside a local budget and fall back to a
- * deterministic text summary for remaining clusters.
+ * Many MCP clients cancel a tool call after the SDK's 60 s request timeout, and
+ * a cancelled ingest persists nothing. A 40 s vision phase leaves room for the
+ * Figma download, clustering and persistence; remaining clusters keep a
+ * deterministic text summary and are interpreted on the next ingest.
  */
-const VISION_BUDGET_MS = readIntEnv("INGEST_BOARD_VISION_BUDGET_MS", 90_000, 0);
+const VISION_BUDGET_MS = readIntEnv("INGEST_BOARD_VISION_BUDGET_MS", 40_000, 0);
 const MIN_VISION_SLOT_MS = readIntEnv("INGEST_BOARD_MIN_VISION_SLOT_MS", 10000, 0);
 
 /**
@@ -646,6 +647,8 @@ function describeNextSteps(report: IngestQualityReport): string {
   if (reasons.config) instructions.push("Set LLM_API_KEY and LLM_BASE_URL in the MCP client environment, then reconnect. diagnose_llm_config can test the configured model provider.");
   if (reasons.auth) instructions.push("Check Figma and model-provider access permissions; diagnose_llm_config can test the configured model provider.");
   if (report.nextRetryAt) instructions.push(`Retry after ${new Date(report.nextRetryAt).toISOString()} for the pending provider cooldown.`);
-  instructions.push("Re-ingest without forceFullIngest to retain successful interpretations and retry pending work.");
+  instructions.push(reasons.time_budget || reasons.vision_budget
+    ? "Run ingest_board again without forceFullIngest to continue the remaining visual interpretation; finished clusters are reused."
+    : "Re-ingest without forceFullIngest to retain successful interpretations and retry pending work.");
   return ` ${instructions.join(" ")}`;
 }

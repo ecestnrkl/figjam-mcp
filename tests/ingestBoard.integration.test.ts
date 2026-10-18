@@ -204,6 +204,44 @@ describe("offline ingest pipeline with actual persistent cache", () => {
     expect(output.qualityReport?.fallbackReasons).toEqual({ time_budget: 1 });
   });
 
+  it("persists an ingest at the default budget end and continues deferred vision on the next ingest", async () => {
+    vi.stubEnv("INGEST_BOARD_VISION_CONCURRENCY", "1");
+    vi.resetModules();
+    const { ingestBoard: configuredIngest } = await import("../src/tools/ingestBoard.js");
+    activeTree = boardTree([imageNode("first", 0), imageNode("second", 1000)]);
+    vi.useFakeTimers();
+    let started!: () => void;
+    const entered = new Promise<void>(resolve => { started = resolve; });
+    visionMock.mockImplementationOnce((cluster: Cluster, images: Buffer[], nodes: NormalizedNode[]) => {
+      started();
+      // Leaves 5 s of the 40 s budget, less than the 10 s minimum vision slot.
+      return new Promise<RefinedCluster>(resolve => setTimeout(() => resolve(refine(cluster, images, nodes)), 35_000));
+    });
+    const running = configuredIngest(input);
+    await entered;
+    await vi.advanceTimersByTimeAsync(35_000);
+    const first = await running;
+    vi.useRealTimers();
+    const interpretedId = (visionMock.mock.calls[0]?.[2] as NormalizedNode[])[0]!.id;
+    const deferredId = interpretedId === "first" ? "second" : "first";
+
+    expect(visionMock).toHaveBeenCalledTimes(1);
+    expect(first.qualityReport).toMatchObject({ visionClusters: 1, incompleteClusters: 1, fallbackReasons: { time_budget: 1 } });
+    expect(first.summary).toContain("Run ingest_board again without forceFullIngest to continue the remaining visual interpretation");
+    const saved = await persistence.readLatestBoard(fileKey);
+    expect(saved?.snapshotId).toBe(first.snapshotId);
+    const savedCluster = (nodeId: string) => saved?.clusters.find(cluster => cluster.nodeIds.includes(nodeId));
+    expect(savedCluster(interpretedId)).toMatchObject({ summarySource: "vision_llm" });
+    expect(savedCluster(interpretedId)?.incomplete).toBeFalsy();
+    expect(savedCluster(deferredId)).toMatchObject({ summarySource: "deterministic", incomplete: true, fallbackReason: "time_budget" });
+
+    const second = await configuredIngest(input);
+    expect(visionMock).toHaveBeenCalledTimes(2);
+    expect((visionMock.mock.calls[1]?.[2] as NormalizedNode[]).map(node => node.id)).toEqual([deferredId]);
+    expect(second.qualityReport).toMatchObject({ visionClusters: 2, incompleteClusters: 0, reusedClusters: 1 });
+    expect(second.summary).not.toContain("Run ingest_board again");
+  });
+
   it("records a new capture time when a historical source state returns", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     const firstTime = Date.UTC(2026, 9, 9, 12);
