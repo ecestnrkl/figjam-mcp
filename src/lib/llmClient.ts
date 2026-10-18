@@ -44,6 +44,10 @@ export interface ChatJsonOptions {
   reasoningEffort?: LlmReasoningEffort;
   /** Per-HTTP-attempt deadline, including the response body; caller cancellation can end it earlier. */
   requestTimeoutMs?: number;
+  /** Deadline across all model candidates and retries; a fallback candidate gets only the time left. */
+  totalTimeoutMs?: number;
+  /** Setting named in a timeout error; defaults to LLM_REQUEST_TIMEOUT_MS. */
+  timeoutSetting?: string;
   schemaName?: string;
   jsonSchema?: JsonSchema;
   onModelUsed?: (model: string) => void;
@@ -52,6 +56,10 @@ export interface ChatJsonOptions {
   /** Optional caller-owned cancellation, e.g. an ingest phase deadline. */
   signal?: AbortSignal;
 }
+
+/** Requests shorter than this cannot complete; the caller's deadline is treated as reached. */
+const MIN_REQUEST_TIMEOUT_MS = 1000;
+type RequestOptions = ChatJsonOptions & { deadlineAt?: number };
 
 export type JsonSchema = Record<string, unknown>;
 const REASONING_EFFORTS = ["none", "low", "medium", "high"] as const;
@@ -160,13 +168,18 @@ export async function chatJson(
   messages: OpenAI.ChatCompletionMessageParam[],
   options: ChatJsonOptions = {},
 ): Promise<unknown> {
+  const { totalTimeoutMs } = options;
+  if (totalTimeoutMs !== undefined && (!Number.isInteger(totalTimeoutMs) || totalTimeoutMs < MIN_REQUEST_TIMEOUT_MS)) {
+    throw new LLMConfigurationError(`totalTimeoutMs must be an integer >= ${MIN_REQUEST_TIMEOUT_MS}`);
+  }
   const llm = getLlmClient();
   const models = Array.isArray(model) ? model : [model];
   const errors: unknown[] = [];
+  const requestOptions: RequestOptions = totalTimeoutMs === undefined ? options : { ...options, deadlineAt: Date.now() + totalTimeoutMs };
 
   for (const candidate of models) {
     try {
-      const completion = await createJsonCompletion(llm, candidate, messages, options);
+      const completion = await createJsonCompletion(llm, candidate, messages, requestOptions);
       const choice = completion.choices[0];
       const raw = choice?.message?.content;
       if (!raw) {
@@ -180,7 +193,7 @@ export async function chatJson(
         throw abortReason(options.signal, error);
       }
       errors.push(error);
-      if (candidate !== models.at(-1) && shouldTryNextModel(error)) {
+      if (candidate !== models.at(-1) && shouldTryNextModel(error) && remainingMs(requestOptions) >= MIN_REQUEST_TIMEOUT_MS) {
         console.error(
           `LLM model ${candidate} failed; trying the next explicitly configured candidate.`,
         );
@@ -197,7 +210,7 @@ async function createJsonCompletion(
   llm: OpenAI,
   model: string,
   messages: OpenAI.ChatCompletionMessageParam[],
-  options: ChatJsonOptions,
+  options: RequestOptions,
 ): Promise<OpenAI.ChatCompletion> {
   const base: ParamsWithOpenRouterProvider = {
     model,
@@ -375,19 +388,27 @@ interface EmbeddedErrorEnvelope {
 async function createCompletion(
   llm: OpenAI,
   params: OpenAI.ChatCompletionCreateParamsNonStreaming,
-  options: ChatJsonOptions = {},
+  options: RequestOptions = {},
 ): Promise<OpenAI.ChatCompletion> {
   const { signal } = options;
   const requestTimeoutMs = options.requestTimeoutMs ?? getLlmRequestTimeoutMs();
-  if (!Number.isInteger(requestTimeoutMs) || requestTimeoutMs < 1000) {
-    throw new LLMConfigurationError("requestTimeoutMs must be an integer >= 1000");
+  if (!Number.isInteger(requestTimeoutMs) || requestTimeoutMs < MIN_REQUEST_TIMEOUT_MS) {
+    throw new LLMConfigurationError(`requestTimeoutMs must be an integer >= ${MIN_REQUEST_TIMEOUT_MS}`);
   }
+  const setting = options.timeoutSetting ?? "LLM_REQUEST_TIMEOUT_MS";
   for (let attempt = 0; ; attempt++) {
     throwIfAborted(signal);
+    const timeoutMs = Math.min(requestTimeoutMs, Math.floor(remainingMs(options)));
+    if (timeoutMs < MIN_REQUEST_TIMEOUT_MS) {
+      throw new LlmTimeoutError(
+        `LLM request did not finish within the ${options.totalTimeoutMs! / 1000}s total deadline across model candidates. ` +
+          `Check the model and output-token budget, or adjust ${setting}.`,
+      );
+    }
     let completion: OpenAI.ChatCompletion;
     try {
       options.onRequest?.(params.model);
-      completion = await llm.chat.completions.create(params, { signal, timeout: requestTimeoutMs });
+      completion = await llm.chat.completions.create(params, { signal, timeout: timeoutMs });
       options.onUsage?.({ model: params.model, promptTokens: completion.usage?.prompt_tokens,
         completionTokens: completion.usage?.completion_tokens, totalTokens: completion.usage?.total_tokens });
     } catch (error) {
@@ -395,10 +416,12 @@ async function createCompletion(
         throw abortReason(signal, error);
       }
       if (isLlmTimeout(error)) {
+        const clamped = timeoutMs < requestTimeoutMs
+          ? `, the time left of the ${options.totalTimeoutMs! / 1000}s total deadline across model candidates`
+          : "";
         throw new LlmTimeoutError(
-          `LLM request timed out after ${requestTimeoutMs / 1000}s. ` +
-            "Check the model, output-token budget and caller deadline. " +
-            "Adjust LLM_VISION_REQUEST_TIMEOUT_MS for vision or LLM_REQUEST_TIMEOUT_MS for text.",
+          `LLM request timed out after ${Math.round(timeoutMs / 1000)}s${clamped}. ` +
+            `Check the model, output-token budget and caller deadline, or adjust ${setting}.`,
         );
       }
       if (!(error instanceof OpenAI.RateLimitError) || attempt >= MAX_RATE_LIMIT_RETRIES) {
@@ -468,6 +491,10 @@ async function backoff(
 function retryDelayMs(error: InstanceType<typeof OpenAI.RateLimitError>, attempt: number): number {
   const retryAfter = Number(error.headers?.get("retry-after"));
   return Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter * 1000 : 2 ** attempt * 2000;
+}
+
+function remainingMs(options: RequestOptions): number {
+  return options.deadlineAt === undefined ? Infinity : options.deadlineAt - Date.now();
 }
 
 function isLlmTimeout(error: unknown): boolean {

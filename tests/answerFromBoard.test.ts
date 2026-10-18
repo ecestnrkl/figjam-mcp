@@ -11,7 +11,7 @@ const { setBoard } = await import("../src/lib/cache.js");
 const { answerFromBoard } = await import("../src/tools/answerFromBoard.js");
 
 beforeEach(() => { chatJsonMock.mockReset(); answerReasoningMock.mockReset(); });
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); });
 
 function prompt(): string {
   return (chatJsonMock.mock.calls[0]?.[1] as Array<{ role: string; content: string }>)?.find((item) => item.role === "user")?.content ?? "";
@@ -244,6 +244,17 @@ describe("answerFromBoard evidence grounding", () => {
     await expect(answerFromBoard({ boardId: data.boardId, question: "Payment retries?" })).rejects.toBe(timeout);
     expect(chatJsonMock).toHaveBeenCalledOnce();
     expect(chatJsonMock.mock.calls[0]?.[2]).toMatchObject({ reasoningEffort: "none", maxOutputTokens: 2048 });
+  });
+
+  it("bounds the answer request and all model candidates by the answer deadlines", async () => {
+    vi.stubEnv("LLM_REQUEST_TIMEOUT_MS", "");
+    vi.stubEnv("LLM_ANSWER_REQUEST_TIMEOUT_MS", "");
+    setBoard("Deadline123", evidenceBoard("Deadline123"));
+    chatJsonMock.mockResolvedValueOnce({ kind: "answer", language: "en", answer: "Unsupported", evidenceIds: [] });
+    await answerFromBoard({ boardId: "Deadline123", question: "Payment?" });
+    expect(chatJsonMock.mock.calls[0]?.[2]).toMatchObject({
+      requestTimeoutMs: 40000, totalTimeoutMs: 50000, timeoutSetting: "LLM_ANSWER_REQUEST_TIMEOUT_MS",
+    });
   });
 
   it("includes matching original node metadata in the prompt and citation", async () => {

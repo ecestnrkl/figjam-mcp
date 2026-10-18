@@ -18,8 +18,8 @@ every answer to the nodes it came from.
 | Tool | What it does | LLM call |
 | --- | --- | --- |
 | `ingest_board` | Reads a board, clusters it and saves a local snapshot. Re-ingests reuse unchanged clusters. | In `balanced` (default) and `max_quality` mode |
-| `get_board_context` | Returns bounded, paginated context with source links, optionally for a topic or exact node IDs. | No |
-| `answer_from_board` | Answers a question from the snapshot with node-level citations, or reports insufficient evidence. | Yes |
+| `get_board_context` | Returns paginated, source-linked context, optionally for a topic or exact node IDs. Use it for overviews, summaries and documentation. | No |
+| `answer_from_board` | Answers one specific question (a number, status or decision) from the most relevant excerpts, with node-level citations or an insufficient-evidence result. Not meant for whole-board summaries. | Yes |
 | `diff_board` | Compares two snapshots: new, removed and changed clusters, nodes, table cells and arrows. | No |
 | `diagnose_llm_config` | Tests the configured models with small text and image JSON checks. | Yes |
 

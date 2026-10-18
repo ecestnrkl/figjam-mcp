@@ -1,11 +1,19 @@
 # Changelog
 
-## 0.4.1 — Unreleased
+## 0.4.1 — 2026-10-19
 
+- `answer_from_board` waits up to 40 s per model request (`LLM_ANSWER_REQUEST_TIMEOUT_MS`)
+  instead of 20 s and stops after 50 s across all model candidates, so large prompts
+  on free reasoning models finish inside a 60-second client timeout. The text checks of
+  `diagnose_llm_config` use the same timeout, and timeout errors name the setting to change.
+- Tool descriptions point overviews and whole-board summaries to `get_board_context`;
+  `answer_from_board` is for one specific question.
 - `ingest_board` renders screenshots of several clusters per Figma request (up to
   18 nodes) instead of one request per cluster, saving Tier 1 Figma requests.
 - Vision summaries keep table values and statistical notation literally and name
   a statistic such as a confidence interval only when a legend identifies it.
+- Releases are published from CI with npm provenance.
+- Dependency updates: `openai` 7.34, `dotenv` 18.0.8.
 
 ## 0.4.0 — 2026-10-18
 

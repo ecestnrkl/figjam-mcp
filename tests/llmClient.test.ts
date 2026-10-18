@@ -133,6 +133,44 @@ describe("chatJson", () => {
     } finally { vi.unstubAllEnvs(); }
   });
 
+  it("names the configured setting in a timeout error", async () => {
+    const error = new Error("Private provider details"); error.name = "APIConnectionTimeoutError";
+    createMock.mockRejectedValueOnce(error);
+    await expect(chatJson("test-model", MESSAGES, { requestTimeoutMs: 40000, timeoutSetting: "LLM_ANSWER_REQUEST_TIMEOUT_MS" }))
+      .rejects.toThrow(/timed out after 40s\..*adjust LLM_ANSWER_REQUEST_TIMEOUT_MS/);
+    createMock.mockRejectedValueOnce(error);
+    await expect(chatJson("test-model", MESSAGES)).rejects.toThrow(/adjust LLM_REQUEST_TIMEOUT_MS/);
+  });
+
+  it("gives a fallback candidate only the time left of the total deadline", async () => {
+    vi.useFakeTimers({ now: 0 });
+    const timeout = new Error("Private provider details"); timeout.name = "APIConnectionTimeoutError";
+    createMock.mockImplementationOnce(async () => { vi.setSystemTime(35_000); throw timeout; })
+      .mockImplementationOnce(async () => { vi.setSystemTime(50_000); throw timeout; });
+    await expect(chatJson(["slow-model", "fallback-model"], MESSAGES, {
+      requestTimeoutMs: 40000, totalTimeoutMs: 50000, timeoutSetting: "LLM_ANSWER_REQUEST_TIMEOUT_MS",
+    })).rejects.toThrow(/timed out after 15s, the time left of the 50s total deadline/);
+    expect(createMock.mock.calls.map(([params, options]) => [params.model, options.timeout]))
+      .toEqual([["slow-model", 40000], ["fallback-model", 15000]]);
+  });
+
+  it("does not start another candidate once the total deadline is spent", async () => {
+    vi.useFakeTimers({ now: 0 });
+    createMock.mockImplementationOnce(async () => {
+      vi.setSystemTime(49_500);
+      throw providerError(503, "upstream unavailable");
+    });
+    await expect(chatJson(["first-model", "second-model", "third-model"], MESSAGES, { totalTimeoutMs: 50000 }))
+      .rejects.toMatchObject({ name: "Error", status: 503 });
+    expect(createMock).toHaveBeenCalledOnce();
+  });
+
+  it("rejects an invalid total deadline before calling the provider", async () => {
+    await expect(chatJson("test-model", MESSAGES, { totalTimeoutMs: 999 }))
+      .rejects.toMatchObject({ name: "LLMConfigurationError" });
+    expect(createMock).not.toHaveBeenCalled();
+  });
+
   it("rejects an unbounded request override before calling the provider", async () => {
     await expect(chatJson("test-model", MESSAGES, { requestTimeoutMs: 0 }))
       .rejects.toMatchObject({ name: "LLMConfigurationError" });
