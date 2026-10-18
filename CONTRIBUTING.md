@@ -13,6 +13,9 @@ It also verifies the package on exactly Node 22.12.0 and evaluates the synthetic
 retrieval/change fixtures offline on Linux/Node 24. Provider evaluations remain
 explicit opt-in and require separate review of the generated answers.
 
+`python3 scripts/generate-pipeline-gif.py` regenerates `docs/pipeline.gif`
+(needs Python 3 with Pillow and the DejaVu fonts).
+
 Describe the concrete problem, behavior change, compatibility impact and how it
 was verified. Keep the five public tool contracts compatible; new response fields
 should be additive. Cache format changes must preserve old files and explicitly
