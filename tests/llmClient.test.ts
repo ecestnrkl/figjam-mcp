@@ -18,7 +18,8 @@ vi.mock("openai", async (importActual) => {
   // the static error classes used by instanceof checks are preserved.
   class MockOpenAI {
     chat = { completions: { create: createMock } };
-    constructor(opts?: unknown) { constructorMock(opts); }
+    baseURL: string;
+    constructor(opts: { baseURL: string }) { constructorMock(opts); this.baseURL = opts.baseURL; }
     static RateLimitError = Real.RateLimitError;
     static APIError = Real.APIError;
     static APIConnectionTimeoutError = Real.APIConnectionTimeoutError;
@@ -29,7 +30,7 @@ vi.mock("openai", async (importActual) => {
 process.env.LLM_BASE_URL = "http://test.local/v1";
 process.env.LLM_API_KEY = "test-key";
 
-const { chatJson } = await import("../src/lib/llmClient.js");
+const { chatJson, getAnswerReasoningEffort } = await import("../src/lib/llmClient.js");
 
 const MESSAGES = [{ role: "user" as const, content: "hi" }];
 
@@ -50,10 +51,58 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.useRealTimers();
+  vi.unstubAllEnvs();
   vi.restoreAllMocks();
 });
 
 describe("chatJson", () => {
+  it.each([
+    [undefined, undefined], ["", undefined], ["  ", undefined],
+    ["none", "none"], [" low ", "low"], ["medium", "medium"], ["high", "high"],
+  ])("reads the optional answer reasoning setting %s without choosing a new default", (setting, expected) => {
+    vi.stubEnv("LLM_ANSWER_REASONING_EFFORT", setting);
+    expect(getAnswerReasoningEffort()).toBe(expected);
+    expect(createMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects invalid explicit reasoning configuration before any provider request", async () => {
+    vi.stubEnv("LLM_ANSWER_REASONING_EFFORT", "invented");
+    expect(getAnswerReasoningEffort).toThrow("LLM_ANSWER_REASONING_EFFORT must be one of:");
+    await expect(chatJson("test-model", MESSAGES, { reasoningEffort: "invented" as "none" }))
+      .rejects.toMatchObject({ name: "LLMConfigurationError" });
+    expect(createMock).not.toHaveBeenCalled();
+  });
+
+  it("preserves explicit OpenRouter reasoning through every actual format downgrade", async () => {
+    vi.stubEnv("LLM_BASE_URL", "https://openrouter.ai/api/v1");
+    createMock.mockRejectedValueOnce(providerError(400, "json_schema response format is not supported"))
+      .mockRejectedValueOnce(providerError(400, "json_object response format is not supported"))
+      .mockResolvedValueOnce(okCompletion('{"ok":true}'))
+      .mockResolvedValueOnce(okCompletion('{"ok":true}'));
+    await expect(chatJson("test-model", MESSAGES, { ...SCHEMA_OPTIONS, reasoningEffort: "none" })).resolves.toEqual({ ok: true });
+    expect(createMock.mock.calls.slice(0, 3).map(([params]) => [params.response_format?.type, params.reasoning, params.reasoning_effort, params.provider]))
+      .toEqual([
+        ["json_schema", { effort: "none" }, undefined, { require_parameters: true }],
+        ["json_object", { effort: "none" }, undefined, { require_parameters: true }],
+        [undefined, { effort: "none" }, undefined, { require_parameters: true }],
+      ]);
+    // The cached client must not carry answer-only settings into another role.
+    await chatJson("vision-model", MESSAGES, SCHEMA_OPTIONS);
+    expect(createMock.mock.calls[3]?.[0]).not.toHaveProperty("reasoning");
+    expect(createMock.mock.calls[3]?.[0]).not.toHaveProperty("reasoning_effort");
+  });
+
+  it.each([
+    [400, "reasoning_effort is not supported; response_format json_schema is accepted"],
+    [404, "No endpoints found that support the requested parameters."],
+  ])("does not mistake an ambiguous or reasoning-related rejection for a format error (%s)", async (status, message) => {
+    createMock.mockRejectedValueOnce(providerError(status, message));
+    await expect(chatJson("test-model", MESSAGES, { ...SCHEMA_OPTIONS, reasoningEffort: "none" }))
+      .rejects.toMatchObject({ name: "Error", status });
+    expect(createMock).toHaveBeenCalledOnce();
+    expect(createMock.mock.calls[0]?.[0]).toMatchObject({ response_format: { type: "json_schema" }, reasoning_effort: "none" });
+  });
+
   it("detects missing configuration without making any provider request", async () => {
     const { validateLlmConfiguration } = await import("../src/lib/llmClient.js");
     const previous = process.env.LLM_API_KEY;

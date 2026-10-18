@@ -276,6 +276,11 @@ file loading and persistence. The acceptance client uses a bounded 180-second
 stdio deadline, while direct image evaluation uses 75 seconds per case.
 Existing explicit timeout and vision-budget overrides remain effective.
 
+`LLM_ANSWER_REASONING_EFFORT` optionally sets `none`, `low`, `medium` or `high`
+for answer generation only. Omit it to retain provider defaults. The selected
+model must support the setting; it does not change request deadlines or guarantee
+faster replies. Vision and diagnostics keep their existing configuration.
+
 `ingest_board` defaults to `ingestMode: "balanced"`: text-rich clusters use
 deterministic summaries, while image-heavy or low-text clusters use vision
 within the budget. `max_speed` skips vision; `max_quality` attempts vision for

@@ -2,15 +2,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { evidenceBoard, textNode } from "./fixtures/retrieval.js";
 import { retrieveEvidence } from "../src/lib/evidence.js";
 
-const { chatJsonMock, InvalidJsonErrorMock } = vi.hoisted(() => {
+const { chatJsonMock, answerReasoningMock, InvalidJsonErrorMock } = vi.hoisted(() => {
   class InvalidJsonErrorMock extends Error { constructor(message: string) { super(message); this.name = "LlmInvalidJsonError"; } }
-  return { chatJsonMock: vi.fn(), InvalidJsonErrorMock };
+  return { chatJsonMock: vi.fn(), answerReasoningMock: vi.fn(), InvalidJsonErrorMock };
 });
-vi.mock("../src/lib/llmClient.js", () => ({ chatJson: chatJsonMock, getTextModels: () => ["test-model"], LlmInvalidJsonError: InvalidJsonErrorMock }));
+vi.mock("../src/lib/llmClient.js", () => ({ chatJson: chatJsonMock, getAnswerReasoningEffort: answerReasoningMock, getTextModels: () => ["test-model"], LlmInvalidJsonError: InvalidJsonErrorMock }));
 const { setBoard } = await import("../src/lib/cache.js");
 const { answerFromBoard } = await import("../src/tools/answerFromBoard.js");
 
-beforeEach(() => { chatJsonMock.mockReset(); });
+beforeEach(() => { chatJsonMock.mockReset(); answerReasoningMock.mockReset(); });
 afterEach(() => vi.restoreAllMocks());
 
 function prompt(): string {
@@ -233,6 +233,17 @@ describe("answerFromBoard evidence grounding", () => {
     await answerFromBoard({ boardId: "Measured123", question: "Payment?" }, { onRequest, onUsage });
     expect(chatJsonMock).toHaveBeenCalledOnce();
     expect(chatJsonMock.mock.calls[0]?.[2]).toMatchObject({ onRequest, onUsage });
+  });
+
+  it("uses an explicit answer reasoning setting without changing the token budget or masking timeouts", async () => {
+    const data = evidenceBoard("ReasoningAnswer123");
+    setBoard(data.boardId, data);
+    answerReasoningMock.mockReturnValue("none");
+    const timeout = Object.assign(new Error("LLM request timed out after 20s."), { name: "LlmTimeoutError" });
+    chatJsonMock.mockRejectedValueOnce(timeout);
+    await expect(answerFromBoard({ boardId: data.boardId, question: "Payment retries?" })).rejects.toBe(timeout);
+    expect(chatJsonMock).toHaveBeenCalledOnce();
+    expect(chatJsonMock.mock.calls[0]?.[2]).toMatchObject({ reasoningEffort: "none", maxOutputTokens: 2048 });
   });
 
   it("includes matching original node metadata in the prompt and citation", async () => {

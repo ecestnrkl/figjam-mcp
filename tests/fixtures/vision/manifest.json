@@ -55,7 +55,9 @@
         ],
         "forbiddenClaims": [
           "Die 20 zusätzlichen Plätze seien beschlossen, zugesagt oder bereits angeboten.",
-          "Erfundene Summe, Freigabe, Person, Frist oder Termin."
+          "Erfundene Summe, Freigabe, Person, Frist oder Termin.",
+          "Die Budgetangabe belege verfügbare, zugeteilte oder ausreichende Mittel.",
+          "Die räumliche Nähe belege eine Finanzierung, einen Zweck oder einen kausalen Zusammenhang zwischen Budget und Zusatzplätzen; auch eine vorsichtige Formulierung macht dies nicht zum Bildbeleg."
         ],
         "acceptedNumberVariants": [
           "8400",

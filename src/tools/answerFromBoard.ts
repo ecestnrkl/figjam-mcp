@@ -1,6 +1,6 @@
 import type { AnswerFromBoardInput, AnswerFromBoardOutput } from "../schemas/answerFromBoard.js";
 import { getBoardOrRestore } from "../lib/cache.js";
-import { chatJson, getTextModels, LlmInvalidJsonError, type ChatJsonOptions } from "../lib/llmClient.js";
+import { chatJson, getAnswerReasoningEffort, getTextModels, LlmInvalidJsonError, type ChatJsonOptions } from "../lib/llmClient.js";
 import { readIntEnv } from "../lib/env.js";
 import {
   boundedText, connectionsForEvidence, formatEvidence, formatEvidenceConnection, retrieveEvidence,
@@ -87,6 +87,7 @@ export async function answerFromBoard(
       { role: "user", content: `${prefix}${context}${suffix}` },
     ], {
       maxOutputTokens: ANSWER_MAX_OUTPUT_TOKENS,
+      reasoningEffort: getAnswerReasoningEffort(),
       schemaName: "figjam_evidence_answer",
       jsonSchema: ANSWER_REPLY_SCHEMA,
       signal: options.signal,

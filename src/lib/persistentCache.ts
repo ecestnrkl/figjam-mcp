@@ -10,7 +10,7 @@ import { MAX_BOARD_NODES } from "./nodeTree.js";
 
 export const CACHE_SCHEMA_VERSION = 4;
 export const EXTRACTION_VERSION = 5;
-export const PROMPT_VERSION = 6;
+export const PROMPT_VERSION = 7;
 const defaultRoot = process.platform === "darwin"
   ? path.join(homedir(), "Library", "Caches", "figjam-context-mcp")
   : process.platform === "win32"

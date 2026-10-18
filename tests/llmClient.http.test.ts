@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // Real HTTP and the installed SDK exercise error decoding, body deadlines and
 // socket cancellation. No provider key, external endpoint or SDK mock is used.
-type Request = { model: string; response_format?: { type: string }; provider?: { require_parameters?: boolean } };
+type Request = { model: string; response_format?: { type: string }; provider?: { require_parameters?: boolean }; reasoning_effort?: string; reasoning?: { effort: string } };
 const messages = [{ role: "user" as const, content: "Synthetic fixture only" }];
 const schemaOptions = { jsonSchema: { type: "object", properties: { ok: { type: "boolean" } } } };
 let server: Server | undefined;
@@ -75,6 +75,27 @@ afterEach(async () => {
 });
 
 describe("LLM requests through real local HTTP and the OpenAI SDK", () => {
+  it("serializes opt-in reasoning for a generic compatible endpoint without changing later requests", async () => {
+    const { chatJson } = await localClient((_request, response) => success(response));
+    await chatJson("answer-model", messages, { ...schemaOptions, reasoningEffort: "low" });
+    await chatJson("vision-model", messages, schemaOptions);
+    expect(requests.map(request => [request.reasoning_effort, request.reasoning])).toEqual([["low", undefined], [undefined, undefined]]);
+  });
+
+  it("keeps explicit reasoning after format rejection but does not retry ambiguous parameter failures", async () => {
+    const { chatJson } = await localClient((request, response) => {
+      if (request.model === "ambiguous/model") {
+        json(response, 404, { error: { code: 404, message: "No endpoints found that support the requested parameters." } });
+      } else if (request.response_format?.type === "json_schema") {
+        json(response, 400, { error: { code: 400, message: "json_schema response format is not supported" } });
+      } else success(response);
+    });
+    await expect(chatJson("available/model", messages, { ...schemaOptions, reasoningEffort: "none" })).resolves.toEqual({ ok: true });
+    await expect(chatJson("ambiguous/model", messages, { ...schemaOptions, reasoningEffort: "none" })).rejects.toMatchObject({ status: 404 });
+    expect(requests.map(request => [request.model, request.response_format?.type, request.reasoning_effort]))
+      .toEqual([["available/model", "json_schema", "none"], ["available/model", "json_object", "none"], ["ambiguous/model", "json_schema", "none"]]);
+  });
+
   it("distinguishes missing-model 404s from format-routing 404s and preserves each fallback", async () => {
     const { chatJson, getLlmClient } = await localClient((request, response) => {
       if (request.model === "missing/model") {

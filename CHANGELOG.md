@@ -2,6 +2,8 @@
 
 ## 0.4.0 — Unreleased
 
+- Add optional answer-only reasoning effort without changing provider defaults
+  or deadlines; require direct evidence for visual status and relationship claims.
 - Recognize Figma LINE_ARROW direction and exclude page/canvas anchors from
   semantic connections. Recompute upgraded extractions while retaining readable
   historical snapshots.

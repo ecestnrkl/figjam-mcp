@@ -40,6 +40,8 @@ export class LlmInvalidJsonError extends Error {
 
 export interface ChatJsonOptions {
   maxOutputTokens?: number;
+  /** Explicit opt-in; omitted requests retain the selected model's reasoning default. */
+  reasoningEffort?: LlmReasoningEffort;
   /** Per-HTTP-attempt deadline, including the response body; caller cancellation can end it earlier. */
   requestTimeoutMs?: number;
   schemaName?: string;
@@ -52,6 +54,22 @@ export interface ChatJsonOptions {
 }
 
 export type JsonSchema = Record<string, unknown>;
+const REASONING_EFFORTS = ["none", "low", "medium", "high"] as const;
+export type LlmReasoningEffort = typeof REASONING_EFFORTS[number];
+
+/** Applies only to answer_from_board; vision and other roles keep their own defaults. */
+export function getAnswerReasoningEffort(): LlmReasoningEffort | undefined {
+  const value = process.env.LLM_ANSWER_REASONING_EFFORT?.trim();
+  if (!value) return undefined;
+  validateReasoningEffort(value, "LLM_ANSWER_REASONING_EFFORT");
+  return value;
+}
+
+function validateReasoningEffort(value: unknown, name: string): asserts value is LlmReasoningEffort {
+  if (!REASONING_EFFORTS.includes(value as LlmReasoningEffort)) {
+    throw new LLMConfigurationError(`${name} must be one of: ${REASONING_EFFORTS.join(", ")}`);
+  }
+}
 
 /** Reads a required env var or fails with a setup hint. */
 function requireEnv(name: string): string {
@@ -181,12 +199,20 @@ async function createJsonCompletion(
   messages: OpenAI.ChatCompletionMessageParam[],
   options: ChatJsonOptions,
 ): Promise<OpenAI.ChatCompletion> {
-  const base: OpenAI.ChatCompletionCreateParamsNonStreaming = {
+  const base: ParamsWithOpenRouterProvider = {
     model,
     messages,
     temperature: 0.2,
     max_tokens: options.maxOutputTokens ?? MAX_OUTPUT_TOKENS,
   };
+  if (options.reasoningEffort !== undefined) {
+    validateReasoningEffort(options.reasoningEffort, "reasoningEffort");
+    // OpenRouter normalizes reasoning across providers; other compatible APIs
+    // use the standard field. Neither is sent without an explicit opt-in.
+    if (new URL(llm.baseURL).hostname === "openrouter.ai") {
+      base.reasoning = { effort: options.reasoningEffort };
+    } else base.reasoning_effort = options.reasoningEffort;
+  }
 
   const formats = responseFormatAttempts(options);
   for (const responseFormat of formats) {
@@ -194,7 +220,7 @@ async function createJsonCompletion(
       const params = responseFormat ? { ...base, response_format: responseFormat } : base;
       return await createCompletion(llm, withProviderRequirements(params), options);
     } catch (error) {
-      if (!isUnsupportedParamError(error) || responseFormat === formats.at(-1)) {
+      if (!isUnsupportedParamError(error, options.reasoningEffort !== undefined) || responseFormat === formats.at(-1)) {
         throw error;
       }
     }
@@ -206,6 +232,7 @@ async function createJsonCompletion(
 type ResponseFormat = NonNullable<OpenAI.ChatCompletionCreateParamsNonStreaming["response_format"]>;
 type ParamsWithOpenRouterProvider = OpenAI.ChatCompletionCreateParamsNonStreaming & {
   provider?: { require_parameters?: boolean };
+  reasoning?: { effort: LlmReasoningEffort };
 };
 
 function responseFormatAttempts(options: ChatJsonOptions): Array<ResponseFormat | undefined> {
@@ -227,9 +254,9 @@ function responseFormatAttempts(options: ChatJsonOptions): Array<ResponseFormat 
 }
 
 function withProviderRequirements(
-  params: OpenAI.ChatCompletionCreateParamsNonStreaming,
-): OpenAI.ChatCompletionCreateParamsNonStreaming {
-  if (!params.response_format || !getModelConfig().providerRequireParameters) {
+  params: ParamsWithOpenRouterProvider,
+): ParamsWithOpenRouterProvider {
+  if ((!params.response_format && !params.reasoning && params.reasoning_effort === undefined) || !getModelConfig().providerRequireParameters) {
     return params;
   }
   return {
@@ -238,16 +265,22 @@ function withProviderRequirements(
   } as ParamsWithOpenRouterProvider;
 }
 
-function isUnsupportedParamError(error: unknown): boolean {
+function isUnsupportedParamError(error: unknown, hasExplicitReasoning = false): boolean {
   if (!(error instanceof OpenAI.APIError) || ![400, 404, 422].includes(error.status ?? 0)) return false;
   const detail = providerErrorDetail(error);
   // OpenRouter can use 404 both for missing models and for endpoints excluded
   // by require_parameters. Status alone cannot decide whether less strict JSON
   // formatting will help. Never treat unrelated billing/policy/input failures
   // as permission to downgrade the requested format.
-  const format = /\b(?:response[_ -]?format|json[_ -]?(?:schema|object|mode)|structured[_ -]?outputs?|require[_ -]?parameters)\b/i;
+  const format = /\b(?:response[_ -]?format|json[_ -]?(?:schema|object|mode)|structured[_ -]?outputs?)\b/i;
   const unsupported = /unsupported|not[_ -]supported|does(?:n't| not) support|do(?:n't| not) support|cannot support|only supports|no (?:available )?endpoints|unavailable|not available|unrecognized|unknown (?:parameter|argument|field)|not (?:allowed|permitted|compatible)/i;
-  return (format.test(detail) && unsupported.test(detail)) ||
+  // With two requested capabilities, generic parameter-routing errors no
+  // longer identify JSON as the problem. Never strip formatting to mask an
+  // unsupported reasoning setting, nor silently remove that setting.
+  if (hasExplicitReasoning && /\b(?:reasoning(?:[_ -]effort)?|thinking)\b/i.test(detail)) return false;
+  if (format.test(detail) && unsupported.test(detail)) return true;
+  if (hasExplicitReasoning) return false;
+  return (/\brequire[_ -]?parameters\b/i.test(detail) && unsupported.test(detail)) ||
     /no (?:available )?endpoints.*(?:support|match|handle).*\b(?:requested|required) parameters\b/i.test(detail) ||
     /\bFilter by Parameters\b/i.test(detail);
 }
