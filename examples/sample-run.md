@@ -18,12 +18,9 @@ Response (`structuredContent`):
 {
   "ok": true,
   "preset": "student-free",
-  "visionModels": ["google/gemma-4-26b-a4b-it:free", "openrouter/free"],
-  "textModels": [
-    "qwen/qwen3-next-80b-a3b-instruct:free",
-    "nvidia/nemotron-nano-9b-v2:free",
-    "openrouter/free"
-  ],
+  "visionModels": ["openrouter/free"],
+  "textModels": ["nvidia/nemotron-3-super-120b-a12b:free", "openrouter/free"],
+  "fastTextModels": ["nvidia/nemotron-3-super-120b-a12b:free", "openrouter/free"],
   "summary": "LLM configuration OK (student-free)."
 }
 ```
@@ -48,7 +45,7 @@ Response (`structuredContent`):
   "clusterCount": 4,
   "summary": "Ingested board AbC123XyZ456: 4 clusters - \"User research notes\", \"Problem framing\", \"Ideation sketches\", \"Next steps\" (docStructureHint=double_diamond).",
   "qualityReport": {
-    "modelsUsed": ["google/gemma-4-26b-a4b-it:free"],
+    "modelsUsed": ["openrouter/free"],
     "cachedClusters": 0,
     "deterministicClusters": 2,
     "visionClusters": 2,

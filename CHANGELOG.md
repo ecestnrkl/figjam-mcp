@@ -2,65 +2,37 @@
 
 ## 0.4.0 — Unreleased
 
-- Add optional answer-only reasoning effort without changing provider defaults
-  or deadlines; require direct evidence for visual status and relationship claims.
-- Recognize Figma LINE_ARROW direction and exclude page/canvas anchors from
-  semantic connections. Recompute upgraded extractions while retaining readable
-  historical snapshots.
-- Rank original text and metadata separately, support bounded compound-word
-  prefixes and protect primary excerpts from unrelated table/graph expansion.
-- Render cited task/question/proposal uncertainty explanations locally from the
-  internal answer classification; invalid replies fall back to source excerpts.
-- Add a separate 60-second vision request default with explicit global-override
-  compatibility, a 90-second vision phase and terminal response-body telemetry.
-- Distinguish unavailable models from unsupported JSON formats, avoiding repeated
-  format attempts for a missing model. Verify response-body timeouts and caller
-  cancellation against a real local HTTP server and the installed SDK.
-- Preserve visible facts and diagram direction in vision instructions; reject
-  unsupported source IDs instead of silently filtering them. Refresh visual
-  interpretation signatures while retaining original v4 source snapshots.
-- Add two versioned image-only evaluation fixtures with explicit provider opt-in,
-  raw response/source checks and separate semantic review. Clarify why an open
-  task or proposal cannot establish a requested status in generated answers.
-- Migrate to stable MCP TypeScript SDK v2 and Zod 4, retaining the five stdio tools
-  and their existing required response fields. Propagate cancellation and ingest
-  progress; declare tool annotations and external-provider behavior.
-- Require Node.js 22.12+; update vulnerable runtime and development dependencies.
-- Preserve Figma page/section boundaries, tables, connector direction and visual
-  changes when interpreting boards and computing snapshot differences.
-- Add bounded context pagination and node-level evidence for answers.
-  Readable context identifies each source by its node name, keeps its cluster
-  label separate, and includes a direct Figma link.
-  Local Unicode BM25 includes original text, table cells and descriptive names;
-  direct graph neighbors supplement relevant results. No-match topics now return
-  empty results. Answers cite only evidence actually supplied to the model.
-- Instruct answers to distinguish open tasks, missing confirmation and explicit
-  negative facts, and to cite relevant records when explaining uncertainty or
-  conflicting sources. Increase the default answer budget to 2,048 tokens to
-  accommodate provider reasoning tokens. Add separate opt-in status-question cases for human review;
-  valid citation IDs alone do not establish that an answer follows from its source.
-- Introduce private validated v4 caches and bounded network/ingest work. Legacy
-  caches are preserved and require re-ingestion; see README for migration.
-- Add MIT licensing, contribution/security guidance, registry metadata, weekly
-  dependency PRs and package installation checks across Linux/macOS/Windows.
-- Add 20 synthetic source-retrieval cases with expected changes and an explicit
-  opt-in provider evaluator recording requests, token usage and source checks.
-- Exercise table-cell changes and historical sources in the production-only
-  installed package; test final ingest responses after progress on modern and
-  legacy protocols. Add an opt-in 65-second installed-server ingest check.
-- Clarify incomplete vision results with actual ingest mode and reason counts;
-  validate provider configuration before downloading screenshots, honor shared
-  rate-limit cooldowns, and prioritize deferred work over repeated failures.
-- Keep a fresh capture timestamp when a historical board state returns, while
-  still reusing its completed interpretations.
-- Include bounded neighboring table cells in focused retrieval so separately
-  stored labels and values can be read together; expose source table positions
-  to the answer model when they are present.
-- Mark the provenance of structured cluster summaries, including summaries
-  returned alongside a topic match on original text.
-
-This entry describes the release candidate. Publication and hosted CI results
-must be confirmed before announcing the release.
+- New `student-free` defaults: text uses `nvidia/nemotron-3-super-120b-a12b:free`,
+  then `openrouter/free`; vision uses `openrouter/free`.
+- `ingest_board` fits a 60-second client timeout: the vision phase defaults to
+  40 s (`INGEST_BOARD_VISION_BUDGET_MS`). Unfinished clusters continue on the
+  next ingest, and the summary says so.
+- `diagnose_llm_config` runs its text, fast-text and image checks in parallel.
+- Stable MCP TypeScript SDK v2 and Zod 4 with unchanged tool names and required
+  fields; cancellation, ingest progress and tool annotations. Requires Node.js 22.12+.
+- Answers cite source nodes with exact quotes and Figma links, and report
+  insufficient evidence instead of guessing.
+- Answers keep confirmed statuses, explicit negatives, open tasks, proposals and
+  conflicting sources apart. Optional `LLM_ANSWER_REASONING_EFFORT` for answers.
+- `get_board_context` adds pagination, character budgets, exact node lookups and
+  local BM25 search over original text, table cells and names. Topics without
+  matches return empty results.
+- Tables, pages, sections and arrow direction are preserved. Arrows anchored to
+  the page canvas no longer create connections.
+- `diff_board` compares the latest snapshot with an earlier one (20 are kept),
+  including table-cell, visual and connector changes.
+- Re-ingests reuse unchanged clusters and skip the download when Figma reports
+  the same version. Model or prompt changes invalidate interpretations automatically.
+- Ingest results report why vision is incomplete (time budget, timeout, rate
+  limit, configuration, access) and when to retry; Retry-After is respected.
+- Private v4 cache with atomic writes and a write lock. Legacy v3 caches are kept;
+  re-ingest once after upgrading.
+- Bounded work: 64 MiB per file, 100,000 nodes, 8 MiB per image, 64 MiB of
+  screenshots per ingest, and per-request timeouts for Figma and the LLM.
+- Vision summaries keep visible facts and diagram direction and are marked as
+  model-derived.
+- Offline retrieval and diff evaluation with 20 synthetic cases
+  (`npm run eval:retrieval`); MIT license and CI on Linux, macOS and Windows.
 
 ## 0.3.0 — Development history
 
