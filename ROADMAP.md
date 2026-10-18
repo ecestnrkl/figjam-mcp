@@ -15,7 +15,7 @@ installable in two minutes, documented, and used on real boards.
 - [x] Render screenshots of several clusters per Figma request
 - [ ] Public demo board and a screen recording in a real MCP client
 - [ ] Use it in real workshops; fix what gets in the way
-- [ ] npm trusted publishing from CI
+- [x] npm trusted publishing from CI
 
 ## 0.5.0 — complete image interpretation, safer provider calls
 
