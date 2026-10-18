@@ -5,9 +5,10 @@ installable in two minutes, documented, and used on real boards.
 
 ## 0.4.0 — first public release
 
-- [ ] Release PR #7: current free-model defaults, ingest fits a 60 s client timeout, concise docs
-- [ ] Merge, tag `v0.4.0`, GitHub release
-- [ ] Publish to npm and the MCP Registry, refresh the Glama listing
+- [x] Release PR #7: current free-model defaults, ingest fits a 60 s client timeout, concise docs
+- [x] Merge, tag `v0.4.0`, GitHub release
+- [x] Publish to npm and the MCP Registry
+- [ ] Refresh the Glama listing
 
 ## 0.4.x — proven in real use
 
