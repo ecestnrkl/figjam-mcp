@@ -1,0 +1,84 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions: {}
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write # npm trusted publishing and MCP Registry login via GitHub OIDC
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+          registry-url: https://registry.npmjs.org
+      - name: Check that tag, package.json, server.json and CHANGELOG agree
+        run: node scripts/release-check.mjs "$GITHUB_REF_NAME"
+      - run: npm ci
+      - name: Audit production and development dependencies
+        run: npm run security:check
+      - name: Typecheck, test, build, exercise the packed CLI and keep the tested tarball
+        run: npm run package:smoke -- --long --artifact-dir "$RUNNER_TEMP/release"
+      - name: Use npm 11.5.1 or later for trusted publishing
+        run: |
+          node -e 'const [major, minor, patch] = process.argv[1].split(".").map(Number); process.exit(major > 11 || (major === 11 && (minor > 5 || (minor === 5 && patch >= 1))) ? 0 : 1)' "$(npm --version)" \
+            || npm install --global npm@11.6.2
+          npm --version
+      - name: Publish the tested tarball to npm with provenance
+        run: |
+          name=$(node -p 'require("./package.json").name')
+          version=$(node -p 'require("./package.json").version')
+          if npm view "$name@$version" version > /dev/null 2>&1; then
+            echo "$name@$version is already on npm; skipping npm publish."
+          else
+            npm publish "$RUNNER_TEMP"/release/*.tgz --provenance --access public
+          fi
+      - name: Install mcp-publisher
+        env:
+          MCP_PUBLISHER_VERSION: v1.8.1
+          MCP_PUBLISHER_SHA256: a06c9096dcb9727c13555b6be26c7effa707b01f06a4c561ba7a3635443cf2cc
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/mcp-publisher.tar.gz" \
+            "https://github.com/modelcontextprotocol/registry/releases/download/$MCP_PUBLISHER_VERSION/mcp-publisher_linux_amd64.tar.gz"
+          echo "$MCP_PUBLISHER_SHA256  $RUNNER_TEMP/mcp-publisher.tar.gz" | sha256sum --check
+          tar -xzf "$RUNNER_TEMP/mcp-publisher.tar.gz" -C "$RUNNER_TEMP" mcp-publisher
+      - name: Publish server.json to the MCP Registry
+        run: |
+          "$RUNNER_TEMP/mcp-publisher" login github-oidc
+          "$RUNNER_TEMP/mcp-publisher" publish
+
+  github-release:
+    needs: publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write # create the GitHub release
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: 24
+      - name: Create the GitHub release from the CHANGELOG section
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          node scripts/release-check.mjs "$GITHUB_REF_NAME" "$RUNNER_TEMP/release-notes.md"
+          name=$(node -p 'require("./package.json").name')
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --verify-tag \
+            --title "$name ${GITHUB_REF_NAME#v}" --notes-file "$RUNNER_TEMP/release-notes.md"
