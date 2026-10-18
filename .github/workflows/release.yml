@@ -11,12 +11,12 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  publish:
+  npm:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
       contents: read
-      id-token: write # npm trusted publishing and MCP Registry login via GitHub OIDC
+      id-token: write # npm trusted publishing via GitHub OIDC
     steps:
       - uses: actions/checkout@v7.0.1
         with:
@@ -47,6 +47,34 @@ jobs:
           else
             npm publish "$RUNNER_TEMP"/release/*.tgz --provenance --access public
           fi
+
+  registry:
+    needs: npm
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write # MCP Registry login via GitHub OIDC
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - name: Wait until the npm registry serves the published version
+        run: |
+          name=$(node -p 'require("./package.json").name')
+          version=$(node -p 'require("./package.json").version')
+          url="https://registry.npmjs.org/$name/$version"
+          for attempt in $(seq 1 30); do
+            status=$(curl -s -o /dev/null -w '%{http_code}' "$url" || true)
+            if [ "$status" = "200" ]; then
+              echo "$url answered 200 after $attempt attempt(s)."
+              exit 0
+            fi
+            echo "Attempt $attempt: $url answered $status; retrying in 10 s."
+            sleep 10
+          done
+          echo "::error::$url did not answer 200 within 5 minutes."
+          exit 1
       - name: Install mcp-publisher
         env:
           MCP_PUBLISHER_VERSION: v1.8.1
@@ -59,10 +87,20 @@ jobs:
       - name: Publish server.json to the MCP Registry
         run: |
           "$RUNNER_TEMP/mcp-publisher" login github-oidc
-          "$RUNNER_TEMP/mcp-publisher" publish
+          for attempt in 1 2 3; do
+            if "$RUNNER_TEMP/mcp-publisher" publish; then
+              exit 0
+            fi
+            if [ "$attempt" -lt 3 ]; then
+              echo "Publish attempt $attempt failed; retrying in 30 s."
+              sleep 30
+            fi
+          done
+          echo "::error::MCP Registry publish failed after 3 attempts."
+          exit 1
 
   github-release:
-    needs: publish
+    needs: npm
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
