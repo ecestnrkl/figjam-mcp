@@ -28,9 +28,9 @@ With free models, the status decisions in the checked runs were mostly correct,
 for example 5/5 and 24/25. Most failures were provider timeouts. Free models
 change often, so these runs are smoke tests, not a benchmark.
 
-On 2026-10-18, `diagnose_llm_config` with the default preset passed both text
-checks on `nvidia/nemotron-3-super-120b-a12b:free`. The image check through
-`openrouter/free` returned an empty reply in two of two runs.
+On 2026-10-18, `diagnose_llm_config` with the default preset passed all three
+checks in 6 s: text on `nvidia/nemotron-3-super-120b-a12b:free`, image through
+`openrouter/free`. With its earlier 256-token cap the image check had failed.
 
 ## Real board (max_speed)
 
