@@ -20,6 +20,11 @@ the client win. Restart the server after a change.
 | --- | --- | --- |
 | `FIGJAM_MCP_REDACT_CREDENTIALS` | `true` | Replaces explicit credentials with `[redacted]` before they reach the cache, tool output or an LLM provider: labelled values such as `Passwort: …`, `PIN: …` or `API key: …` up to the end of the line, and known key formats (GitHub, OpenAI/OpenRouter, Figma, AWS, Slack, private key blocks). Set `false` to turn it off. |
 
+After turning redaction off, run `ingest_board` once with `forceFullIngest: true`
+so the original text is extracted again. Snapshots cached by earlier versions keep
+their original text on disk until you delete the cache directory; the tools return
+it redacted.
+
 ### Models
 
 | Variable | Default | Purpose |

@@ -1,5 +1,5 @@
 import { readBoolEnv } from "./env.js";
-import type { BoardData } from "../types.js";
+import type { BoardData, NormalizedNode } from "../types.js";
 
 export const REDACTED = "[redacted]";
 
@@ -32,6 +32,17 @@ export function redactCredentials(text: string): string {
   return result.replace(LABELED_VALUE, `$1${REDACTED}`);
 }
 
+/** Applies extraction redaction to node names, text and table cells of stored nodes. */
+export function redactNodes(nodes: NormalizedNode[]): NormalizedNode[] {
+  if (!isCredentialRedactionEnabled()) return nodes;
+  return nodes.map((node) => ({
+    ...node,
+    name: redactCredentials(node.name),
+    ...(node.text === undefined ? {} : { text: redactCredentials(node.text) }),
+    ...(node.table ? { table: { cells: node.table.cells.map((cell) => ({ ...cell, text: redactCredentials(cell.text) })) } } : {}),
+  }));
+}
+
 /**
  * Redacted view of a stored board, so snapshots cached before redaction existed
  * never reach a prompt or tool output unredacted. Memoized per board object so
@@ -43,12 +54,7 @@ export function redactBoard(board: BoardData): BoardData {
   if (existing) return existing;
   const redacted: BoardData = {
     ...board,
-    nodes: board.nodes.map((node) => ({
-      ...node,
-      name: redactCredentials(node.name),
-      ...(node.text === undefined ? {} : { text: redactCredentials(node.text) }),
-      ...(node.table ? { table: { cells: node.table.cells.map((cell) => ({ ...cell, text: redactCredentials(cell.text) })) } } : {}),
-    })),
+    nodes: redactNodes(board.nodes),
     clusters: board.clusters.map((cluster) => ({
       ...cluster, label: redactCredentials(cluster.label), summary: redactCredentials(cluster.summary),
     })),
