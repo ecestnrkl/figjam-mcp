@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.8.0 — Unreleased
+## 0.8.0 — 2026-10-19
 
 - `get_board_context` sends excerpt text once: `structuredContent.contextText` no longer contains
   excerpts, only orientation (header, page position, overview), and the text `content` carries the full

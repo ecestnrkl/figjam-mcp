@@ -59,6 +59,9 @@ const { flattenNodeTree } = await import("../src/lib/nodeTree.js");
 const { partitionedBoardClusters } = await import("../src/lib/spatialCluster.js");
 const { ingestBoard, parseFigmaFileKey } = await import("../src/tools/ingestBoard.js");
 const { getBoardContext } = await import("../src/tools/getBoardContext.js");
+const { getBoard } = await import("../src/lib/cache.js");
+const { redactBoard } = await import("../src/lib/redact.js");
+const { hasEvidenceIndex } = await import("../src/lib/evidence.js");
 
 function rawTree() {
   return {
@@ -740,6 +743,8 @@ describe("ingestBoard", () => {
     expect(output.summary).toContain("For overviews and summaries, read these sections with get_board_context and nodeIds; answer_from_board is for one specific question.");
     expect(output.summary).not.toContain("Topic 1 —");
     expect(output.summary).not.toContain('"Note');
+    // The first get_board_context call reads the index the summary built.
+    expect(hasEvidenceIndex(redactBoard(getBoard("Sections123")!))).toBe(true);
     const { contextText } = (await getBoardContext({ boardId: "Sections123" })).structuredContent;
     expect(contextText).toContain(`Largest sections (ID, name, excerpts): ${largest}; 5:1 Topic 1 — 1.`);
   });

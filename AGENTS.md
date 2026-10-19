@@ -25,7 +25,7 @@ into source-cited context for LLMs. Five tools: `ingest_board`, `get_board_conte
 6. **Docs:** English and concise. Evidence belongs in the PR description, not in new files.
    Do not add review or report documents. Update README/docs only where behaviour changed.
 7. **Git:** feature branch, Conventional Commits, one focused PR. Do not merge, tag, publish to npm
-   or update registries (MCP Registry, Glama) unless the task says so.
+   or update registries (MCP Registry) unless the task says so.
 8. **Stop instead of looping:** if something fails twice for reasons outside the code (provider
    outage, rate limit, missing credentials), stop and report what is needed.
 9. **Releases:** a release bundles several PRs. Feature PRs keep the version and add their CHANGELOG line under `## <next version> — Unreleased`; only the release PR sets the version (package.json, package-lock.json, both fields in server.json) and the date.

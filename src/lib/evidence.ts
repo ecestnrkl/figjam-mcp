@@ -131,6 +131,11 @@ export function snapshotIdForBoard(board: BoardData): string {
   }));
 }
 
+/** Whether retrieval on this board object reuses an index that is already built. */
+export function hasEvidenceIndex(board: BoardData): boolean {
+  return indexes.has(board);
+}
+
 export function nodeLink(board: BoardData, nodeId: string): string {
   return `https://www.figma.com/board/${encodeURIComponent(board.fileKey)}?node-id=${encodeURIComponent(nodeId)}`;
 }
