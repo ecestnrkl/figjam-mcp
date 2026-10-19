@@ -1,10 +1,13 @@
 import { createHash } from "node:crypto";
 import { connectorArrow } from "./connectorGraph.js";
+import { isGenericNodeName } from "./nodeTree.js";
 import type { BoardData, ConnectorEdge, NormalizedNode, RefinedCluster } from "../types.js";
 
 export const EVIDENCE_CHUNK_CHARS = 1200;
 export const MAX_CONTEXT_RESPONSE_BYTES = 128 * 1024;
 const MAX_INDEX_ENTRIES = 100_000;
+/** Their names already reach every excerpt inside them as pageName and sectionNames. */
+const CONTAINER_TYPES = new Set(["DOCUMENT", "CANVAS", "PAGE", "SECTION"]);
 
 /** Original board text and model interpretations remain distinguishable at every boundary. */
 export interface Evidence {
@@ -138,13 +141,13 @@ export function retrieveEvidence(board: BoardData, options: EvidenceQuery = {}):
     for (const field of ORIGINAL_FIELDS) addFieldScores(index, field, queryTerms, scores);
     // Derived cluster labels can help rank an original match, never create one.
     addFieldScores(index, "cluster", queryTerms, scores, new Set(scores.keys()));
-    matches = [...scores.entries()]
+    matches = contentFirst([...scores.entries()]
       .sort(([a, aScore], [b, bScore]) => bScore - aScore || a - b)
-      .map(([entry]) => index.entries[entry]!);
+      .map(([entry]) => index.entries[entry]!), (entry) => entry.evidence);
   } else {
     // A board overview covers different areas before spending its budget on another
     // paragraph from the same large cluster. Order remains stable for pagination.
-    matches = interleaveClusters(index.entries);
+    matches = contentFirst(interleaveClusters(index.entries), (entry) => entry.evidence);
   }
 
   const totalMatched = matches.length;
@@ -157,7 +160,7 @@ export function retrieveEvidence(board: BoardData, options: EvidenceQuery = {}):
   }
   return {
     snapshotId: index.snapshotId,
-    evidence: selected,
+    evidence: options.nodeIds ? selected : contentFirst(selected, (item) => item),
     primaryEvidenceIds: primary.map((item) => item.evidenceId),
     connections: connectionsForEvidence(board, selected),
     totalMatched,
@@ -189,6 +192,15 @@ export function formatEvidenceConnection(connection: EvidenceConnection): string
 function matchingConnections(board: BoardData, evidence: Evidence[]): ConnectorEdge[] {
   const selected = new Set(evidence.flatMap((item) => [item.nodeId, ...(item.renderNodeId ? [item.renderNodeId] : [])]));
   return (board.connectorEdges ?? []).filter((edge) => selected.has(edge.fromNodeId) && selected.has(edge.toNodeId));
+}
+
+/**
+ * Names without text (frames, links, shapes) rank high on short BM25 fields and
+ * would crowd out board text; they follow all content in a stable order.
+ */
+function contentFirst<T>(items: T[], evidenceOf: (item: T) => Evidence): T[] {
+  const isMetadata = (item: T) => evidenceOf(item).sourceType === "board_metadata";
+  return [...items.filter((item) => !isMetadata(item)), ...items.filter(isMetadata)];
 }
 
 function interleaveClusters(entries: IndexedEvidence[]): IndexedEvidence[] {
@@ -389,7 +401,8 @@ function buildEvidence(board: BoardData, snapshotId: string): Evidence[] {
     } else if (node.text?.trim()) {
       append(node.text, { ...provenance, nodeId: node.id, sourceType: "board_text", modelDerived: false }, cluster);
     }
-    if (!node.text?.trim() && !node.table?.cells.some((cell) => cell.text.trim()) && node.name.trim()) {
+    if (!node.text?.trim() && !node.table?.cells.some((cell) => cell.text.trim()) && node.name.trim() &&
+      !CONTAINER_TYPES.has(node.type) && !isGenericNodeName(node.name)) {
       append(node.name, { ...provenance, nodeId: node.id, sourceType: "board_metadata", modelDerived: false }, cluster);
     }
   }

@@ -217,7 +217,7 @@ describe("source evidence", () => {
   it("returns names of textless nodes as original metadata, never as board text", () => {
     const board = evidenceBoard("NamedShape123", [{ ...textNode("1:1", ""), type: "RECTANGLE", name: "Escalation owner" }]);
     const result = retrieveEvidence(board, { query: "Escalation" });
-    expect(result.evidence[0]).toMatchObject({
+    expect(result.evidence.find((item) => item.nodeId === "1:1" && !item.modelDerived)).toMatchObject({
       nodeId: "1:1", text: "Escalation owner", sourceType: "board_metadata", modelDerived: false,
     });
   });

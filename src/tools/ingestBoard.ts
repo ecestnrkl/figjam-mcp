@@ -4,7 +4,7 @@ import { extractFigmaFileKeyFromUrl } from "../schemas/common.js";
 import type { Cluster, IngestMode, IngestQualityReport, NormalizedNode, RefinedCluster, BoardData, OperationOptions } from "../types.js";
 import { fetchFileTree, fetchRenderUrls, downloadRenders, fetchFileMetadata, FigmaApiError, FigmaDownloadBudgetError, FigmaTimeoutError, INGEST_IMAGE_MAX_BYTES, type RenderUrls } from "../lib/figmaApi.js";
 import { LLMConfigurationError, LlmInvalidJsonError, LlmRequestError, LlmTimeoutError, validateLlmConfiguration } from "../lib/llmClient.js";
-import { flattenNodeTree } from "../lib/nodeTree.js";
+import { flattenNodeTree, isGenericNodeName } from "../lib/nodeTree.js";
 import { partitionedBoardClusters } from "../lib/spatialCluster.js";
 import { refineClusterWithVision } from "../lib/visionInterpreter.js";
 import { mapClustersToPhases } from "../lib/docStructureMapper.js";
@@ -628,12 +628,6 @@ function compactLabel(text: string): string {
   const normalized = text.replace(/\s+/g, " ").replace(/^["']|["']$/g, "").trim();
   const words = normalized.split(" ").filter(Boolean).slice(0, 6).join(" ");
   return truncate(words || normalized, 60);
-}
-
-function isGenericNodeName(name: string): boolean {
-  return /^(sticky|text|rectangle|ellipse|shape|connector|section|group|frame|table)( \d+)?$/i.test(
-    name,
-  );
 }
 
 function truncate(text: string, maxLength: number): string {

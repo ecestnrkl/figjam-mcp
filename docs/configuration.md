@@ -113,8 +113,10 @@ deferred by the budget go before clusters that failed. Raise
   rendered by Figma in requests of up to 18 nodes.
 - Vision text per cluster: 160 nodes and 24,000 characters (300 per node).
   Groups of more than 250 nodes are split before vision.
-- `get_board_context`: `limit` 20 (max 100) excerpts, `maxChars` 12,000 (max
-  24,000), up to 50 `nodeIds`, at most 128 KiB per result.
+- `get_board_context`: `limit` 20 (max 100) excerpts, up to 50 `nodeIds`.
+  `maxChars` 12,000 (max 24,000) bounds the whole structured result
+  (`JSON.stringify(structuredContent)`, including `contextText`), because some
+  clients pass only that to the model; at most 128 KiB per result.
 - `answer_from_board`: 6 excerpts (20 for overview questions) plus direct
   neighbours, within 24,000 prompt characters.
 - History: 20 snapshots per board for `diff_board`.
