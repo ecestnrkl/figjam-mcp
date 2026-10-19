@@ -35,14 +35,15 @@ Requires Node.js 22.12 or later.
    [openrouter.ai/keys](https://openrouter.ai/keys). It enables image
    interpretation, `answer_from_board` and `diagnose_llm_config`. Without it, use
    `ingestMode: "max_speed"` with `get_board_context` and `diff_board`.
-3. Add the server to your MCP client:
+3. Add the server to your MCP client. `@latest` makes npx check for a new
+   release on every start instead of reusing a cached older version:
 
 ```json
 {
   "mcpServers": {
     "figjam-context": {
       "command": "npx",
-      "args": ["-y", "figjam-context-mcp"],
+      "args": ["-y", "figjam-context-mcp@latest"],
       "env": {
         "FIGMA_ACCESS_TOKEN": "your-figma-token",
         "LLM_BASE_URL": "https://openrouter.ai/api/v1",
@@ -56,7 +57,7 @@ Requires Node.js 22.12 or later.
 For Claude Code:
 
 ```bash
-claude mcp add figjam-context -e FIGMA_ACCESS_TOKEN=your-figma-token -e LLM_BASE_URL=https://openrouter.ai/api/v1 -e LLM_API_KEY=your-openrouter-key -- npx -y figjam-context-mcp
+claude mcp add figjam-context -e FIGMA_ACCESS_TOKEN=your-figma-token -e LLM_BASE_URL=https://openrouter.ai/api/v1 -e LLM_API_KEY=your-openrouter-key -- npx -y figjam-context-mcp@latest
 ```
 
 Then ask your assistant to ingest a board URL, for example *"Ingest

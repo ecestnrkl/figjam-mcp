@@ -65,6 +65,18 @@ Do not start the server with plain `npm run dev` from an MCP client: npm prints
 a banner to stdout and breaks the JSON-RPC stream. Use `npm run dev --silent` or
 the config above.
 
+## An older version is running
+
+Without a version, `npx -y figjam-context-mcp` reuses a package already in the
+npx cache and does not check for updates. Check the latest version with:
+
+```bash
+npx -y figjam-context-mcp@latest --version
+```
+
+Change `figjam-context-mcp` to `figjam-context-mcp@latest` in your client's
+configuration, then restart the server in the client.
+
 ## Common errors
 
 | Message | Fix |
