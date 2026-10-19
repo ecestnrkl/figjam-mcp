@@ -2,14 +2,19 @@ import { z } from "zod";
 import { figmaFileKeySchema, topicSchema } from "./common.js";
 
 /**
- * get_board_context — returns a text summary plus the underlying clusters
- * for a previously ingested board, optionally scoped to a topic.
+ * get_board_context — returns readable source excerpts as text content and the
+ * same page as structured data, for a previously ingested board.
  */
 
 export const clusterContextShape = {
   label: z.string(),
   phase: z.string().optional(),
-  summary: z.string(),
+  pageName: z.string().max(160).optional()
+    .describe("Page of this cluster's excerpts on this page of results; excerpts repeat it only where they differ"),
+  sectionNames: z.array(z.string().max(80)).max(16).optional()
+    .describe("Enclosing sections, outermost first, of this cluster's excerpts; excerpts repeat them only where they differ"),
+  summary: z.string()
+    .describe("Model summary of the cluster; empty for deterministic clusters, whose excerpts carry the text"),
   summarySource: z.enum(["vision_llm", "text_llm", "deterministic", "cache", "unknown"])
     .describe("Origin of the derived cluster summary; the summary is not verbatim source evidence"),
   modelDerived: z.boolean()
@@ -32,7 +37,7 @@ export const getBoardContextInputShape = {
   cursor: z.string().min(1).max(2048).optional()
     .describe("Continue a page using the same query, snapshot, limit and maxChars"),
   maxChars: z.number().int().min(512).max(24000).default(12000)
-    .describe("Character budget for the whole structured result (JSON of structuredContent, including contextText; default 12000)"),
+    .describe("Character budget for each representation: the readable text content and the JSON of structuredContent (default 12000)"),
 };
 
 export const getBoardContextInputSchema = z.object(getBoardContextInputShape).refine(
@@ -45,8 +50,11 @@ export const evidenceSchema = z.object({
   evidenceId: z.string(), snapshotId: z.string(), nodeId: z.string(), text: z.string(),
   sourceType: z.enum(["board_text", "table_cell", "board_metadata", "model_interpretation", "cluster_summary"]),
   modelDerived: z.boolean(), clusterId: z.string().optional(), clusterLabel: z.string().optional(),
-  nodeName: z.string().max(160).optional(), pageName: z.string().max(160).optional(),
-  sectionNames: z.array(z.string().max(80)).max(16).optional(),
+  nodeName: z.string().max(160).optional(),
+  pageName: z.string().max(160).optional()
+    .describe("Only for an excerpt outside the listed clusters or whose location differs from its cluster's"),
+  sectionNames: z.array(z.string().max(80)).max(16).optional()
+    .describe("Same rule as pageName; an empty list means outside sections"),
   pageId: z.string().optional(), sectionIds: z.array(z.string()).optional(), renderNodeId: z.string().optional(),
   row: z.number().optional(), column: z.number().optional(),
   chunkIndex: z.number().int().nonnegative(), url: z.string(), truncated: z.boolean(),
@@ -69,7 +77,8 @@ export const clusterRelationContextSchema = z.object(clusterRelationContextShape
 export type ClusterRelationContext = z.infer<typeof clusterRelationContextSchema>;
 
 export const getBoardContextOutputShape = {
-  contextText: z.string(),
+  contextText: z.string()
+    .describe("Orientation: board header, page position, board overview or subsections. The excerpts are in evidence; the text content carries the readable version"),
   clusters: z.array(clusterContextSchema),
   snapshotId: z.string(),
   evidence: z.array(evidenceSchema),

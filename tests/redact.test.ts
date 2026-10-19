@@ -158,9 +158,9 @@ describe("snapshots cached before redaction", () => {
     setBoard("LegacyContext123", legacyBoard("LegacyContext123"));
     const output = await getBoardContext({ boardId: "LegacyContext123" });
     const serialized = JSON.stringify(output);
-    expect(output.contextText).toContain("Passwort: [redacted]");
-    expect(output.contextText).toContain("Client Secret: [redacted]");
-    expect(output.contextText).toContain("(PIN: [redacted])");
+    expect(output.text).toContain("Passwort: [redacted]");
+    expect(output.text).toContain("Client Secret: [redacted]");
+    expect(output.text).toContain("(PIN: [redacted])");
     for (const secret of ["Sommer2024", figmaToken, "9876"]) expect(serialized).not.toContain(secret);
   });
 

@@ -28,6 +28,7 @@ into source-cited context for LLMs. Five tools: `ingest_board`, `get_board_conte
    or update registries (MCP Registry, Glama) unless the task says so.
 8. **Stop instead of looping:** if something fails twice for reasons outside the code (provider
    outage, rate limit, missing credentials), stop and report what is needed.
+9. **Releases:** a release bundles several PRs. Feature PRs keep the version and add their CHANGELOG line under `## <next version> — Unreleased`; only the release PR sets the version (package.json, package-lock.json, both fields in server.json) and the date.
 
 ## Commands
 

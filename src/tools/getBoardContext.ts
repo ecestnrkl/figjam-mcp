@@ -23,17 +23,29 @@ interface Cursor {
   page?: number;
 }
 
+/** Readable text for MCP content and the structured result; maxChars bounds each of them. */
+export interface BoardContextResult {
+  /** Orientation and every excerpt grouped by cluster, with links and arrows. */
+  text: string;
+  /** Orientation in contextText; excerpt text only in evidence, location and summary per cluster. */
+  structuredContent: GetBoardContextOutput;
+}
+
 /** Shortest prefix of an excerpt that is still worth returning instead of an error. */
 const MIN_SHORTENED_EXCERPT_CHARS = 100;
 /** Beyond this many remaining pages, reading sections by ID beats paging. */
 const MAX_PAGES_TO_PAGE_THROUGH = 5;
+/** The first page names this many of the largest sections before the section tree. */
+const LARGEST_SECTIONS_IN_OVERVIEW = 10;
+const EVIDENCE_POINTER = "Excerpts are in evidence, cluster by cluster; location and summary per cluster are in clusters; arrows are in connections and relations.";
 
 /**
  * Bounded, snapshot-stable pages of source evidence; a topic miss stays empty.
- * maxChars bounds JSON.stringify(structuredContent), because several MCP hosts
- * hand the model only the structured result and drop the text content.
+ * Some MCP hosts hand the model only the text content, others only
+ * JSON.stringify(structuredContent), so each carries the excerpt text once and
+ * maxChars bounds each of them.
  */
-export async function getBoardContext(input: GetBoardContextInput): Promise<GetBoardContextOutput> {
+export async function getBoardContext(input: GetBoardContextInput): Promise<BoardContextResult> {
   // Also validate cross-field rules here: MCP registration receives a raw field shape.
   const options = getBoardContextInputSchema.parse(input);
   const cursor = options.cursor ? decodeCursor(options.cursor) : undefined;
@@ -74,8 +86,9 @@ export async function getBoardContext(input: GetBoardContextInput): Promise<GetB
     ? sections.subsectionOutline(containerIds, orientationBudget)
     : sections.boardOverview(orientationBudget);
   const page = cursor?.page ?? 1;
-  const fits = (result: GetBoardContextOutput, budget = options.maxChars) =>
-    JSON.stringify(result).length <= budget && responseBytes(result) <= MAX_CONTEXT_RESPONSE_BYTES;
+  const fits = ({ text, structuredContent }: BoardContextResult, budget = options.maxChars) =>
+    text.length <= budget && JSON.stringify(structuredContent).length <= budget &&
+    responseBytes(text, structuredContent) <= MAX_CONTEXT_RESPONSE_BYTES;
 
   // Evidence first; arrows and cluster relations share what is left. Boards with
   // arrows keep a fifth of the budget for them, as before.
@@ -121,7 +134,7 @@ export async function getBoardContext(input: GetBoardContextInput): Promise<GetB
   }
 
   /** Largest count in [0, total] whose result fits; count 0 is the fallback. */
-  function maxFitting(total: number, build: (count: number) => GetBoardContextOutput): number {
+  function maxFitting(total: number, build: (count: number) => BoardContextResult): number {
     let low = 0;
     let high = Math.min(total, 100); // connectionsForEvidence returns at most 100
     while (low < high) {
@@ -153,18 +166,28 @@ export async function getBoardContext(input: GetBoardContextInput): Promise<GetB
       .filter((relation) => clusterIds.has(relation.fromClusterId) && clusterIds.has(relation.toClusterId));
   }
 
-  function buildResult(evidence: Evidence[], connectionLimit: number, relationLimit: number): GetBoardContextOutput {
-    const clusterIds = new Set(evidence.map((item) => item.clusterId));
-    const displayedClusters = board.clusters.filter((cluster) => clusterIds.has(cluster.id));
-    const clusters = displayedClusters.map((cluster) => ({
-      label: boundedText(cluster.label, 160),
-      phase: cluster.phase ? boundedText(cluster.phase, 80) : undefined,
-      summary: compactSummary(cluster),
-      summarySource: cluster.summarySource ?? "unknown" as const,
-      modelDerived: cluster.summarySource !== "deterministic" || Boolean(cluster.modelId),
-      sourceNodeIds: [...new Set(evidence.filter((item) => item.clusterId === cluster.id).map((item) => item.nodeId))],
-    }));
-    const labels = new Map(displayedClusters.map((cluster) => [cluster.id, boundedText(cluster.label, 160)]));
+  function buildResult(evidence: Evidence[], connectionLimit: number, relationLimit: number): BoardContextResult {
+    const groups = groupByCluster(evidence);
+    const labels = new Map<string, string>();
+    const clusterLocations = new Map<string, string>();
+    const clusters = groups.flatMap(([clusterId, items]) => {
+      const cluster = clustersById.get(clusterId);
+      if (!cluster) return [];
+      const label = boundedText(cluster.label, 160);
+      const { pageName, sectionNames } = commonLocation(items);
+      labels.set(clusterId, label);
+      clusterLocations.set(clusterId, locationKey({ pageName, sectionNames }));
+      return [{
+        label,
+        phase: cluster.phase ? boundedText(cluster.phase, 80) : undefined,
+        ...(pageName ? { pageName } : {}),
+        ...(sectionNames?.length ? { sectionNames } : {}),
+        summary: compactSummary(cluster),
+        summarySource: cluster.summarySource ?? "unknown" as const,
+        modelDerived: cluster.summarySource !== "deterministic" || Boolean(cluster.modelId),
+        sourceNodeIds: [...new Set(items.map((item) => item.nodeId))],
+      }];
+    });
     const allRelations = matchingRelations(evidence);
     const relations = allRelations.slice(0, relationLimit).map((relation) => ({
       from: labels.get(relation.fromClusterId)!,
@@ -176,11 +199,11 @@ export async function getBoardContext(input: GetBoardContextInput): Promise<GetB
     const nextOffset = offset + evidence.length;
     const remaining = retrieved.evidence.length - nextOffset;
 
-    const parts = [header];
-    if (evidence.length > 0 && showPosition) parts.push(pagePosition(evidence.length, remaining));
-    if (showOverview) parts.push(overview);
-    if (evidence.length === 0) parts.push("No source evidence matched this request.");
-    parts.push(...renderGroups(evidence));
+    const orientation = [header];
+    if (evidence.length > 0 && showPosition) orientation.push(pagePosition(evidence.length, remaining));
+    if (showOverview) orientation.push(overview);
+    if (evidence.length === 0) orientation.push("No source evidence matched this request.");
+    const parts = [...orientation, ...renderGroups(groups)];
     if (connections.length > 0) {
       parts.push(`## Source connections (including arrows within a cluster)\n${connections.map((connection) => `- ${formatEvidenceConnection(connection)}`).join("\n")}`);
     }
@@ -188,6 +211,8 @@ export async function getBoardContext(input: GetBoardContextInput): Promise<GetB
       parts.push(`## Connections between clusters\n${relations.map((relation) =>
         `- "${relation.from}" → "${relation.to}"${relation.label ? ` — "${relation.label}"` : ""}`).join("\n")}`);
     }
+    // Under a small budget the pointer yields to source text together with the page position.
+    const contextText = [...orientation, ...(evidence.length > 0 && showPosition ? [EVIDENCE_POINTER] : [])].join("\n\n");
 
     const totalConnections = countConnectionsForEvidence(board, evidence);
     const truncation = {
@@ -198,18 +223,21 @@ export async function getBoardContext(input: GetBoardContextInput): Promise<GetB
       omittedTextRelations: allRelations.length - relations.length,
     };
     return {
-      contextText: boundedText(parts.join("\n\n"), options.maxChars),
-      clusters,
-      relations: relations.length ? relations : undefined,
-      snapshotId: retrieved.snapshotId,
-      evidence: evidence.map(compactEvidence),
-      connections,
-      totalMatched: retrieved.evidence.length,
-      truncated: Object.values(truncation).some((count) => count > 0) || evidence.some((item) => item.truncated),
-      truncation,
-      nextCursor: remaining > 0 && evidence.length > 0
-        ? encodeCursor({ v: 1, snapshot: retrieved.snapshotId, query, result: resultFingerprint, offset: nextOffset, page: page + 1 })
-        : undefined,
+      text: parts.join("\n\n"),
+      structuredContent: {
+        contextText,
+        clusters,
+        relations: relations.length ? relations : undefined,
+        snapshotId: retrieved.snapshotId,
+        evidence: groups.flatMap(([clusterId, items]) => items.map((item) => compactEvidence(item, clusterLocations.get(clusterId)))),
+        connections,
+        totalMatched: retrieved.evidence.length,
+        truncated: Object.values(truncation).some((count) => count > 0) || evidence.some((item) => item.truncated),
+        truncation,
+        nextCursor: remaining > 0 && evidence.length > 0
+          ? encodeCursor({ v: 1, snapshot: retrieved.snapshotId, query, result: resultFingerprint, offset: nextOffset, page: page + 1 })
+          : undefined,
+      },
     };
   }
 
@@ -222,14 +250,9 @@ export async function getBoardContext(input: GetBoardContextInput): Promise<GetB
       : position;
   }
 
-  /** Excerpts grouped by cluster in order of first appearance; shared location printed once. */
-  function renderGroups(evidence: Evidence[]): string[] {
-    const groups = new Map<string, Evidence[]>();
-    for (const item of evidence) {
-      const key = item.clusterId ?? "";
-      groups.set(key, [...(groups.get(key) ?? []), item]);
-    }
-    return [...groups].map(([clusterId, items]) => {
+  /** One block per cluster; a location shared by all its excerpts is printed once. */
+  function renderGroups(groups: Array<[string, Evidence[]]>): string[] {
+    return groups.map(([clusterId, items]) => {
       const cluster = clustersById.get(clusterId);
       const locations = new Set(items.map(location));
       const sharedLocation = locations.size === 1 ? [...locations][0]! : "";
@@ -286,19 +309,51 @@ export async function getBoardContext(input: GetBoardContextInput): Promise<GetB
     return Boolean(name) && [item.text, fullText].some((text) => text !== undefined && normalize(text).startsWith(name));
   }
 
-  /** Optional fields that repeat information elsewhere in the same response are left out. */
-  function compactEvidence(item: Evidence): Evidence {
+  /**
+   * Optional fields that repeat information elsewhere in the same response are left out.
+   * The location stays only outside a listed cluster or where it differs from the cluster's.
+   */
+  function compactEvidence(item: Evidence, clusterLocation: string | undefined): Evidence {
     const {
       nodeName, pageId: _pageId, sectionIds: _sectionIds, clusterId: _clusterId, clusterLabel: _clusterLabel,
-      renderNodeId, sectionNames, ...rest
+      renderNodeId, pageName, sectionNames, ...rest
     } = item;
+    const ownLocation = clusterLocation === undefined || locationKey(item) !== clusterLocation;
     return {
       ...rest,
       ...(nodeName && !nameRepeatsText(item) ? { nodeName } : {}),
-      ...(sectionNames?.length ? { sectionNames } : {}),
+      ...(ownLocation && pageName ? { pageName } : {}),
+      // An empty list marks an excerpt outside sections in a cluster that has some.
+      ...(ownLocation && (sectionNames?.length || clusterLocation !== undefined) ? { sectionNames: sectionNames ?? [] } : {}),
       ...(item.sourceType === "table_cell" && renderNodeId ? { renderNodeId } : {}),
     };
   }
+}
+
+/** Excerpts grouped by cluster in order of first appearance; "" holds those outside clusters. */
+function groupByCluster(evidence: Evidence[]): Array<[string, Evidence[]]> {
+  const groups = new Map<string, Evidence[]>();
+  for (const item of evidence) {
+    const key = item.clusterId ?? "";
+    const group = groups.get(key);
+    if (group) group.push(item);
+    else groups.set(key, [item]);
+  }
+  return [...groups];
+}
+
+type Location = Pick<Evidence, "pageName" | "sectionNames">;
+
+function locationKey({ pageName, sectionNames }: Location): string {
+  return JSON.stringify([pageName ?? "", sectionNames ?? []]);
+}
+
+/** The location most excerpts of a cluster share on this page; ties go to the first. */
+function commonLocation(items: Evidence[]): Location {
+  const counts = new Map<string, number>();
+  for (const item of items) counts.set(locationKey(item), (counts.get(locationKey(item)) ?? 0) + 1);
+  const common = items.reduce((best, item) => counts.get(locationKey(item))! > counts.get(locationKey(best))! ? item : best);
+  return { pageName: common.pageName, sectionNames: common.sectionNames };
 }
 
 function location(item: Evidence): string {
@@ -308,12 +363,18 @@ function location(item: Evidence): string {
   ].filter(Boolean).join("; ");
 }
 
-/** Deterministic summaries repeat text highlights that the excerpts already contain. */
+/** Deterministic summaries only count and repeat text that the excerpts already carry. */
 function compactSummary(cluster: RefinedCluster): string {
   const modelDerived = cluster.summarySource !== "deterministic" || Boolean(cluster.modelId);
-  if (modelDerived) return boundedText(cluster.summary, 600);
-  const firstSentence = /^[\s\S]*?[.!?](?=\s|$)/.exec(cluster.summary.trim())?.[0] ?? cluster.summary;
-  return boundedText(firstSentence.trim(), 240);
+  return modelDerived ? boundedText(cluster.summary, 600) : "";
+}
+
+/**
+ * The largest sections by excerpts, counted as on the first page of
+ * get_board_context, as one line; "" for a board without sections.
+ */
+export function largestSectionsLine(board: BoardData, limit: number): string {
+  return new SectionIndex(board, retrieveEvidence(board).evidence).largestLine(limit);
 }
 
 interface OutlineLine { depth: number; text: string; section: boolean }
@@ -390,9 +451,20 @@ class SectionIndex {
       ...(this.sections.length ? [`${this.outsideSections} excerpt${plural(this.outsideSections)} outside sections.`] : []),
       `Read a ${this.sections.length ? "section" : "page"} with nodeIds: ["<ID>"]; use topic for word search.`,
     ];
-    return fitOutline(["## Board overview", size,
+    // The largest sections belong to the header, so a small budget shortens the tree first.
+    const largest = this.largestLine(LARGEST_SECTIONS_IN_OVERVIEW);
+    return fitOutline(["## Board overview", size, ...(largest ? [largest] : []),
       `${pages.length > 1 ? "Pages and sections" : "Sections"} in reading order (ID, name, excerpts including nested sections):`],
     lines, footer, budget, pages.length > 1 ? 1 : 0);
+  }
+
+  /** Sections with the most excerpts, nested sections included; ties in reading order. */
+  largestLine(limit: number): string {
+    const largest = this.sections.filter((section) => this.excerpts.has(section.id))
+      .sort((a, b) => this.excerpts.get(b.id)! - this.excerpts.get(a.id)!).slice(0, limit);
+    if (!largest.length) return "";
+    return `Largest sections (ID, name, excerpts): ${largest.map((section) =>
+      `${section.id} ${this.name(section)} — ${this.excerpts.get(section.id)}`).join("; ")}.`;
   }
 
   /** First page of a nodeIds request: the direct subsections of each requested container. */
@@ -497,6 +569,6 @@ function decodeCursor(value: string): Cursor {
   }
 }
 
-function responseBytes(output: GetBoardContextOutput): number {
-  return Buffer.byteLength(JSON.stringify({ content: [{ type: "text", text: output.contextText }], structuredContent: output }));
+function responseBytes(text: string, structuredContent: GetBoardContextOutput): number {
+  return Buffer.byteLength(JSON.stringify({ content: [{ type: "text", text }], structuredContent }));
 }

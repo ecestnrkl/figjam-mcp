@@ -62,7 +62,10 @@ claude mcp add figjam-context -e FIGMA_ACCESS_TOKEN=your-figma-token -e LLM_BASE
 
 Then ask your assistant to ingest a board URL, for example *"Ingest
 https://www.figma.com/board/FILE_KEY/Name and list the open questions."*
-The `boardId` of every later call is the file key from that URL.
+The `boardId` of every later call is the file key from that URL. To summarize
+a board, the assistant calls `ingest_board`, then `get_board_context` without
+parameters, whose first page names the largest sections and lists all sections
+with IDs, and then reads the largest sections by passing their IDs as `nodeIds`.
 
 All settings: [configuration](https://github.com/ecestnrkl/figjam-mcp/blob/main/docs/configuration.md).
 Problems: [troubleshooting](https://github.com/ecestnrkl/figjam-mcp/blob/main/docs/troubleshooting.md).
@@ -83,7 +86,9 @@ Problems: [troubleshooting](https://github.com/ecestnrkl/figjam-mcp/blob/main/do
    `get_board_context` searches it (BM25 over original text, table cells and
    names), `answer_from_board` answers with citations and `diff_board` compares
    snapshots. Its first page lists the board's sections with IDs; pass a page,
-   section, frame or group ID as `nodeIds` to read everything inside it.
+   section, frame or group ID as `nodeIds` to read everything inside it. Its text
+   `content` is the readable page; `structuredContent` holds the same data without
+   repeating it, with excerpts in `evidence` and location per cluster in `clusters`.
 
 ## Models and cost
 

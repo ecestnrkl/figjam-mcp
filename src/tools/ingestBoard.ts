@@ -13,6 +13,7 @@ import { setBoard } from "../lib/cache.js";
 import { redactBoard, redactNodes } from "../lib/redact.js";
 import { readIntEnv } from "../lib/env.js";
 import { describeModelConfig } from "../lib/modelRegistry.js";
+import { largestSectionsLine } from "./getBoardContext.js";
 import {
   buildBoardCacheKey,
   extractFigmaLastModified,
@@ -309,7 +310,7 @@ function ingestResult(board: BoardData): IngestBoardOutput {
     snapshotId: board.snapshotId, figmaVersion: board.figmaVersion,
     freshnessCheckedAt: board.freshnessCheckedAt === undefined ? undefined : new Date(board.freshnessCheckedAt).toISOString(),
     persistenceWarning: board.persistenceWarning,
-    summary: buildSummary(board.fileKey, board.clusters, board.docStructureHint, qualityReport, board.ingestMode) };
+    summary: buildSummary(board, qualityReport) };
 }
 
 type VisionStage = "render" | "model";
@@ -689,15 +690,19 @@ function buildQualityReport(
   };
 }
 
-function buildSummary(
-  fileKey: string,
-  clusters: RefinedCluster[],
-  docStructureHint: IngestBoardInput["docStructureHint"],
-  qualityReport: IngestQualityReport,
-  ingestMode?: IngestMode,
-): string {
+/** Boards with sections are summarized by their largest sections, the way to read them next. */
+const LARGEST_SECTIONS_IN_SUMMARY = 8;
+
+function buildSummary(board: BoardData, qualityReport: IngestQualityReport): string {
+  const { fileKey, clusters, docStructureHint, ingestMode } = board;
+  const largestSections = largestSectionsLine(board, LARGEST_SECTIONS_IN_SUMMARY);
   const labels = clusters.map((cluster) => `"${cluster.label}"`);
   const shownLabels = labels.slice(0, 8).join(", ") + (labels.length > 8 ? ", ..." : "");
+  const settings = `(docStructureHint=${docStructureHint}${ingestMode ? `, ingestMode=${ingestMode}` : ""})`;
+  const overview = largestSections
+    ? `${clusters.length} clusters ${settings}. ${largestSections} For overviews and summaries, read these sections with ` +
+      "get_board_context and nodeIds; answer_from_board is for one specific question."
+    : `${clusters.length} clusters - ${shownLabels} ${settings}.`;
   const fallbackNote =
     qualityReport.fallbackCount > 0
       ? ` Visual interpretation is incomplete for ${qualityReport.fallbackCount} cluster${qualityReport.fallbackCount === 1 ? "" : "s"}: ${describeFallbackReasons(qualityReport.fallbackReasons)}.`
@@ -711,8 +716,7 @@ function buildSummary(
       ? ` Reused ${qualityReport.reusedClusters} unchanged cluster${qualityReport.reusedClusters === 1 ? "" : "s"} from the previous ingest.`
       : "";
   return (
-    `Ingested board ${fileKey}: ${clusters.length} clusters - ${shownLabels} ` +
-    `(docStructureHint=${docStructureHint}${ingestMode ? `, ingestMode=${ingestMode}` : ""}).${cacheNote}${reuseNote}`
+    `Ingested board ${fileKey}: ${overview}${cacheNote}${reuseNote}`
     + ` ${qualityReport.visionClusters} visually interpreted; ${qualityReport.deterministicClusters} use extracted text.${fallbackNote}`
   );
 }

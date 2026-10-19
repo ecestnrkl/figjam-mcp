@@ -58,6 +58,7 @@ vi.mock("../src/lib/persistentCache.js", () => ({
 const { flattenNodeTree } = await import("../src/lib/nodeTree.js");
 const { partitionedBoardClusters } = await import("../src/lib/spatialCluster.js");
 const { ingestBoard, parseFigmaFileKey } = await import("../src/tools/ingestBoard.js");
+const { getBoardContext } = await import("../src/tools/getBoardContext.js");
 
 function rawTree() {
   return {
@@ -714,7 +715,33 @@ describe("ingestBoard", () => {
 
     const expected = partitionedBoardClusters(flattenNodeTree(rawTree()));
     expect(output.summary).toContain(expected.map((cluster) => `"Vision ${cluster.id}"`).join(", "));
+    expect(output.summary).not.toContain("Largest sections");
     expect((persistBoardMock.mock.calls[0]?.[0] as BoardData).clusters.map((cluster) => cluster.nodeIds)).toEqual([["1:1"], ["1:2"]]);
+  });
+
+  it("names the largest sections with IDs in the summary, counted as in get_board_context", async () => {
+    // Section k holds k stickies; nine sections, so the summary names the eight largest.
+    const sections = Array.from({ length: 9 }, (_, index) => ({
+      id: `5:${index + 1}`, name: `Topic ${index + 1}`, type: "SECTION",
+      absoluteBoundingBox: { x: index * 3000, y: 0, width: 2000, height: 2000 },
+      children: Array.from({ length: index + 1 }, (_, note) => ({
+        id: `6:${index * 10 + note}`, name: `Note ${index + 1}.${note + 1}`, type: "STICKY",
+        characters: `Note ${index + 1}.${note + 1} about the workshop.`,
+        absoluteBoundingBox: { x: index * 3000 + note * 150, y: 0, width: 100, height: 100 },
+      })),
+    }));
+    fetchFileTreeMock.mockResolvedValue({ document: { id: "0:0", name: "Document", type: "DOCUMENT",
+      children: [{ id: "0:1", name: "Page", type: "CANVAS", children: sections }] } });
+
+    const output = await ingestBoard({ figmaFileUrl: "https://www.figma.com/board/Sections123/Test", docStructureHint: "freeform", ingestMode: "max_speed" });
+
+    const largest = Array.from({ length: 8 }, (_, index) => `5:${9 - index} Topic ${9 - index} — ${9 - index}`).join("; ");
+    expect(output.summary).toContain(`Largest sections (ID, name, excerpts): ${largest}.`);
+    expect(output.summary).toContain("For overviews and summaries, read these sections with get_board_context and nodeIds; answer_from_board is for one specific question.");
+    expect(output.summary).not.toContain("Topic 1 —");
+    expect(output.summary).not.toContain('"Note');
+    const { contextText } = (await getBoardContext({ boardId: "Sections123" })).structuredContent;
+    expect(contextText).toContain(`Largest sections (ID, name, excerpts): ${largest}; 5:1 Topic 1 — 1.`);
   });
 
   it("reuses unchanged clusters from the previous ingest", async () => {

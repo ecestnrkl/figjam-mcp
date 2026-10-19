@@ -42,14 +42,17 @@ describe("MCP wire contract", () => {
     }
   });
 
-  it("returns readable and structured content through tools/call", async () => {
-    const output = { contextText: "Workshop evidence", clusters: [], snapshotId: "snapshot1", evidence: [], connections: [], totalMatched: 0, truncated: false,
+  it("returns the readable text as content and the structured page as structuredContent", async () => {
+    const structuredContent = { contextText: "Board header\n\nExcerpts are in evidence.", clusters: [], snapshotId: "snapshot1",
+      evidence: [], connections: [], totalMatched: 0, truncated: false,
       truncation: { remainingEvidence: 0, omittedConnections: 0, omittedRelations: 0, omittedTextConnections: 0, omittedTextRelations: 0 } };
-    handlers.context.mockResolvedValue(output);
+    const text = "Board header\n\n## Cluster: Research\n[ev_1] original · node 1:1\nWorkshop evidence";
+    handlers.context.mockResolvedValue({ text, structuredContent });
     const result = await client.callTool({ name: "get_board_context", arguments: { boardId: "Board123" } });
     expect(result.isError).not.toBe(true);
-    expect(result.structuredContent).toEqual(output);
-    expect(result.content).toContainEqual({ type: "text", text: output.contextText });
+    expect(result.structuredContent).toEqual(structuredContent);
+    expect(result.content).toEqual([{ type: "text", text }]);
+    expect(JSON.stringify(result.structuredContent)).not.toContain("Workshop evidence");
   });
 
   it("rejects malformed arguments before invoking the handler", async () => {
@@ -68,7 +71,7 @@ describe("MCP wire contract", () => {
   it("rejects unknown tools and invalid handler output", async () => {
     const unknown = await client.callTool({ name: "missing_tool", arguments: {} }).catch(error => error);
     expect(unknown instanceof Error || unknown.isError === true).toBe(true);
-    handlers.context.mockResolvedValue({ contextText: "invalid", clusters: "not an array" });
+    handlers.context.mockResolvedValue({ text: "invalid", structuredContent: { contextText: "invalid", clusters: "not an array" } });
     const invalid = await client.callTool({ name: "get_board_context", arguments: { boardId: "Board123" } });
     expect(invalid.isError).toBe(true);
   });
