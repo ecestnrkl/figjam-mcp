@@ -123,9 +123,10 @@ describe("offline ingest pipeline with actual persistent cache", () => {
     const persisted = await persistence.readLatestBoard(fileKey);
     expect(persisted?.clusters[0]?.summary).toContain("Budget 999");
     expect(persisted?.nodes.find(node => node.id === "table")?.table?.cells[0]?.text).toBe("Budget 999");
+    // The cell ID yields its row; row and column come from the cell ID.
     const { structuredContent: context } = await getBoardContext({ boardId: fileKey, nodeIds: ["Ttable;row;cell"] });
     expect(context.evidence).toEqual(expect.arrayContaining([
-      expect.objectContaining({ nodeId: "Ttable;row;cell", renderNodeId: "table", text: "Budget 999", sourceType: "table_cell" }),
+      expect.objectContaining({ nodeId: "table", renderNodeId: "table", text: "Budget 999", sourceType: "table_row", row: 0 }),
     ]));
     const diff = await diffBoard({ boardId: fileKey, compareTo: 1 });
     expect(diff.stats).toMatchObject({ editedNodes: 1, modifiedClusters: 1 });

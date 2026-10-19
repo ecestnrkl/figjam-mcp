@@ -13,7 +13,7 @@ import { setBoard } from "../lib/cache.js";
 import { redactBoard, redactNodes } from "../lib/redact.js";
 import { readIntEnv } from "../lib/env.js";
 import { describeModelConfig } from "../lib/modelRegistry.js";
-import { largestSectionsLine } from "./getBoardContext.js";
+import { largestSectionsLine } from "../lib/sections.js";
 import {
   buildBoardCacheKey,
   extractFigmaLastModified,
@@ -695,7 +695,8 @@ const LARGEST_SECTIONS_IN_SUMMARY = 8;
 
 function buildSummary(board: BoardData, qualityReport: IngestQualityReport): string {
   const { fileKey, clusters, docStructureHint, ingestMode } = board;
-  const largestSections = largestSectionsLine(board, LARGEST_SECTIONS_IN_SUMMARY);
+  // get_board_context reads redactBoard(board); counting on that object builds its search index once.
+  const largestSections = largestSectionsLine(redactBoard(board), LARGEST_SECTIONS_IN_SUMMARY);
   const labels = clusters.map((cluster) => `"${cluster.label}"`);
   const shownLabels = labels.slice(0, 8).join(", ") + (labels.length > 8 ? ", ..." : "");
   const settings = `(docStructureHint=${docStructureHint}${ingestMode ? `, ingestMode=${ingestMode}` : ""})`;

@@ -7,11 +7,12 @@ import {
 import { getBoardOrRestore } from "../lib/cache.js";
 import { redactBoard } from "../lib/redact.js";
 import {
-  boundedText, connectionsForEvidence, countConnectionsForEvidence, enclosingIdsLookup,
+  boundedText, connectionsForEvidence, countConnectionsForEvidence,
   formatEvidenceConnection, MAX_CONTEXT_RESPONSE_BYTES, readableContainerIds,
-  retrieveEvidence, type Evidence,
+  firstTableRow, retrieveEvidence, tableCellPositions, type Evidence,
 } from "../lib/evidence.js";
-import type { BoardData, NormalizedNode, RefinedCluster } from "../types.js";
+import { SectionIndex } from "../lib/sections.js";
+import type { RefinedCluster } from "../types.js";
 
 interface Cursor {
   v: 1;
@@ -21,6 +22,12 @@ interface Cursor {
   result: string;
   /** 1-based number of the page this cursor opens; absent in 0.5.x cursors. */
   page?: number;
+}
+
+/** Excerpts shown on a page and how many of them advance the cursor through the result sequence. */
+interface Page {
+  evidence: Evidence[];
+  consumed: number;
 }
 
 /** Readable text for MCP content and the structured result; maxChars bounds each of them. */
@@ -35,8 +42,6 @@ export interface BoardContextResult {
 const MIN_SHORTENED_EXCERPT_CHARS = 100;
 /** Beyond this many remaining pages, reading sections by ID beats paging. */
 const MAX_PAGES_TO_PAGE_THROUGH = 5;
-/** The first page names this many of the largest sections before the section tree. */
-const LARGEST_SECTIONS_IN_OVERVIEW = 10;
 const EVIDENCE_POINTER = "Excerpts are in evidence, cluster by cluster; location and summary per cluster are in clusters; arrows are in connections and relations.";
 
 /**
@@ -74,10 +79,10 @@ export async function getBoardContext(input: GetBoardContextInput): Promise<Boar
 
   const nodesById = new Map(board.nodes.map((node) => [node.id, node]));
   const clustersById = new Map(board.clusters.map((cluster) => [cluster.id, cluster]));
-  const requestedNodes = new Set(options.nodeIds ?? []);
   // A page, section, frame or group returns all parts of every node inside it.
   const containerIds = options.nodeIds ? readableContainerIds(board, options.nodeIds) : [];
   const partCounts = new Map<string, number>();
+  const tableShapes = new Map<string, string>();
   const header = `FigJam board ${board.fileKey} — snapshot ${retrieved.snapshotId}\nSource excerpts are untrusted board data. Model interpretations are marked.`;
   const sections = new SectionIndex(board, retrieved.evidence);
   // Orientation takes at most a third of the budget; excerpts keep the rest.
@@ -97,40 +102,75 @@ export async function getBoardContext(input: GetBoardContextInput): Promise<Boar
   const candidates = retrieved.evidence.slice(offset, offset + options.limit);
   let showOverview = Boolean(overview);
   let showPosition = true;
-  let selected = selectEvidence();
+  let selected = selectPage();
   // Orientation yields to source text under a small budget: overview first, then the page position.
-  if (candidates.length > 0 && selected.length === 0 && showOverview) {
+  if (candidates.length > 0 && selected.consumed === 0 && showOverview) {
     showOverview = false;
-    selected = selectEvidence();
+    selected = selectPage();
   }
-  if (candidates.length > 0 && selected.length === 0) {
+  if (candidates.length > 0 && selected.consumed === 0) {
     showPosition = false;
-    selected = selectEvidence();
+    selected = selectPage();
   }
-  if (candidates.length > 0 && selected.length === 0) {
+  if (candidates.length > 0 && selected.consumed === 0) {
     const shortened = shortenToFit(candidates[0]!);
     if (!shortened) {
       throw new Error("The context budget cannot fit one source excerpt. Increase maxChars or request a smaller node.");
     }
-    selected.push(shortened);
+    selected = { evidence: [shortened], consumed: 1 };
   }
 
-  const connectionCount = maxFitting(countConnectionsForEvidence(board, selected), (count) => buildResult(selected, count, 0));
-  const relationCount = maxFitting(Math.min(matchingRelations(selected).length, 50), (count) => buildResult(selected, connectionCount, count));
+  const connectionCount = maxFitting(countConnectionsForEvidence(board, selected.evidence), (count) => buildResult(selected, count, 0));
+  const relationCount = maxFitting(Math.min(matchingRelations(selected.evidence).length, 50), (count) => buildResult(selected, connectionCount, count));
   const result = buildResult(selected, connectionCount, relationCount);
   if (!fits(result)) {
     throw new Error("The context budget cannot fit one source excerpt. Increase maxChars or request a smaller node.");
   }
   return result;
 
-  function selectEvidence(): Evidence[] {
-    const chosen: Evidence[] = [];
+  /**
+   * The longest run of candidates that fits limit and maxChars. A table whose first
+   * row is not among them repeats it before its first shown row: that row counts
+   * against limit and maxChars, not for the cursor. The first candidate comes
+   * without it if both do not fit, so every page advances.
+   */
+  function selectPage(): Page {
+    const sequence: Evidence[] = [];
+    const withoutFirstRow = new Set<string>();
+    let selection: Page = { evidence: [], consumed: 0 };
     for (const item of candidates) {
       // The first excerpt may use the whole budget; arrows then get what is left.
-      if (!fits(buildResult([...chosen, item], 0, 0), chosen.length ? evidenceBudget : options.maxChars)) break;
-      chosen.push(item);
+      const budget = sequence.length ? evidenceBudget : options.maxChars;
+      let next = withFirstRows([...sequence, item], withoutFirstRow);
+      if (!pageFits(next, budget) && !sequence.length && item.sourceType === "table_row") {
+        withoutFirstRow.add(item.nodeId);
+        next = withFirstRows([item], withoutFirstRow);
+      }
+      if (!pageFits(next, budget)) break;
+      sequence.push(item);
+      selection = next;
     }
-    return chosen;
+    return selection;
+  }
+
+  function pageFits(selection: Page, budget: number): boolean {
+    return selection.evidence.length <= options.limit && fits(buildResult(selection, 0, 0), budget);
+  }
+
+  /** The sequence with the first row of each table it continues; nothing appears twice. */
+  function withFirstRows(sequence: Evidence[], withoutFirstRow: ReadonlySet<string>): Page {
+    const shown = new Set(sequence.map((item) => item.evidenceId));
+    const tables = new Set<string>();
+    const evidence: Evidence[] = [];
+    for (const item of sequence) {
+      if (item.sourceType === "table_row" && !tables.has(item.nodeId)) {
+        tables.add(item.nodeId);
+        const firstRow = firstTableRow(board, item.nodeId);
+        if (!withoutFirstRow.has(item.nodeId) && !firstRow.some((row) => shown.has(row.evidenceId))) evidence.push(...firstRow);
+      }
+      evidence.push(item);
+    }
+    return { evidence, consumed: sequence.length };
   }
 
   /** Largest count in [0, total] whose result fits; count 0 is the fallback. */
@@ -149,12 +189,13 @@ export async function getBoardContext(input: GetBoardContextInput): Promise<Boar
   function shortenToFit(item: Evidence): Evidence | undefined {
     const variant = (length: number): Evidence => ({ ...item, text: boundedText(item.text, length), truncated: true });
     const minimum = Math.min(item.text.length, MIN_SHORTENED_EXCERPT_CHARS);
-    if (!fits(buildResult([variant(minimum)], 0, 0))) return undefined;
+    const alone = (length: number): Page => ({ evidence: [variant(length)], consumed: 1 });
+    if (!fits(buildResult(alone(minimum), 0, 0))) return undefined;
     let low = minimum;
     let high = item.text.length - 1;
     while (low < high) {
       const middle = (low + high + 1) >>> 1;
-      if (fits(buildResult([variant(middle)], 0, 0))) low = middle;
+      if (fits(buildResult(alone(middle), 0, 0))) low = middle;
       else high = middle - 1;
     }
     return variant(low);
@@ -166,7 +207,7 @@ export async function getBoardContext(input: GetBoardContextInput): Promise<Boar
       .filter((relation) => clusterIds.has(relation.fromClusterId) && clusterIds.has(relation.toClusterId));
   }
 
-  function buildResult(evidence: Evidence[], connectionLimit: number, relationLimit: number): BoardContextResult {
+  function buildResult({ evidence, consumed }: Page, connectionLimit: number, relationLimit: number): BoardContextResult {
     const groups = groupByCluster(evidence);
     const labels = new Map<string, string>();
     const clusterLocations = new Map<string, string>();
@@ -196,11 +237,12 @@ export async function getBoardContext(input: GetBoardContextInput): Promise<Boar
       edgeCount: relation.edgeCount,
     }));
     const connections = connectionLimit > 0 ? connectionsForEvidence(board, evidence).slice(0, connectionLimit) : [];
-    const nextOffset = offset + evidence.length;
+    // Repeated first rows of tables are context; only the result sequence advances the cursor.
+    const nextOffset = offset + consumed;
     const remaining = retrieved.evidence.length - nextOffset;
 
     const orientation = [header];
-    if (evidence.length > 0 && showPosition) orientation.push(pagePosition(evidence.length, remaining));
+    if (evidence.length > 0 && showPosition) orientation.push(pagePosition(consumed, remaining));
     if (showOverview) orientation.push(overview);
     if (evidence.length === 0) orientation.push("No source evidence matched this request.");
     const parts = [...orientation, ...renderGroups(groups)];
@@ -234,7 +276,7 @@ export async function getBoardContext(input: GetBoardContextInput): Promise<Boar
         totalMatched: retrieved.evidence.length,
         truncated: Object.values(truncation).some((count) => count > 0) || evidence.some((item) => item.truncated),
         truncation,
-        nextCursor: remaining > 0 && evidence.length > 0
+        nextCursor: remaining > 0 && consumed > 0
           ? encodeCursor({ v: 1, snapshot: retrieved.snapshotId, query, result: resultFingerprint, offset: nextOffset, page: page + 1 })
           : undefined,
       },
@@ -257,9 +299,46 @@ export async function getBoardContext(input: GetBoardContextInput): Promise<Boar
       const locations = new Set(items.map(location));
       const sharedLocation = locations.size === 1 ? [...locations][0]! : "";
       const heading = cluster ? `## Cluster: ${boundedText(cluster.label, 160)}` : "## Outside clusters";
-      return [sharedLocation ? `${heading}\n${sharedLocation}` : heading,
-        ...items.map((item) => renderEntry(item, locations.size === 1))].join("\n\n");
+      const blocks = [sharedLocation ? `${heading}\n${sharedLocation}` : heading];
+      for (let start = 0; start < items.length;) {
+        const item = items[start]!;
+        let end = start + 1;
+        if (item.sourceType === "table_row") {
+          while (end < items.length && items[end]!.sourceType === "table_row" && items[end]!.nodeId === item.nodeId) end++;
+          blocks.push(renderTable(items.slice(start, end), locations.size === 1));
+        } else {
+          blocks.push(renderEntry(item, locations.size === 1));
+        }
+        start = end;
+      }
+      return blocks.join("\n\n");
     });
+  }
+
+  /** Consecutive rows of one table: a header line, then one line per row. */
+  function renderTable(rows: Evidence[], locationShown: boolean): string {
+    const table = rows[0]!;
+    const metadata = [
+      table.nodeName && !nameRepeatsText(table) ? `Node name: ${table.nodeName}` : undefined,
+      locationShown ? undefined : location(table) || undefined,
+    ].filter(Boolean).join("; ");
+    const lines = [`Table ${table.nodeId} · original · ${tableShape(table.nodeId)} · ${rowRanges(rows)} shown · ${table.url}`];
+    if (metadata) lines.push(metadata);
+    for (const row of rows) lines.push(`[${row.evidenceId}] row ${row.row}: ${row.text}${row.truncated ? ` ${partHint(row)}` : ""}`);
+    return lines.join("\n");
+  }
+
+  /** Row and column count of the whole table, from the same positions as its rows. */
+  function tableShape(tableId: string): string {
+    let shape = tableShapes.get(tableId);
+    if (shape === undefined) {
+      const cells = tableCellPositions(nodesById.get(tableId)!);
+      const rows = new Set(cells.map((cell) => cell.row)).size;
+      const columns = cells.every((cell) => cell.column !== undefined) ? new Set(cells.map((cell) => cell.column)).size : undefined;
+      shape = `${rows} row${rows === 1 ? "" : "s"}${columns === undefined ? "" : ` × ${columns} column${columns === 1 ? "" : "s"}`}`;
+      tableShapes.set(tableId, shape);
+    }
+    return shape;
   }
 
   function renderEntry(item: Evidence, locationShown: boolean): string {
@@ -281,20 +360,24 @@ export async function getBoardContext(input: GetBoardContextInput): Promise<Boar
 
   function partHint(item: Evidence): string {
     const total = partCount(item);
-    const shortened = item.text !== candidates.find((entry) => entry.evidenceId === item.evidenceId)?.text;
+    // Only shortenToFit changes text, and only that of the first candidate.
+    const shortened = item.evidenceId === candidates[0]?.evidenceId && item.text !== candidates[0].text;
     const prefix = shortened ? "Shortened to fit maxChars. " : "";
     const position = `Part ${item.chunkIndex + 1} of ${total}`;
-    if ((requestedNodes.has(item.nodeId) || containerIds.length > 0) && !shortened) return `[${position}.]`;
-    return `[${prefix}${position} — request get_board_context with nodeIds: ${JSON.stringify([item.nodeId])} for all parts.]`;
+    // A nodeIds request returns every part of each source it matches.
+    if (options.nodeIds && !shortened) return `[${position}.]`;
+    const scope = item.sourceType === "table_row" ? "the whole table" : "all parts";
+    return `[${prefix}${position} — request get_board_context with nodeIds: ${JSON.stringify([item.nodeId])} for ${scope}.]`;
   }
 
   /** Parts are the chunks a nodeIds request returns for the same source. */
   function partCount(item: Evidence): number {
-    const key = `${item.sourceType}\0${item.nodeId}\0${item.clusterId ?? ""}`;
+    const key = `${item.sourceType}\0${item.nodeId}\0${item.clusterId ?? ""}\0${item.row ?? ""}`;
     let count = partCounts.get(key);
     if (count === undefined) {
       count = retrieveEvidence(board, { nodeIds: [item.nodeId] }).evidence.filter((entry) =>
-        entry.nodeId === item.nodeId && entry.sourceType === item.sourceType && entry.clusterId === item.clusterId).length;
+        entry.nodeId === item.nodeId && entry.sourceType === item.sourceType && entry.clusterId === item.clusterId &&
+        entry.row === item.row).length;
       partCounts.set(key, Math.max(count, item.chunkIndex + 1));
     }
     return partCounts.get(key)!;
@@ -305,7 +388,7 @@ export async function getBoardContext(input: GetBoardContextInput): Promise<Boar
     if (!item.nodeName) return true;
     if (item.sourceType === "board_metadata") return true;
     const name = normalize(item.nodeName.replace(/…$/, ""));
-    const fullText = item.sourceType === "table_cell" ? undefined : nodesById.get(item.nodeId)?.text;
+    const fullText = item.sourceType === "table_cell" || item.sourceType === "table_row" ? undefined : nodesById.get(item.nodeId)?.text;
     return Boolean(name) && [item.text, fullText].some((text) => text !== undefined && normalize(text).startsWith(name));
   }
 
@@ -325,7 +408,7 @@ export async function getBoardContext(input: GetBoardContextInput): Promise<Boar
       ...(ownLocation && pageName ? { pageName } : {}),
       // An empty list marks an excerpt outside sections in a cluster that has some.
       ...(ownLocation && (sectionNames?.length || clusterLocation !== undefined) ? { sectionNames: sectionNames ?? [] } : {}),
-      ...(item.sourceType === "table_cell" && renderNodeId ? { renderNodeId } : {}),
+      ...((item.sourceType === "table_cell" || item.sourceType === "table_row") && renderNodeId ? { renderNodeId } : {}),
     };
   }
 }
@@ -369,171 +452,17 @@ function compactSummary(cluster: RefinedCluster): string {
   return modelDerived ? boundedText(cluster.summary, 600) : "";
 }
 
-/**
- * The largest sections by excerpts, counted as on the first page of
- * get_board_context, as one line; "" for a board without sections.
- */
-export function largestSectionsLine(board: BoardData, limit: number): string {
-  return new SectionIndex(board, retrieveEvidence(board).evidence).largestLine(limit);
-}
-
-interface OutlineLine { depth: number; text: string; section: boolean }
-
-/** Sections, their pages and excerpt counts for first-page orientation. */
-class SectionIndex {
-  readonly count: number;
-  private readonly sections: NormalizedNode[];
-  private readonly pages: NormalizedNode[];
-  private readonly enclosing: (nodeId: string) => Set<string>;
-  private readonly excerpts = new Map<string, number>();
-  private readonly pendingImageClusters = new Map<string, number>();
-  private readonly children = new Map<string, NormalizedNode[]>();
-  private readonly nodesById: Map<string, NormalizedNode>;
-  private outsideSections = 0;
-
-  constructor(private readonly board: BoardData, private readonly evidence: Evidence[]) {
-    this.nodesById = new Map(board.nodes.map((node) => [node.id, node]));
-    this.enclosing = enclosingIdsLookup(board);
-    const order = new Map(board.nodes.map((node, position) => [node.id, position]));
-    const readingOrder = (a: NormalizedNode, b: NormalizedNode) => a.y - b.y || a.x - b.x || order.get(a.id)! - order.get(b.id)!;
-    this.sections = board.nodes.filter((node) => node.type === "SECTION").sort(readingOrder);
-    this.pages = board.nodes.filter((node) => node.type === "CANVAS" || node.type === "PAGE");
-    this.count = this.sections.length;
-    for (const section of this.sections) {
-      // The nearest enclosing section, else the page, is the parent in the tree.
-      const parent = section.sectionIds?.filter((id) => id !== section.id).at(-1) ??
-        (section.pageId && this.pages.some((page) => page.id === section.pageId) ? section.pageId : "");
-      this.children.set(parent, [...(this.children.get(parent) ?? []), section]);
-    }
-    for (const item of evidence) {
-      const enclosing = this.enclosing(item.renderNodeId ?? item.nodeId);
-      let inSection = false;
-      for (const id of enclosing) {
-        this.excerpts.set(id, (this.excerpts.get(id) ?? 0) + 1);
-        inSection ||= this.nodesById.get(id)?.type === "SECTION";
-      }
-      if (!inSection) this.outsideSections++;
-    }
-    for (const cluster of board.clusters) {
-      if (!cluster.incomplete || !cluster.nodeIds[0]) continue;
-      for (const id of this.enclosing(cluster.nodeIds[0])) {
-        this.pendingImageClusters.set(id, (this.pendingImageClusters.get(id) ?? 0) + 1);
-      }
-    }
+/** Row numbers as ranges, for example "rows 0–3, 7" or "row 2". */
+function rowRanges(rows: Evidence[]): string {
+  const numbers = [...new Set(rows.map((row) => row.row!))].sort((a, b) => a - b);
+  const ranges: string[] = [];
+  for (let start = 0; start < numbers.length;) {
+    let end = start;
+    while (end + 1 < numbers.length && numbers[end + 1] === numbers[end]! + 1) end++;
+    ranges.push(end === start ? String(numbers[start]) : `${numbers[start]}–${numbers[end]}`);
+    start = end + 1;
   }
-
-  /** First page of an unfocused request: every section as a tree in reading order, with IDs. */
-  boardOverview(budget: number): string {
-    const { board, evidence } = this;
-    const size = `${board.clusters.length} cluster${plural(board.clusters.length)}, ${evidence.length} excerpt${plural(evidence.length)}.`;
-    const pages = this.pages.filter((page) => this.excerpts.has(page.id) || this.children.has(page.id));
-    if (!this.sections.length && pages.length < 2) {
-      return fitOutline(["## Board overview", size, "Pass topic or nodeIds for smaller, more precise answers."], [], [], budget, 0);
-    }
-    const lines: OutlineLine[] = [];
-    const addSections = (parentId: string, depth: number) => {
-      for (const section of this.children.get(parentId) ?? []) {
-        const pending = this.pendingImageClusters.get(section.id) ?? 0;
-        lines.push({ depth, section: true, text: `${"  ".repeat(depth)}- ${section.id} ${this.name(section)} — ` +
-          `${this.excerptCount(section.id)}${pending ? `, ${pending} image cluster${plural(pending)} not yet interpreted` : ""}` });
-        addSections(section.id, depth + 1);
-      }
-    };
-    if (pages.length > 1) {
-      for (const page of pages) {
-        lines.push({ depth: 0, section: false, text: `- Page ${page.id} ${this.name(page)} — ${this.excerptCount(page.id)}` });
-        addSections(page.id, 1);
-      }
-    } else {
-      addSections(pages[0]?.id ?? "", 0);
-    }
-    const footer = [
-      ...(this.sections.length ? [`${this.outsideSections} excerpt${plural(this.outsideSections)} outside sections.`] : []),
-      `Read a ${this.sections.length ? "section" : "page"} with nodeIds: ["<ID>"]; use topic for word search.`,
-    ];
-    // The largest sections belong to the header, so a small budget shortens the tree first.
-    const largest = this.largestLine(LARGEST_SECTIONS_IN_OVERVIEW);
-    return fitOutline(["## Board overview", size, ...(largest ? [largest] : []),
-      `${pages.length > 1 ? "Pages and sections" : "Sections"} in reading order (ID, name, excerpts including nested sections):`],
-    lines, footer, budget, pages.length > 1 ? 1 : 0);
-  }
-
-  /** Sections with the most excerpts, nested sections included; ties in reading order. */
-  largestLine(limit: number): string {
-    const largest = this.sections.filter((section) => this.excerpts.has(section.id))
-      .sort((a, b) => this.excerpts.get(b.id)! - this.excerpts.get(a.id)!).slice(0, limit);
-    if (!largest.length) return "";
-    return `Largest sections (ID, name, excerpts): ${largest.map((section) =>
-      `${section.id} ${this.name(section)} — ${this.excerpts.get(section.id)}`).join("; ")}.`;
-  }
-
-  /** First page of a nodeIds request: the direct subsections of each requested container. */
-  subsectionOutline(containerIds: string[], budget: number): string {
-    const lines: OutlineLine[] = [];
-    for (const containerId of containerIds) {
-      const direct = this.sections.filter((section) => {
-        const enclosing = this.enclosing(section.id);
-        if (!enclosing.has(containerId)) return false;
-        const parent = section.sectionIds?.filter((id) => id !== section.id).at(-1);
-        // A section in a frame of another section is still a direct subsection of that frame.
-        return !parent || parent === containerId || !this.enclosing(parent).has(containerId);
-      });
-      if (!direct.length) continue;
-      const container = this.nodesById.get(containerId)!;
-      lines.push({ depth: 0, section: false, text: `- In ${containerId} ${this.name(container)}:` });
-      for (const section of direct) {
-        lines.push({ depth: 1, section: true, text: `  - ${section.id} ${this.name(section)} — ${this.excerptCount(section.id)}` });
-      }
-    }
-    if (!lines.length) return "";
-    return fitOutline(["## Sections inside (ID, name, excerpts)"], lines,
-      ["Read one with nodeIds: [\"<ID>\"]."], budget, 1);
-  }
-
-  private excerptCount(id: string): string {
-    const count = this.excerpts.get(id) ?? 0;
-    return `${count} excerpt${plural(count)}`;
-  }
-
-  private name(node: NormalizedNode): string {
-    const name = node.name.replace(/\s+/g, " ").trim();
-    if (name) return boundedText(name, 80);
-    return node.type === "SECTION" ? "(unnamed section)" : `(unnamed ${node.type === "CANVAS" || node.type === "PAGE" ? "page" : node.type.toLowerCase()})`;
-  }
-}
-
-/**
- * Lines that do not fit the budget are summarized in one line: deeper levels
- * go first, then the last lines down to minDepth. Returns "" if nothing fits.
- */
-function fitOutline(header: string[], lines: OutlineLine[], footer: string[], budget: number, minDepth: number): string {
-  const sectionCount = lines.filter((line) => line.section).length;
-  const render = (shown: OutlineLine[]) => {
-    const omitted = sectionCount - shown.filter((line) => line.section).length;
-    const summary = omitted > 0
-      ? [`${omitted} more section${plural(omitted)} not listed; read a listed page or section by ID to see the sections inside it.`] : [];
-    return [...header, ...shown.map((line) => line.text), ...summary, ...footer].join("\n");
-  };
-  const fits = (text: string) => JSON.stringify(text).length - 2 <= budget;
-  const deepest = Math.max(minDepth, ...lines.map((line) => line.depth));
-  for (let depth = deepest; depth >= minDepth; depth--) {
-    const text = render(lines.filter((line) => line.depth <= depth));
-    if (fits(text)) return text;
-  }
-  const shallow = lines.filter((line) => line.depth <= minDepth);
-  let low = 0;
-  let high = shallow.length - 1;
-  while (low < high) {
-    const middle = (low + high + 1) >>> 1;
-    if (fits(render(shallow.slice(0, middle)))) low = middle;
-    else high = middle - 1;
-  }
-  const text = render(shallow.slice(0, low));
-  return fits(text) ? text : "";
-}
-
-function plural(count: number): string {
-  return count === 1 ? "" : "s";
+  return `row${numbers.length === 1 ? "" : "s"} ${ranges.join(", ")}`;
 }
 
 function normalize(value: string): string {

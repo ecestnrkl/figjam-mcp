@@ -35,7 +35,8 @@ for (const fixture of retrievalFixtures) {
   const start = performance.now();
   const result = retrieveEvidence(board, { query: fixture.query, limit: 3 });
   timings.push(performance.now() - start);
-  const rank = fixture.expectedNodeId ? result.evidence.findIndex((item) => item.nodeId === fixture.expectedNodeId) + 1 : 0;
+  const expected = expectedEvidenceIds(board, fixture.expectedNodeId);
+  const rank = fixture.expectedNodeId ? result.evidence.findIndex((item) => expected.has(item.evidenceId)) + 1 : 0;
   cases.push({
     name: fixture.name, expectedNodeId: fixture.expectedNodeId ?? null,
     answerable: Boolean(fixture.expectedNodeId), rank,
@@ -118,6 +119,11 @@ if (result.recallAt1 < 1 || result.correctAbstentionRate < 1 || result.fixtures 
       (item.expectedNodeId ? !item.citesExpectedNode : !item.abstained)) ||
     measuredCases.some((item) => item.error || item.validCitationCount !== item.citationCount)) process.exitCode = 1;
 
+/** Excerpts that contain the expected node: its own, or the table row that holds an expected cell. */
+function expectedEvidenceIds(board, nodeId) {
+  return new Set(nodeId ? retrieveEvidence(board, { nodeIds: [nodeId] }).evidence.map((item) => item.evidenceId) : []);
+}
+
 function distribution(values) {
   const sorted = [...values].sort((a, b) => a - b);
   const at = (p) => sorted.length ? Number(sorted[Math.min(sorted.length - 1, Math.ceil(p * sorted.length) - 1)].toFixed(3)) : null;
@@ -167,7 +173,7 @@ async function evaluateAnswer(fixture, board) {
     elapsedMs: Number((performance.now() - start).toFixed(3)),
     httpAttempts: attempts.length, attemptedModels: attempts, completions,
     citationCount: citations.length, validCitationCount,
-    citesExpectedNode: Boolean(fixture.expectedNodeId && citations.some((citation) => citation.nodeId === fixture.expectedNodeId)),
+    citesExpectedNode: citations.some((citation) => expectedEvidenceIds(board, fixture.expectedNodeId).has(citation.evidenceId)),
     abstained: Boolean(output && citations.length === 0),
     ...(output ? { answer: output.answer, citedNodeIds: citations.map((citation) => citation.nodeId) } : {}),
     ...(error ? { error } : {}),

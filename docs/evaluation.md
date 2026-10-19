@@ -53,7 +53,7 @@ server. Three arrows anchored to the page canvas did not become connections.
 - A cancelled ingest, for example after a client timeout, saves nothing.
 - Few free models accept images with structured outputs, so free image
   interpretation is the least reliable part of the default preset.
-- Search is lexical (BM25 over original text, table cells and names); synonyms
+- Search is lexical (BM25 over original text, table rows and names); synonyms
   without shared words do not match.
 - Citations show where an answer comes from, not that its conclusion is right.
 - In the Inspector web UI with Safari, a finished ingest was once displayed

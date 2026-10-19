@@ -30,8 +30,8 @@ installable in two minutes, documented, and used on real boards.
 
 ## 0.8.0 — context that reads like the board
 
-- [ ] Excerpt text once in `structuredContent`; location per cluster; first answers point to the largest sections
-- [ ] Tables as tables: rows and columns from cell geometry
+- [x] Excerpt text once in `structuredContent`; location per cluster; first answers point to the largest sections
+- [x] Tables as tables: rows and columns from cell IDs
 
 ## 0.9.0 — images without Figma renders
 

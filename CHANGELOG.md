@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.8.0 — Unreleased
+## 0.8.0 — 2026-10-19
 
 - `get_board_context` sends excerpt text once: `structuredContent.contextText` no longer contains
   excerpts, only orientation (header, page position, overview), and the text `content` carries the full
@@ -10,6 +10,12 @@
   excerpts instead of the first cluster labels, and the unfocused first page of `get_board_context` names
   the 10 largest before the section tree; tool descriptions send summaries, lists, risks and next steps
   across sections to `get_board_context` instead of `answer_from_board`.
+- Tables now come as row excerpts with `sourceType` `table_row` instead of one `table_cell` excerpt per
+  cell: row and column are derived from the cell IDs, also for existing snapshots, and each row lists its
+  cells in column order separated by " | ". A cell ID in `nodeIds` returns its row, the table ID all rows;
+  a topic match in a later row brings the first row with the column headings; the text shows consecutive
+  rows of a table as one block. Tables whose rows cannot be derived keep `table_cell` excerpts. Unfocused
+  pages keep the rows of a table together, and a page that continues a table repeats its first row.
 
 ## 0.7.0 — 2026-10-19
 

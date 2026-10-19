@@ -268,9 +268,11 @@ describe("answerFromBoard evidence grounding", () => {
   });
 
   it("supplies separate table labels and values with their source coordinates", async () => {
+    // The cell without a row keeps this table at cell excerpts.
     const data = evidenceBoard("TableAnswer123", [{ ...textNode("10:1", "Budget\n999"), name: "Table 1", type: "TABLE", table: { cells: [
       { id: "cell:label", text: "Budget", row: 0, column: 0 },
       { id: "cell:value", text: "999", row: 0, column: 1 },
+      { id: "cell:loose", text: "Loose note" },
     ] } }]);
     setBoard(data.boardId, data);
     const value = retrieveEvidence(data, { nodeIds: ["cell:value"] }).evidence[0]!;
@@ -281,6 +283,26 @@ describe("answerFromBoard evidence grounding", () => {
     expect(prompt()).toContain("Table node: 10:1; Row index: 0; Column index: 0");
     expect(prompt()).toContain("Table node: 10:1; Row index: 0; Column index: 1");
     expect(output.citations[0]).toMatchObject({ nodeId: "cell:value", quote: "999", sourceType: "table_cell", row: 0, column: 1 });
+  });
+
+  it("cites a table row with its column headings in the prompt", async () => {
+    const data = evidenceBoard("TableRowAnswer123", [{ ...textNode("10:1", ""), name: "Table 1", type: "TABLE", table: { cells:
+      [["Item", "Amount"], ["Travel", "120"], ["Budget", "999"]]
+        .flatMap((cells, row) => cells.map((text, column) => ({ id: `T10:1;6:${row};7:${column}`, text }))),
+    } }]);
+    setBoard(data.boardId, data);
+    const row = retrieveEvidence(data, { nodeIds: ["T10:1;6:2;7:1"] }).evidence[0]!;
+    chatJsonMock.mockResolvedValueOnce({ kind: "answer", language: "de", answer: "Das Budget beträgt 999.", evidenceIds: [row.evidenceId] });
+    const output = await answerFromBoard({ boardId: data.boardId, question: "Wie hoch ist das Budget?" });
+    expect(prompt()).toContain(`[${row.evidenceId}] Table 1 (original table row; cells separated by "|"; node 10:1)`);
+    expect(prompt()).toContain("Row index: 2\nBudget | 999");
+    expect(prompt()).toContain("Row index: 0\nItem | Amount");
+    expect(output.citations).toHaveLength(1);
+    expect(output.citations[0]).toMatchObject({
+      evidenceId: row.evidenceId, nodeId: "10:1", quote: "Budget | 999", sourceType: "table_row", row: 2, modelDerived: false,
+    });
+    expect(output.citations[0]!.column).toBeUndefined();
+    expect(output.citations[0]!.url).toContain("node-id=10%3A1");
   });
 
   it("adds directly connected neighbors and preserves reverse arrows", async () => {

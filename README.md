@@ -75,7 +75,8 @@ Problems: [troubleshooting](https://github.com/ecestnrkl/figjam-mcp/blob/main/do
 1. **Read.** `ingest_board` downloads the board through the Figma REST API. If
    Figma reports the same version as the last ingest, the download is skipped.
 2. **Normalize.** Nodes become text, table cells, images and connectors, with
-   their pages and sections.
+   their pages and sections. Tables are read row by row: row and column come
+   from the cell IDs, and each row becomes one excerpt.
 3. **Cluster.** Nearby nodes are grouped by rotation-aware distance. Arrows
    between groups become directed relations.
 4. **Interpret.** In `balanced` mode, clusters with an image, or drawings without
@@ -83,7 +84,7 @@ Problems: [troubleshooting](https://github.com/ecestnrkl/figjam-mcp/blob/main/do
    however short, keep their extracted text. A cluster starts only when the time
    left fits it; unfinished clusters continue on the next ingest.
 5. **Serve.** The snapshot is saved to a private local cache.
-   `get_board_context` searches it (BM25 over original text, table cells and
+   `get_board_context` searches it (BM25 over original text, table rows and
    names), `answer_from_board` answers with citations and `diff_board` compares
    snapshots. Its first page lists the board's sections with IDs; pass a page,
    section, frame or group ID as `nodeIds` to read everything inside it. Its text
