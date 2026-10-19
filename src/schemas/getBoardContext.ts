@@ -32,7 +32,7 @@ export const getBoardContextInputShape = {
   cursor: z.string().min(1).max(2048).optional()
     .describe("Continue a page using the same query, snapshot, limit and maxChars"),
   maxChars: z.number().int().min(512).max(24000).default(12000)
-    .describe("Character budget for the readable context (default 12000)"),
+    .describe("Character budget for the whole structured result (JSON of structuredContent, including contextText; default 12000)"),
 };
 
 export const getBoardContextInputSchema = z.object(getBoardContextInputShape).refine(

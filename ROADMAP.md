@@ -21,7 +21,11 @@ installable in two minutes, documented, and used on real boards.
 
 - [x] Redact explicit credentials (e.g. "Passwort: …", "API key: …") before board text reaches the cache, tool output or an LLM provider
 
-## 0.6.0 — complete image interpretation
+## 0.6.0 — context that fits client limits
+
+- [x] `maxChars` bounds the whole structured `get_board_context` result; compact text and metadata, board overview, page position
+
+## 0.7.0 — complete image interpretation
 
 - [ ] Continue image interpretation in the background after ingest_board returns, capped so free-tier quotas stay usable for answers
 
