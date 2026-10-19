@@ -244,6 +244,82 @@ describe("offline ingest pipeline with actual persistent cache", () => {
     expect(second.summary).not.toContain("Run ingest_board again");
   });
 
+  describe("credential redaction of reused snapshot data", () => {
+    // Synthetic value, assembled at runtime so secret scanners do not flag the test file.
+    const secret = "Sommer" + "2024" + "!synthetic";
+    const latestJson = async () => JSON.stringify(await persistence.readLatestBoard(fileKey));
+    async function reloadIngest(env: Record<string, string>) {
+      vi.unstubAllEnvs();
+      vi.stubEnv("FIGJAM_MCP_CACHE_DIR", cacheDirectory);
+      vi.stubEnv("FIGMA_ACCESS_TOKEN", "offline-test-only");
+      vi.stubEnv("LLM_BASE_URL", "https://offline.invalid/v1");
+      vi.stubEnv("LLM_API_KEY", "offline-test-only");
+      for (const [name, value] of Object.entries(env)) vi.stubEnv(name, value);
+      vi.resetModules();
+      persistence = await import("../src/lib/persistentCache.js");
+      return (await import("../src/tools/ingestBoard.js")).ingestBoard;
+    }
+
+    it("redacts unchanged nodes before deferred vision continues", async () => {
+      activeTree = boardTree([sticky("login", `Passwort: ${secret}`, 0), imageNode("photo", 1000)]);
+      const unredacted = await reloadIngest({ FIGJAM_MCP_REDACT_CREDENTIALS: "false", INGEST_BOARD_VISION_BUDGET_MS: "0" });
+      const first = await unredacted(input);
+      expect(first.qualityReport?.fallbackReasons).toEqual({ time_budget: 2 });
+      expect(await latestJson()).toContain(secret);
+
+      const redacted = await reloadIngest({});
+      const second = await redacted(input);
+      expect(fileTreeMock).toHaveBeenCalledTimes(1);
+      expect(metadataMock).toHaveBeenCalledTimes(1);
+      expect(visionMock).toHaveBeenCalledTimes(2);
+      const visionNodes = visionMock.mock.calls.flatMap(call => call[2] as NormalizedNode[]);
+      expect(visionNodes.find(node => node.id === "login")).toMatchObject({ name: "Sticky", text: "Passwort: [redacted]" });
+      expect(JSON.stringify(visionNodes)).not.toContain(secret);
+      expect(second.qualityReport).toMatchObject({ visionClusters: 2, incompleteClusters: 0 });
+      expect(JSON.stringify(second)).not.toContain(secret);
+      const saved = await latestJson();
+      expect(saved).toContain("Passwort: [redacted]");
+      expect(saved).not.toContain(secret);
+    });
+
+    it.each([
+      ["a cache hit", false],
+      ["reuse after a board change", true],
+    ])("redacts reused vision labels and summaries on %s", async (_case, changeBoard) => {
+      activeTree = boardTree([imageNode("photo", 0)]);
+      visionMock.mockImplementationOnce((cluster: Cluster) => ({
+        ...cluster, label: `Login PIN: ${secret}`, summary: `The photo shows Passwort: ${secret}`,
+        confirmedNodeIds: [...cluster.nodeIds], summarySource: "vision_llm", modelId: "offline-vision",
+      }));
+      const unredacted = await reloadIngest({ FIGJAM_MCP_REDACT_CREDENTIALS: "false" });
+      const first = await unredacted(input);
+      expect(first.summary).toContain(secret);
+
+      if (changeBoard) activeTree = boardTree([imageNode("photo", 0), sticky("note", "Unrelated workshop note", 5000)], "v2");
+      const redacted = await reloadIngest({});
+      const second = await redacted(input);
+      expect(second.qualityReport).toMatchObject(changeBoard ? { reusedClusters: 1 } : { cachedClusters: 1 });
+      expect(second.summary).toContain('"Login PIN: [redacted]"');
+      expect(JSON.stringify(second)).not.toContain(secret);
+      const saved = await persistence.readLatestBoard(fileKey);
+      expect(saved?.clusters.find(cluster => cluster.nodeIds.includes("photo"))).toMatchObject({
+        label: "Login PIN: [redacted]", summary: "The photo shows Passwort: [redacted]",
+      });
+      expect(JSON.stringify(saved)).not.toContain(secret);
+    });
+
+    it("keeps the snapshot of an already redacted board on an unchanged ingest", async () => {
+      activeTree = boardTree([sticky("login", `Passwort: ${secret}`, 0), imageNode("photo", 1000)]);
+      const before = await ingestBoard(input);
+      const after = await ingestBoard(input);
+      expect(after.snapshotId).toBe(before.snapshotId);
+      expect(fileTreeMock).toHaveBeenCalledTimes(1);
+      expect(visionMock).toHaveBeenCalledTimes(2);
+      expect(after.qualityReport).toMatchObject({ cachedClusters: 2, visionClusters: 2, fallbackCount: 0 });
+      expect(JSON.stringify(await persistence.readLatestBoard(fileKey))).not.toContain(secret);
+    });
+  });
+
   it("records a new capture time when a historical source state returns", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     const firstTime = Date.UTC(2026, 9, 9, 12);

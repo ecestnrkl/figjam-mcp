@@ -10,6 +10,7 @@ import { refineClusterWithVision } from "../lib/visionInterpreter.js";
 import { mapClustersToPhases } from "../lib/docStructureMapper.js";
 import { buildClusterRelations, extractConnectorEdges } from "../lib/connectorGraph.js";
 import { setBoard } from "../lib/cache.js";
+import { redactBoard, redactNodes } from "../lib/redact.js";
 import { readIntEnv } from "../lib/env.js";
 import { describeModelConfig } from "../lib/modelRegistry.js";
 import {
@@ -115,7 +116,9 @@ async function performIngest(input: IngestBoardInput, options: OperationOptions)
     }
   }
   if (unchanged && previousBoard) {
-    nodes = previousBoard.nodes;
+    // The previous ingest may have run with redaction off. Redaction is idempotent,
+    // so already redacted nodes keep their hash, snapshot ID and cache key.
+    nodes = redactNodes(previousBoard.nodes);
     figmaLastModified = previousBoard.figmaLastModified;
     figmaVersion = previousBoard.figmaVersion;
   } else {
@@ -138,9 +141,10 @@ async function performIngest(input: IngestBoardInput, options: OperationOptions)
   const cached = cacheCandidate?.extractionVersion === EXTRACTION_VERSION ? cacheCandidate : undefined;
   if (cached && !cached.clusters.some(cluster => cluster.incomplete)) {
     const clusters = cached.clusters.map(cluster => ({ ...cluster, cacheHit: true }));
-    const board: BoardData = { ...cached, clusters, freshnessCheckedAt, figmaVersion, figmaLastModified,
+    // Cached labels and summaries may predate redaction being switched on.
+    const board = redactBoard({ ...cached, clusters, freshnessCheckedAt, figmaVersion, figmaLastModified,
       createdAt: previousBoard?.snapshotId === snapshotId ? previousBoard.createdAt : Date.now(),
-      qualityReport: buildQualityReport(clusters, clusters.length) };
+      qualityReport: buildQualityReport(clusters, clusters.length) });
     await progress("persist", 4);
     await publishBoard(board, signal);
     await complete();
@@ -265,14 +269,15 @@ async function performIngest(input: IngestBoardInput, options: OperationOptions)
   signal?.throwIfAborted();
   const finalClusters = mapClustersToPhases(refined, input.docStructureHint, input.customPhases);
   const qualityReport = { ...buildQualityReport(finalClusters, reusedCount), reusedClusters: reusedCount };
-  const board: BoardData = {
+  // Reused labels and summaries may predate redaction being switched on.
+  const board = redactBoard({
     schemaVersion: 4, extractionVersion: EXTRACTION_VERSION, boardId: fileKey, fileKey, docStructureHint: input.docStructureHint,
     customPhases: input.customPhases, ingestMode, cacheKey, snapshotId, figmaLastModified, figmaVersion,
     freshnessCheckedAt, nodeHash, refinementSignature, modelPreset: describeModelConfig().preset,
     qualityReport, nodes, clusters: finalClusters, connectorEdges,
     clusterRelations: buildClusterRelations(connectorEdges, finalClusters),
     createdAt: previousBoard?.snapshotId === snapshotId ? previousBoard.createdAt : Date.now(),
-  };
+  });
   await progress("persist", 4);
   await publishBoard(board, signal);
   await complete();

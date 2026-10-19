@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.1 — 2026-10-19
+
+- `ingest_board` now redacts snapshot data it reuses (unchanged board, cache hit,
+  reused cluster labels and summaries) before vision prompts, its output and the cache,
+  so a board first ingested with `FIGJAM_MCP_REDACT_CREDENTIALS=false` no longer
+  keeps unredacted text once redaction is switched back on.
+
 ## 0.5.0 — 2026-10-19
 
 - Explicit credentials are redacted as `[redacted]` during extraction, before they
