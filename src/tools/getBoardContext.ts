@@ -35,6 +35,8 @@ export interface BoardContextResult {
 const MIN_SHORTENED_EXCERPT_CHARS = 100;
 /** Beyond this many remaining pages, reading sections by ID beats paging. */
 const MAX_PAGES_TO_PAGE_THROUGH = 5;
+/** The first page names this many of the largest sections before the section tree. */
+const LARGEST_SECTIONS_IN_OVERVIEW = 10;
 const EVIDENCE_POINTER = "Excerpts are in evidence, cluster by cluster; location and summary per cluster are in clusters; arrows are in connections and relations.";
 
 /**
@@ -367,6 +369,14 @@ function compactSummary(cluster: RefinedCluster): string {
   return modelDerived ? boundedText(cluster.summary, 600) : "";
 }
 
+/**
+ * The largest sections by excerpts, counted as on the first page of
+ * get_board_context, as one line; "" for a board without sections.
+ */
+export function largestSectionsLine(board: BoardData, limit: number): string {
+  return new SectionIndex(board, retrieveEvidence(board).evidence).largestLine(limit);
+}
+
 interface OutlineLine { depth: number; text: string; section: boolean }
 
 /** Sections, their pages and excerpt counts for first-page orientation. */
@@ -441,9 +451,20 @@ class SectionIndex {
       ...(this.sections.length ? [`${this.outsideSections} excerpt${plural(this.outsideSections)} outside sections.`] : []),
       `Read a ${this.sections.length ? "section" : "page"} with nodeIds: ["<ID>"]; use topic for word search.`,
     ];
-    return fitOutline(["## Board overview", size,
+    // The largest sections belong to the header, so a small budget shortens the tree first.
+    const largest = this.largestLine(LARGEST_SECTIONS_IN_OVERVIEW);
+    return fitOutline(["## Board overview", size, ...(largest ? [largest] : []),
       `${pages.length > 1 ? "Pages and sections" : "Sections"} in reading order (ID, name, excerpts including nested sections):`],
     lines, footer, budget, pages.length > 1 ? 1 : 0);
+  }
+
+  /** Sections with the most excerpts, nested sections included; ties in reading order. */
+  largestLine(limit: number): string {
+    const largest = this.sections.filter((section) => this.excerpts.has(section.id))
+      .sort((a, b) => this.excerpts.get(b.id)! - this.excerpts.get(a.id)!).slice(0, limit);
+    if (!largest.length) return "";
+    return `Largest sections (ID, name, excerpts): ${largest.map((section) =>
+      `${section.id} ${this.name(section)} — ${this.excerpts.get(section.id)}`).join("; ")}.`;
   }
 
   /** First page of a nodeIds request: the direct subsections of each requested container. */

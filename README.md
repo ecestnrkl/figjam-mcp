@@ -62,7 +62,10 @@ claude mcp add figjam-context -e FIGMA_ACCESS_TOKEN=your-figma-token -e LLM_BASE
 
 Then ask your assistant to ingest a board URL, for example *"Ingest
 https://www.figma.com/board/FILE_KEY/Name and list the open questions."*
-The `boardId` of every later call is the file key from that URL.
+The `boardId` of every later call is the file key from that URL. To summarize
+a board, the assistant calls `ingest_board`, then `get_board_context` without
+parameters, whose first page names the largest sections and lists all sections
+with IDs, and then reads the largest sections by passing their IDs as `nodeIds`.
 
 All settings: [configuration](https://github.com/ecestnrkl/figjam-mcp/blob/main/docs/configuration.md).
 Problems: [troubleshooting](https://github.com/ecestnrkl/figjam-mcp/blob/main/docs/troubleshooting.md).

@@ -610,9 +610,9 @@ describe("getBoardContext by section", () => {
 
     const { structuredContent: shallow } = await getBoardContext({ boardId: data.boardId, maxChars: 4000 });
     expect(JSON.stringify(shallow).length).toBeLessThanOrEqual(4000);
-    expect(shallow.contextText).toContain("- 1:11 Theme 12 — ");
+    expect(shallow.contextText).toContain("- 1:10 Theme 11 — ");
     expect(shallow.contextText).not.toContain("2:0 Theme 1.1");
-    expect(shallow.contextText).toContain("24 more sections not listed; read a listed page or section by ID");
+    expect(shallow.contextText).toContain("25 more sections not listed; read a listed page or section by ID");
 
     const many = largeBoard("Outline40", 120, 2, 40, { imageClusters: 40 });
     setBoard(many.boardId, many);
@@ -623,5 +623,28 @@ describe("getBoardContext by section", () => {
     expect(cut.structuredContent.contextText).toContain("## Board overview");
     expect(overview).toMatch(/\d+ more sections not listed/);
     expect(JSON.stringify(overview.slice(0, overview.indexOf("\n\n## Cluster"))).length).toBeLessThanOrEqual(Math.floor(3000 / 3) + 2);
+  });
+
+  it("names the largest sections before the tree and keeps them when the budget shortens the tree", async () => {
+    setBoard("Large300", largeBoard("Large300"));
+    const { contextText } = (await getBoardContext({ boardId: "Large300", maxChars: 24000 })).structuredContent;
+    const line = contextText.split("\n").find((text) => text.startsWith("Largest sections (ID, name, excerpts): "))!;
+    const largest = [...line.matchAll(/(\d+:\d+) (Theme \d+) — (\d+)/g)].map(([, id, name, count]) => ({ id, name, count: Number(count) }));
+    expect(largest).toHaveLength(10);
+    expect(largest[0]).toMatchObject({ id: "1:11", name: "Theme 12" });
+    expect(largest.map(({ count }) => count)).toEqual(largest.map(({ count }) => count).sort((a, b) => b - a));
+    for (const { id, name, count } of largest) expect(contextText).toContain(`- ${id} ${name} — ${count} excerpts`);
+    expect(contextText.indexOf(line)).toBeLessThan(contextText.indexOf("Sections in reading order"));
+
+    const many = largeBoard("Largest40", 120, 2, 40);
+    setBoard(many.boardId, many);
+    const cut = (await getBoardContext({ boardId: many.boardId, maxChars: 3000 })).structuredContent.contextText;
+    expect(cut).toMatch(/\d+ more sections not listed/);
+    expect(cut).toMatch(/\nLargest sections \(ID, name, excerpts\): \d+:\d+ Theme \d+ — \d+; .*\.\nSections in reading order/);
+    expect(cut.match(/ — \d+[;.]/g)).toHaveLength(10);
+    // Topic, nodeIds and later pages have no board overview.
+    for (const request of [{ topic: "onboarding" }, { nodeIds: ["1:0"] }]) {
+      expect((await getBoardContext({ boardId: "Large300", ...request })).text).not.toContain("Largest sections");
+    }
   });
 });
