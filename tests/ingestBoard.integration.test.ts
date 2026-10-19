@@ -103,7 +103,7 @@ describe("offline ingest pipeline with actual persistent cache", () => {
     expect(visionMock).toHaveBeenCalledTimes(2);
     expect(result.snapshotId).not.toBe(snapshotId);
     expect(result.relationCount).toBe(1);
-    const context = await getBoardContext({ boardId: fileKey, nodeIds: ["idea", "test", "page"] });
+    const { structuredContent: context } = await getBoardContext({ boardId: fileKey, nodeIds: ["idea", "test", "page"] });
     expect(context.connections).toEqual([expect.objectContaining({ connectorId: "arrow", fromNodeId: "idea", toNodeId: "test", direction: "forward", url: "https://www.figma.com/board/OfflineBoard?node-id=arrow" })]);
     const restored = await persistence.readLatestBoard(fileKey);
     expect(restored?.extractionVersion).toBe(6);
@@ -123,7 +123,7 @@ describe("offline ingest pipeline with actual persistent cache", () => {
     const persisted = await persistence.readLatestBoard(fileKey);
     expect(persisted?.clusters[0]?.summary).toContain("Budget 999");
     expect(persisted?.nodes.find(node => node.id === "table")?.table?.cells[0]?.text).toBe("Budget 999");
-    const context = await getBoardContext({ boardId: fileKey, nodeIds: ["Ttable;row;cell"] });
+    const { structuredContent: context } = await getBoardContext({ boardId: fileKey, nodeIds: ["Ttable;row;cell"] });
     expect(context.evidence).toEqual(expect.arrayContaining([
       expect.objectContaining({ nodeId: "Ttable;row;cell", renderNodeId: "table", text: "Budget 999", sourceType: "table_cell" }),
     ]));
@@ -417,9 +417,9 @@ describe("offline ingest pipeline with actual persistent cache", () => {
     ]);
     await ingestBoard({ ...input, ingestMode: "balanced" });
     expect(visionMock).not.toHaveBeenCalled();
-    const context = await getBoardContext({ boardId: fileKey, topic: "ORCHID-742" });
+    const { structuredContent: context } = await getBoardContext({ boardId: fileKey, topic: "ORCHID-742" });
     expect(context.evidence.some(item => item.nodeId === "note-5" && item.text.includes("ORCHID-742"))).toBe(true);
-    const details = await getBoardContext({ boardId: fileKey, nodeIds: ["note-4", "note-5"] });
+    const { structuredContent: details } = await getBoardContext({ boardId: fileKey, nodeIds: ["note-4", "note-5"] });
     expect(details.connections).toEqual(expect.arrayContaining([
       expect.objectContaining({ connectorId: "edge", fromNodeId: "note-4", toNodeId: "note-5", label: "must precede" }),
     ]));

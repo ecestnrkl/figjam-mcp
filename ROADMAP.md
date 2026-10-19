@@ -13,8 +13,6 @@ installable in two minutes, documented, and used on real boards.
 ## 0.4.x — proven in real use
 
 - [x] Render screenshots of several clusters per Figma request
-- [ ] Public demo board and a screen recording in a real MCP client
-- [ ] Use it in real workshops; fix what gets in the way
 - [x] npm trusted publishing from CI
 
 ## 0.5.0 — safer provider calls
@@ -30,27 +28,25 @@ installable in two minutes, documented, and used on real boards.
 - [x] Vision only where there is something to see; start a vision call only when it can finish
 - [x] Read pages, sections, frames and groups by ID; the first page lists sections with IDs
 
-## 0.8.0 — denser context pages
+## 0.8.0 — context that reads like the board
 
-- [ ] Excerpt text once in `structuredContent`
-- [ ] Location per cluster instead of per excerpt
+- [ ] Excerpt text once in `structuredContent`; location per cluster; first answers point to the largest sections
+- [ ] Tables as tables: rows and columns from cell geometry
 
 ## 0.9.0 — images without Figma renders
 
 - [ ] Image fills (Tier 2) instead of renders (Tier 1)
 - [ ] `focusNodeIds` lets the host choose which images to interpret first
 
-## 0.10.0 — tables as tables
-
-- [ ] Rows and columns from cell geometry
-
-## Proven in real use
+## 1.0.0 — proven in real use
 
 - [ ] Public demo board and a screen recording
 - [ ] Real workshops
+- [ ] Stable tool contract
 
 ## Later — only when real usage asks for it
 
+- An outline for boards that use frames instead of sections
 - Background image interpretation with a daily limit
 - Votes and sticky colors
 - Answer-kind refinements

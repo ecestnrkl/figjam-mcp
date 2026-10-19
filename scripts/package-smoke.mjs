@@ -273,7 +273,9 @@ try {
     assert.equal(reused.structuredContent.qualityReport.cachedClusters, 1);
     const context = await client.callTool({ name: "get_board_context", arguments: { boardId: "SmokeBoard123" } });
     assert(!context.isError, JSON.stringify(context));
-    assert.match(context.structuredContent.contextText, /Workshop finding version 2/);
+    assert.match(context.content[0].text, /Workshop finding version 2/);
+    assert(context.structuredContent.evidence.some(item => /Workshop finding version 2/.test(item.text)));
+    assert.doesNotMatch(context.structuredContent.contextText, /Workshop finding version 2/, "Excerpt text must appear once in structuredContent");
     const answer = await client.callTool({ name: "answer_from_board", arguments: { boardId: "SmokeBoard123", question: "What is the workshop finding?" } });
     assert(!answer.isError, JSON.stringify(answer));
     assert.match(answer.structuredContent.answer, /Workshop finding version 2/);
@@ -356,7 +358,7 @@ try {
       const longContext = await client.callTool({ name: "get_board_context", arguments: { boardId: "LongBoard123" } });
       assert(!longContext.isError, JSON.stringify(longContext));
       assert.equal(longContext.structuredContent.snapshotId, longIngest.structuredContent.snapshotId);
-      assert.match(longContext.structuredContent.contextText, /Original progress source evidence/);
+      assert.match(longContext.content[0].text, /Original progress source evidence/);
       console.log(`Long ingest returned its final result after ${Math.round(elapsedMs)} ms, following complete progress; persisted sources remain readable.`);
     }
   } catch (error) {
@@ -379,7 +381,7 @@ try {
       assert.equal(legacyIngest.structuredContent.figmaVersion, "1");
       const result = await legacy.callTool({ name: "get_board_context", arguments: { boardId: "SmokeBoard123" } });
       assert(!result.isError, `${protocolVersion} client could not read structured board context`);
-      assert.match(result.structuredContent.contextText, /Workshop finding version 2/);
+      assert(result.structuredContent.evidence.some(item => /Workshop finding version 2/.test(item.text)));
     } finally {
       await legacy.close();
     }

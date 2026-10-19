@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.8.0 — Unreleased
+
+- `get_board_context` sends excerpt text once: `structuredContent.contextText` no longer contains
+  excerpts, only orientation (header, page position, overview), and the text `content` carries the full
+  readable page. `maxChars` bounds both; `evidence` follows the clusters, each cluster states its page and
+  sections once, and deterministic clusters have an empty `summary`. Pages hold about 1.6 times as many excerpts.
+
 ## 0.7.0 — 2026-10-19
 
 - `ingest_board` in `balanced` mode interprets only clusters with an image or drawings without text;

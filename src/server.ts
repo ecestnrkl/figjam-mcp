@@ -119,10 +119,10 @@ export function createServer(): McpServer {
       outputSchema: z.object(getBoardContextOutputShape),
     },
     async (input) => {
-      const output = await getBoardContext(input);
+      const { text, structuredContent } = await getBoardContext(input);
       return {
-        content: [{ type: "text" as const, text: output.contextText }],
-        structuredContent: output,
+        content: [{ type: "text" as const, text }],
+        structuredContent,
       };
     },
   );
