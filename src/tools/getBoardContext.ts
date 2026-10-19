@@ -74,11 +74,17 @@ export async function getBoardContext(input: GetBoardContextInput): Promise<GetB
   const hasConnections = (board.connectorEdges?.length ?? 0) > 0 || (board.clusterRelations?.length ?? 0) > 0;
   const evidenceBudget = hasConnections ? Math.floor(options.maxChars * 0.8) : options.maxChars;
   const candidates = retrieved.evidence.slice(offset, offset + options.limit);
-  const selected: Evidence[] = [];
-  for (const item of candidates) {
-    // The first excerpt may use the whole budget; arrows then get what is left.
-    if (!fits(buildResult([...selected, item], 0, 0), selected.length ? evidenceBudget : options.maxChars)) break;
-    selected.push(item);
+  let showOverview = Boolean(overview);
+  let showPosition = true;
+  let selected = selectEvidence();
+  // Orientation yields to source text under a small budget: overview first, then the page position.
+  if (candidates.length > 0 && selected.length === 0 && showOverview) {
+    showOverview = false;
+    selected = selectEvidence();
+  }
+  if (candidates.length > 0 && selected.length === 0) {
+    showPosition = false;
+    selected = selectEvidence();
   }
   if (candidates.length > 0 && selected.length === 0) {
     const shortened = shortenToFit(candidates[0]!);
@@ -95,6 +101,16 @@ export async function getBoardContext(input: GetBoardContextInput): Promise<GetB
     throw new Error("The context budget cannot fit one source excerpt. Increase maxChars or request a smaller node.");
   }
   return result;
+
+  function selectEvidence(): Evidence[] {
+    const chosen: Evidence[] = [];
+    for (const item of candidates) {
+      // The first excerpt may use the whole budget; arrows then get what is left.
+      if (!fits(buildResult([...chosen, item], 0, 0), chosen.length ? evidenceBudget : options.maxChars)) break;
+      chosen.push(item);
+    }
+    return chosen;
+  }
 
   /** Largest count in [0, total] whose result fits; count 0 is the fallback. */
   function maxFitting(total: number, build: (count: number) => GetBoardContextOutput): number {
@@ -153,8 +169,8 @@ export async function getBoardContext(input: GetBoardContextInput): Promise<GetB
     const remaining = retrieved.evidence.length - nextOffset;
 
     const parts = [header];
-    if (evidence.length > 0) parts.push(pagePosition(evidence.length, remaining));
-    if (overview) parts.push(overview);
+    if (evidence.length > 0 && showPosition) parts.push(pagePosition(evidence.length, remaining));
+    if (showOverview) parts.push(overview);
     if (evidence.length === 0) parts.push("No source evidence matched this request.");
     parts.push(...renderGroups(evidence));
     if (connections.length > 0) {

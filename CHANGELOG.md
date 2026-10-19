@@ -6,7 +6,9 @@
   bounds the whole structured result; the text groups excerpts by cluster without repeating node names,
   repeated optional evidence fields and deterministic summary highlights are left out, each page states
   its position (an unfocused first page starts with a board overview), and a partial long node points to
-  a `nodeIds` request for all parts. Pages hold fewer excerpts; continue with `nextCursor`.
+  a `nodeIds` request for all parts; pages, sections and default-named layers ("Frame 12", "Vector")
+  are no longer separate excerpts, and name-only metadata follows all content. Pages hold fewer
+  excerpts; continue with `nextCursor`.
 - README and troubleshooting start the server with `figjam-context-mcp@latest`, so `npx` picks up new releases.
 
 ## 0.5.1 — 2026-10-19

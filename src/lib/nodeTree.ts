@@ -20,6 +20,25 @@ interface RawFigmaNode {
 
 export const STRUCTURAL_TYPES = new Set(["DOCUMENT", "CANVAS", "PAGE", "FRAME", "GROUP", "SECTION"]);
 export const MAX_BOARD_NODES = 100_000;
+
+/** Names Figma and FigJam assign to new layers and shapes, optionally numbered ("Frame 12"). */
+const GENERIC_NODE_NAMES = new Set([
+  "arrow", "boolean", "circle", "code block", "component", "connector", "connector line", "ellipse", "embed",
+  "exclude", "frame", "group", "image", "instance", "intersect", "line", "page", "polygon", "rectangle",
+  "section", "shape", "slice", "stamp", "star", "sticky", "subtract", "table", "text", "union", "vector",
+  "washi tape",
+  // FigJam shape defaults
+  "arrow left", "arrow right", "chevron", "cross", "cylinder", "diamond", "document multiple",
+  "document single", "engineering database", "engineering file", "engineering queue",
+  "engineering simple stack", "hexagon", "internal storage", "manual input", "octagon", "or",
+  "parallelogram", "parallelogram left", "parallelogram right", "pentagon", "plus", "predefined process",
+  "rounded rectangle", "shield", "speech bubble", "square", "summing junction", "trapezoid", "triangle",
+  "triangle down", "triangle up",
+]);
+
+export function isGenericNodeName(name: string): boolean {
+  return GENERIC_NODE_NAMES.has(name.trim().replace(/\s+\d+$/, "").replace(/\s+/g, " ").toLowerCase());
+}
 const MAX_BOARD_DEPTH = 1024;
 const MAX_METADATA_DEPTH = 64;
 

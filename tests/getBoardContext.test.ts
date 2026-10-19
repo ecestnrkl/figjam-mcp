@@ -4,6 +4,8 @@ import { getBoardContext } from "../src/tools/getBoardContext.js";
 import { getBoardContextInputSchema, getBoardContextOutputSchema } from "../src/schemas/getBoardContext.js";
 import { evidenceBoard, textNode } from "./fixtures/retrieval.js";
 import { largeBoard } from "./fixtures/largeBoard.js";
+import { retrieveEvidence } from "../src/lib/evidence.js";
+import { isGenericNodeName } from "../src/lib/nodeTree.js";
 
 function board(boardId: string) {
   const data = evidenceBoard(boardId, [
@@ -288,7 +290,7 @@ describe("getBoardContext response size", () => {
   it("shows the board overview only on the first page of an unfocused request", async () => {
     const first = await getBoardContext({ boardId: "Large300" });
     expect(first.contextText).toContain("## Board overview");
-    expect(first.contextText).toContain("300 clusters, 3013 excerpts.");
+    expect(first.contextText).toContain("300 clusters, 3030 excerpts.");
     expect(first.contextText).toMatch(/Largest sections \(excerpts\), usable as topic: Theme 12 \(\d+\); Theme 11/);
     expect(first.contextText).toContain("Pass topic or nodeIds for smaller, more precise answers.");
     const second = await getBoardContext({ boardId: "Large300", cursor: first.nextCursor });
@@ -322,6 +324,45 @@ describe("getBoardContext response size", () => {
     expect(output.contextText.match(/## Cluster: /g)).toHaveLength(3);
     expect(output.contextText).toContain("## Cluster: Participant 0-0 said onboarding step\nPage: Workshop; Sections: Theme 1");
     expect(getBoardContextOutputSchema.safeParse(output).success).toBe(true);
+  });
+
+  it("creates no excerpts for pages, sections and default names; named frames follow the content", async () => {
+    const data = largeBoard("Metadata123", 20, 3, 2);
+    setBoard(data.boardId, data);
+    const all = retrieveEvidence(data).evidence;
+    const types = new Map(data.nodes.map((node) => [node.id, node.type]));
+    expect(all.some((item) => ["CANVAS", "SECTION", "VECTOR"].includes(types.get(item.nodeId)!))).toBe(false);
+    expect(all.some((item) => /^Frame \d+$/.test(item.text))).toBe(false);
+    const metadata = all.filter((item) => item.sourceType === "board_metadata");
+    expect(metadata.map((item) => item.text)).toEqual(["Journey map 0", "Journey map 10"]);
+    expect(all.slice(-2)).toEqual(metadata);
+    expect(isGenericNodeName("Connector line 4")).toBe(true);
+    expect(isGenericNodeName("Rounded rectangle")).toBe(true);
+    expect(isGenericNodeName("Journey map 0")).toBe(false);
+  });
+
+  it("starts an unfocused first page with board text", async () => {
+    const output = await getBoardContext({ boardId: "Large300" });
+    expect(output.evidence[0]?.sourceType).toBe("board_text");
+    expect(output.evidence.some((item) => item.sourceType === "board_metadata")).toBe(false);
+  });
+
+  it("ranks content matches before metadata matches for a topic", async () => {
+    const data = evidenceBoard("TopicMeta123", [
+      { ...textNode("5:1", ""), type: "FRAME", name: "Checkout" },
+      textNode("5:2", "The checkout button is hidden below the fold on small screens, so people miss it."),
+    ]);
+    data.clusters = [{ ...data.clusters[0]!, nodeIds: ["5:1", "5:2"], confirmedNodeIds: ["5:1", "5:2"] }];
+    setBoard(data.boardId, data);
+    const output = await getBoardContext({ boardId: data.boardId, topic: "checkout" });
+    expect(output.evidence.map((item) => [item.nodeId, item.sourceType])).toEqual([["5:2", "board_text"], ["5:1", "board_metadata"]]);
+  });
+
+  it("drops the overview and page position before failing on a small budget", async () => {
+    const output = await getBoardContext({ boardId: "Large300", maxChars: 2000 });
+    expect(output.evidence.length).toBeGreaterThan(0);
+    expect(JSON.stringify(output).length).toBeLessThanOrEqual(2000);
+    expect(output.contextText).not.toContain("Board overview");
   });
 
   it("keeps the parent table of a cell", async () => {
