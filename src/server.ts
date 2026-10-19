@@ -113,7 +113,7 @@ export function createServer(): McpServer {
     {
       title: "Get Board Context",
       description:
-        "Read source-cited context from an ingested board snapshot: original text, table cells, cluster summaries and arrows, each with a Figma link. Start here for overviews, summaries and documentation: begin with the default page, then narrow with topic or nodeIds (or continue with cursor), and synthesize the answer yourself. Large pages can exceed client output limits. No network or LLM calls; does not refresh Figma content (use ingest_board).",
+        "Read source-cited context from an ingested board snapshot: original text, table cells, cluster summaries and arrows, each with a Figma link. Start here for overviews, summaries and documentation: the default first page lists the board's sections with IDs; read a section, page, frame or group by passing its ID as nodeIds, search words with topic, or continue with cursor, and synthesize the answer yourself. Large pages can exceed client output limits. No network or LLM calls; does not refresh Figma content (use ingest_board).",
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       inputSchema: getBoardContextInputSchema,
       outputSchema: z.object(getBoardContextOutputShape),

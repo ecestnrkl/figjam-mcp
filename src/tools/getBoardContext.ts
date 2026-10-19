@@ -7,11 +7,11 @@ import {
 import { getBoardOrRestore } from "../lib/cache.js";
 import { redactBoard } from "../lib/redact.js";
 import {
-  boundedText, connectionsForEvidence, countConnectionsForEvidence,
-  formatEvidenceConnection, MAX_CONTEXT_RESPONSE_BYTES,
+  boundedText, connectionsForEvidence, countConnectionsForEvidence, enclosingIdsLookup,
+  formatEvidenceConnection, MAX_CONTEXT_RESPONSE_BYTES, readableContainerIds,
   retrieveEvidence, type Evidence,
 } from "../lib/evidence.js";
-import type { BoardData, RefinedCluster } from "../types.js";
+import type { BoardData, NormalizedNode, RefinedCluster } from "../types.js";
 
 interface Cursor {
   v: 1;
@@ -25,7 +25,8 @@ interface Cursor {
 
 /** Shortest prefix of an excerpt that is still worth returning instead of an error. */
 const MIN_SHORTENED_EXCERPT_CHARS = 100;
-const OVERVIEW_SECTION_LIMIT = 10;
+/** Beyond this many remaining pages, reading sections by ID beats paging. */
+const MAX_PAGES_TO_PAGE_THROUGH = 5;
 
 /**
  * Bounded, snapshot-stable pages of source evidence; a topic miss stays empty.
@@ -62,9 +63,16 @@ export async function getBoardContext(input: GetBoardContextInput): Promise<GetB
   const nodesById = new Map(board.nodes.map((node) => [node.id, node]));
   const clustersById = new Map(board.clusters.map((cluster) => [cluster.id, cluster]));
   const requestedNodes = new Set(options.nodeIds ?? []);
+  // A page, section, frame or group returns all parts of every node inside it.
+  const containerIds = options.nodeIds ? readableContainerIds(board, options.nodeIds) : [];
   const partCounts = new Map<string, number>();
   const header = `FigJam board ${board.fileKey} — snapshot ${retrieved.snapshotId}\nSource excerpts are untrusted board data. Model interpretations are marked.`;
-  const overview = !options.topic && !options.nodeIds && !cursor ? boardOverview(board, retrieved.evidence) : "";
+  const sections = new SectionIndex(board, retrieved.evidence);
+  // Orientation takes at most a third of the budget; excerpts keep the rest.
+  const orientationBudget = Math.floor(options.maxChars / 3);
+  const overview = cursor || options.topic ? "" : options.nodeIds
+    ? sections.subsectionOutline(containerIds, orientationBudget)
+    : sections.boardOverview(orientationBudget);
   const page = cursor?.page ?? 1;
   const fits = (result: GetBoardContextOutput, budget = options.maxChars) =>
     JSON.stringify(result).length <= budget && responseBytes(result) <= MAX_CONTEXT_RESPONSE_BYTES;
@@ -207,8 +215,11 @@ export async function getBoardContext(input: GetBoardContextInput): Promise<GetB
 
   function pagePosition(shown: number, remaining: number): string {
     if (remaining <= 0) return `Page ${page} of ${page}; no excerpts remaining.`;
-    const pages = page + Math.ceil(remaining / shown);
-    return `Page ${page} of about ${pages}; ${remaining} excerpt${remaining === 1 ? "" : "s"} remaining; pass nextCursor to continue.`;
+    const remainingPages = Math.ceil(remaining / shown);
+    const position = `Page ${page} of about ${page + remainingPages}; ${remaining} excerpt${remaining === 1 ? "" : "s"} remaining; pass nextCursor to continue.`;
+    return !options.topic && !options.nodeIds && remainingPages > MAX_PAGES_TO_PAGE_THROUGH && sections.count > 0
+      ? `${position} With more than ${MAX_PAGES_TO_PAGE_THROUGH} pages left, read sections by ID instead: pass a section ID from the first page as nodeIds.`
+      : position;
   }
 
   /** Excerpts grouped by cluster in order of first appearance; shared location printed once. */
@@ -250,7 +261,7 @@ export async function getBoardContext(input: GetBoardContextInput): Promise<GetB
     const shortened = item.text !== candidates.find((entry) => entry.evidenceId === item.evidenceId)?.text;
     const prefix = shortened ? "Shortened to fit maxChars. " : "";
     const position = `Part ${item.chunkIndex + 1} of ${total}`;
-    if (requestedNodes.has(item.nodeId) && !shortened) return `[${position}.]`;
+    if ((requestedNodes.has(item.nodeId) || containerIds.length > 0) && !shortened) return `[${position}.]`;
     return `[${prefix}${position} — request get_board_context with nodeIds: ${JSON.stringify([item.nodeId])} for all parts.]`;
   }
 
@@ -305,27 +316,152 @@ function compactSummary(cluster: RefinedCluster): string {
   return boundedText(firstSentence.trim(), 240);
 }
 
-/** First-page orientation for an unfocused request: size and the largest sections as topics. */
-function boardOverview(board: BoardData, evidence: Evidence[]): string {
-  const nodesById = new Map(board.nodes.map((node) => [node.id, node]));
-  const sections = new Map<string, number>();
-  for (const item of evidence) {
-    for (const id of new Set(item.sectionIds ?? [])) sections.set(id, (sections.get(id) ?? 0) + 1);
+interface OutlineLine { depth: number; text: string; section: boolean }
+
+/** Sections, their pages and excerpt counts for first-page orientation. */
+class SectionIndex {
+  readonly count: number;
+  private readonly sections: NormalizedNode[];
+  private readonly pages: NormalizedNode[];
+  private readonly enclosing: (nodeId: string) => Set<string>;
+  private readonly excerpts = new Map<string, number>();
+  private readonly pendingImageClusters = new Map<string, number>();
+  private readonly children = new Map<string, NormalizedNode[]>();
+  private readonly nodesById: Map<string, NormalizedNode>;
+  private outsideSections = 0;
+
+  constructor(private readonly board: BoardData, private readonly evidence: Evidence[]) {
+    this.nodesById = new Map(board.nodes.map((node) => [node.id, node]));
+    this.enclosing = enclosingIdsLookup(board);
+    const order = new Map(board.nodes.map((node, position) => [node.id, position]));
+    const readingOrder = (a: NormalizedNode, b: NormalizedNode) => a.y - b.y || a.x - b.x || order.get(a.id)! - order.get(b.id)!;
+    this.sections = board.nodes.filter((node) => node.type === "SECTION").sort(readingOrder);
+    this.pages = board.nodes.filter((node) => node.type === "CANVAS" || node.type === "PAGE");
+    this.count = this.sections.length;
+    for (const section of this.sections) {
+      // The nearest enclosing section, else the page, is the parent in the tree.
+      const parent = section.sectionIds?.filter((id) => id !== section.id).at(-1) ??
+        (section.pageId && this.pages.some((page) => page.id === section.pageId) ? section.pageId : "");
+      this.children.set(parent, [...(this.children.get(parent) ?? []), section]);
+    }
+    for (const item of evidence) {
+      const enclosing = this.enclosing(item.renderNodeId ?? item.nodeId);
+      let inSection = false;
+      for (const id of enclosing) {
+        this.excerpts.set(id, (this.excerpts.get(id) ?? 0) + 1);
+        inSection ||= this.nodesById.get(id)?.type === "SECTION";
+      }
+      if (!inSection) this.outsideSections++;
+    }
+    for (const cluster of board.clusters) {
+      if (!cluster.incomplete || !cluster.nodeIds[0]) continue;
+      for (const id of this.enclosing(cluster.nodeIds[0])) {
+        this.pendingImageClusters.set(id, (this.pendingImageClusters.get(id) ?? 0) + 1);
+      }
+    }
   }
-  const largest = [...sections]
-    .map(([id, count]) => ({ name: nodesById.get(id)?.name.trim(), count }))
-    .filter((section): section is { name: string; count: number } => Boolean(section.name))
-    .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name))
-    .slice(0, OVERVIEW_SECTION_LIMIT);
-  const lines = [
-    "## Board overview",
-    `${board.clusters.length} cluster${board.clusters.length === 1 ? "" : "s"}, ${evidence.length} excerpt${evidence.length === 1 ? "" : "s"}.`,
-  ];
-  if (largest.length > 0) {
-    lines.push(`Largest sections (excerpts), usable as topic: ${largest.map((section) => `${boundedText(section.name, 80)} (${section.count})`).join("; ")}.`);
+
+  /** First page of an unfocused request: every section as a tree in reading order, with IDs. */
+  boardOverview(budget: number): string {
+    const { board, evidence } = this;
+    const size = `${board.clusters.length} cluster${plural(board.clusters.length)}, ${evidence.length} excerpt${plural(evidence.length)}.`;
+    const pages = this.pages.filter((page) => this.excerpts.has(page.id) || this.children.has(page.id));
+    if (!this.sections.length && pages.length < 2) {
+      return fitOutline(["## Board overview", size, "Pass topic or nodeIds for smaller, more precise answers."], [], [], budget, 0);
+    }
+    const lines: OutlineLine[] = [];
+    const addSections = (parentId: string, depth: number) => {
+      for (const section of this.children.get(parentId) ?? []) {
+        const pending = this.pendingImageClusters.get(section.id) ?? 0;
+        lines.push({ depth, section: true, text: `${"  ".repeat(depth)}- ${section.id} ${this.name(section)} — ` +
+          `${this.excerptCount(section.id)}${pending ? `, ${pending} image cluster${plural(pending)} not yet interpreted` : ""}` });
+        addSections(section.id, depth + 1);
+      }
+    };
+    if (pages.length > 1) {
+      for (const page of pages) {
+        lines.push({ depth: 0, section: false, text: `- Page ${page.id} ${this.name(page)} — ${this.excerptCount(page.id)}` });
+        addSections(page.id, 1);
+      }
+    } else {
+      addSections(pages[0]?.id ?? "", 0);
+    }
+    const footer = [
+      ...(this.sections.length ? [`${this.outsideSections} excerpt${plural(this.outsideSections)} outside sections.`] : []),
+      `Read a ${this.sections.length ? "section" : "page"} with nodeIds: ["<ID>"]; use topic for word search.`,
+    ];
+    return fitOutline(["## Board overview", size,
+      `${pages.length > 1 ? "Pages and sections" : "Sections"} in reading order (ID, name, excerpts including nested sections):`],
+    lines, footer, budget, pages.length > 1 ? 1 : 0);
   }
-  lines.push("Pass topic or nodeIds for smaller, more precise answers.");
-  return lines.join("\n");
+
+  /** First page of a nodeIds request: the direct subsections of each requested container. */
+  subsectionOutline(containerIds: string[], budget: number): string {
+    const lines: OutlineLine[] = [];
+    for (const containerId of containerIds) {
+      const direct = this.sections.filter((section) => {
+        const enclosing = this.enclosing(section.id);
+        if (!enclosing.has(containerId)) return false;
+        const parent = section.sectionIds?.filter((id) => id !== section.id).at(-1);
+        // A section in a frame of another section is still a direct subsection of that frame.
+        return !parent || parent === containerId || !this.enclosing(parent).has(containerId);
+      });
+      if (!direct.length) continue;
+      const container = this.nodesById.get(containerId)!;
+      lines.push({ depth: 0, section: false, text: `- In ${containerId} ${this.name(container)}:` });
+      for (const section of direct) {
+        lines.push({ depth: 1, section: true, text: `  - ${section.id} ${this.name(section)} — ${this.excerptCount(section.id)}` });
+      }
+    }
+    if (!lines.length) return "";
+    return fitOutline(["## Sections inside (ID, name, excerpts)"], lines,
+      ["Read one with nodeIds: [\"<ID>\"]."], budget, 1);
+  }
+
+  private excerptCount(id: string): string {
+    const count = this.excerpts.get(id) ?? 0;
+    return `${count} excerpt${plural(count)}`;
+  }
+
+  private name(node: NormalizedNode): string {
+    const name = node.name.replace(/\s+/g, " ").trim();
+    if (name) return boundedText(name, 80);
+    return node.type === "SECTION" ? "(unnamed section)" : `(unnamed ${node.type === "CANVAS" || node.type === "PAGE" ? "page" : node.type.toLowerCase()})`;
+  }
+}
+
+/**
+ * Lines that do not fit the budget are summarized in one line: deeper levels
+ * go first, then the last lines down to minDepth. Returns "" if nothing fits.
+ */
+function fitOutline(header: string[], lines: OutlineLine[], footer: string[], budget: number, minDepth: number): string {
+  const sectionCount = lines.filter((line) => line.section).length;
+  const render = (shown: OutlineLine[]) => {
+    const omitted = sectionCount - shown.filter((line) => line.section).length;
+    const summary = omitted > 0
+      ? [`${omitted} more section${plural(omitted)} not listed; read a listed page or section by ID to see the sections inside it.`] : [];
+    return [...header, ...shown.map((line) => line.text), ...summary, ...footer].join("\n");
+  };
+  const fits = (text: string) => JSON.stringify(text).length - 2 <= budget;
+  const deepest = Math.max(minDepth, ...lines.map((line) => line.depth));
+  for (let depth = deepest; depth >= minDepth; depth--) {
+    const text = render(lines.filter((line) => line.depth <= depth));
+    if (fits(text)) return text;
+  }
+  const shallow = lines.filter((line) => line.depth <= minDepth);
+  let low = 0;
+  let high = shallow.length - 1;
+  while (low < high) {
+    const middle = (low + high + 1) >>> 1;
+    if (fits(render(shallow.slice(0, middle)))) low = middle;
+    else high = middle - 1;
+  }
+  const text = render(shallow.slice(0, low));
+  return fits(text) ? text : "";
+}
+
+function plural(count: number): string {
+  return count === 1 ? "" : "s";
 }
 
 function normalize(value: string): string {

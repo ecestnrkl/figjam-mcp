@@ -46,7 +46,7 @@ invalid JSON or an unavailable model. Changing any model setting or
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `INGEST_BOARD_VISION_BUDGET_MS` | `40000` | Time for the vision phase of one ingest. `0` starts no vision work; use `max_speed` for text-only ingests. |
-| `INGEST_BOARD_MIN_VISION_SLOT_MS` | `10000` | A cluster's render or model step starts only if this much budget is left. Concurrency × budget ÷ slot (12 by default) is how many clusters are planned for rendering. |
+| `INGEST_BOARD_MIN_VISION_SLOT_MS` | `10000` | A cluster (rendering included) or its model step starts only if the budget left is at least this value and 1.25 × the median duration of that step among clusters finished in the same ingest. Concurrency × budget ÷ slot (12 by default) is how many clusters are planned for rendering. |
 | `FIGMA_FILE_REQUEST_TIMEOUT_MS` | `60000` | Download of the board's file tree. |
 | `FIGMA_REQUEST_TIMEOUT_MS` | `15000` | Each other Figma request: version check, image render, image download. |
 | `LLM_REQUEST_TIMEOUT_MS` | — | When set, each LLM request whose role has no value of its own. |
@@ -80,7 +80,7 @@ Invalid numbers fail with an error that names the variable and its minimum.
 
 | `ingestMode` | Vision is used for | LLM key needed |
 | --- | --- | --- |
-| `balanced` (default) | Clusters with images or less than 40 characters of text | Yes, for those clusters |
+| `balanced` (default) | Clusters with an image fill, and clusters without any text that contain a non-text node (drawings, shapes) | Yes, for those clusters |
 | `max_speed` | No cluster | No |
 | `max_quality` | Every cluster | Yes |
 
@@ -113,7 +113,8 @@ deferred by the budget go before clusters that failed. Raise
   rendered by Figma in requests of up to 18 nodes.
 - Vision text per cluster: 160 nodes and 24,000 characters (300 per node).
   Groups of more than 250 nodes are split before vision.
-- `get_board_context`: `limit` 20 (max 100) excerpts, up to 50 `nodeIds`.
+- `get_board_context`: `limit` 20 (max 100) excerpts, up to 50 `nodeIds`; the section overview and
+  subsection lists take at most a third of `maxChars`.
   `maxChars` 12,000 (max 24,000) bounds the whole structured result
   (`JSON.stringify(structuredContent)`, including `contextText`), because some
   clients pass only that to the model; at most 128 KiB per result.

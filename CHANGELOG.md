@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.7.0 — 2026-10-19
+
+- `ingest_board` in `balanced` mode interprets only clusters with an image or drawings without text;
+  short text labels keep their text and pending ones complete on the next ingest without a request.
+  A cluster or model step starts only if the time left fits 1.25 × its median duration in the ingest.
+- `get_board_context` reads a page, section, frame or group by its ID in `nodeIds`: all excerpts inside,
+  nested sections included, cluster by cluster in reading order; the first page lists its direct
+  subsections. The unfocused first page lists all sections as a tree with IDs, excerpt counts and images
+  not yet interpreted, instead of the 10 largest; with more than 5 pages left it suggests reading by section.
+
 ## 0.6.0 — 2026-10-19
 
 - `get_board_context` fits clients that pass only `structuredContent` to the model: `maxChars` now
