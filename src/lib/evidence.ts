@@ -93,6 +93,8 @@ interface EvidenceIndex {
   fields: Record<EvidenceField, FieldIndex>;
   /** Original-field terms only; a derived label cannot consume the expansion budget. */
   vocabulary: string[];
+  /** All parts of the first row excerpt of each table, by table ID. */
+  firstRows: Map<string, Evidence[]>;
 }
 
 // A snapshot is immutable once published by ingest. Weak references let LRU eviction reclaim indexes.
@@ -129,6 +131,11 @@ export function snapshotIdForBoard(board: BoardData): string {
     clusters: board.clusters,
     connectors: board.connectorEdges,
   }));
+}
+
+/** All parts of the first row excerpt of a table, the row with its column headings; [] for none. */
+export function firstTableRow(board: BoardData, tableId: string): Evidence[] {
+  return getIndex(board).firstRows.get(tableId) ?? [];
 }
 
 /** Whether retrieval on this board object reuses an index that is already built. */
@@ -275,20 +282,26 @@ function contentFirst<T>(items: T[], evidenceOf: (item: T) => Evidence): T[] {
   return [...items.filter((item) => !isMetadata(item)), ...items.filter(isMetadata)];
 }
 
+/** One excerpt per cluster and round; consecutive rows of one table count as one excerpt. */
 function interleaveClusters(entries: IndexedEvidence[]): IndexedEvidence[] {
-  const groups = new Map<string, IndexedEvidence[]>();
+  const groups = new Map<string, IndexedEvidence[][]>();
   for (const entry of entries) {
     const key = entry.evidence.clusterId ?? entry.evidence.nodeId;
     const group = groups.get(key) ?? [];
-    group.push(entry);
+    const last = group.at(-1)?.[0]?.evidence;
+    if (entry.evidence.sourceType === "table_row" && last?.sourceType === "table_row" && last.nodeId === entry.evidence.nodeId) {
+      group.at(-1)!.push(entry);
+    } else {
+      group.push([entry]);
+    }
     groups.set(key, group);
   }
   const ordered: IndexedEvidence[] = [];
   let active = [...groups.values()];
   for (let offset = 0; active.length; offset++) {
-    const next: IndexedEvidence[][] = [];
+    const next: IndexedEvidence[][][] = [];
     for (const group of active) {
-      ordered.push(group[offset]!);
+      ordered.push(...group[offset]!);
       if (group.length > offset + 1) next.push(group);
     }
     active = next;
@@ -401,7 +414,14 @@ function getIndex(board: BoardData): EvidenceIndex {
     fields[field].averageLength = totalLengths[field] / Math.max(1, entries.length) || 1;
   }
   const vocabulary = [...new Set(ORIGINAL_FIELDS.flatMap((field) => [...fields[field].postings.keys()]))].sort();
-  const index = { snapshotId, entries, fields, vocabulary };
+  const firstRows = new Map<string, Evidence[]>();
+  for (const { evidence: item } of entries) {
+    if (item.sourceType !== "table_row") continue;
+    const rows = firstRows.get(item.nodeId);
+    if (!rows) firstRows.set(item.nodeId, [item]);
+    else if (rows[0]!.row === item.row) rows.push(item);
+  }
+  const index = { snapshotId, entries, fields, vocabulary, firstRows };
   indexes.set(board, index);
   return index;
 }
@@ -646,18 +666,10 @@ function addTableNeighbors(index: EvidenceIndex, selected: Evidence[], limit: nu
  */
 function addHeaderRows(index: EvidenceIndex, selected: Evidence[], limit: number): number {
   const tables = new Set(selected.filter((item) => item.sourceType === "table_row").map((item) => item.nodeId));
-  if (!tables.size) return 0;
-  const firstRows = new Map<string, Evidence[]>();
-  for (const { evidence: item } of index.entries) {
-    if (item.sourceType !== "table_row" || !tables.has(item.nodeId)) continue;
-    const rows = firstRows.get(item.nodeId);
-    if (!rows) firstRows.set(item.nodeId, [item]);
-    else if (rows[0]!.row === item.row) rows.push(item);
-  }
   const existing = new Set(selected.map((item) => item.evidenceId));
   let added = 0;
-  for (const [tableId, rows] of firstRows) {
-    const missing = rows.filter((item) => !existing.has(item.evidenceId)).slice(0, limit - added);
+  for (const tableId of tables) {
+    const missing = (index.firstRows.get(tableId) ?? []).filter((item) => !existing.has(item.evidenceId)).slice(0, limit - added);
     if (!missing.length) continue;
     selected.splice(selected.findIndex((item) => item.sourceType === "table_row" && item.nodeId === tableId), 0, ...missing);
     for (const item of missing) existing.add(item.evidenceId);

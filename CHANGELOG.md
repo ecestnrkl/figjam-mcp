@@ -14,7 +14,8 @@
   cell: row and column are derived from the cell IDs, also for existing snapshots, and each row lists its
   cells in column order separated by " | ". A cell ID in `nodeIds` returns its row, the table ID all rows;
   a topic match in a later row brings the first row with the column headings; the text shows consecutive
-  rows of a table as one block. Tables whose rows cannot be derived keep `table_cell` excerpts.
+  rows of a table as one block. Tables whose rows cannot be derived keep `table_cell` excerpts. Unfocused
+  pages keep the rows of a table together, and a page that continues a table repeats its first row.
 
 ## 0.7.0 — 2026-10-19
 

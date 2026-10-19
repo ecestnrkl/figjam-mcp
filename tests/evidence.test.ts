@@ -297,6 +297,17 @@ describe("table rows", () => {
     expect(retrieveEvidence(board, { nodeIds: ["5:1"] }).evidence.map((item) => item.row)).toEqual([0, 1, 2]);
   });
 
+  it("keeps the rows of a table together in the unfocused order while other clusters still take turns", () => {
+    const rows = table(grid([["Metric", "Value"], ["Alpha", "1"], ["Beta", "2"]]));
+    const board = evidenceBoard("TableInterleave123", [textNode("1:1", "Note A1"), rows, textNode("1:3", "Note A2"),
+      textNode("2:1", "Note B1"), textNode("2:2", "Note B2"), textNode("2:3", "Note B3")]);
+    const cluster = (id: string, nodeIds: string[]) => ({ ...board.clusters[0]!, id, nodeIds, confirmedNodeIds: nodeIds });
+    board.clusters = [cluster("a", ["1:1", "5:1", "1:3"]), cluster("b", ["2:1", "2:2", "2:3"])];
+    expect(retrieveEvidence(board).evidence.map((item) => item.sourceType === "table_row" ? `row ${item.row}` : item.text)).toEqual([
+      "Note A1", "Note B1", "row 0", "row 1", "row 2", "Note B2", "Note A2", "Note B3",
+    ]);
+  });
+
   it("adds the first row of the table to a match in a later row, once and within the neighbor limit", () => {
     const board = evidenceBoard("TableHeader123", [table(grid([["Metric", "Value"], ["Alpha", "1"], ["Beta", "2"], ["Budget", "999"], ["Gamma", "3"]]))]);
     const later = retrieveEvidence(board, { query: "Budget", includeNeighbors: true });

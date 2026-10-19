@@ -9,7 +9,7 @@ import { redactBoard } from "../lib/redact.js";
 import {
   boundedText, connectionsForEvidence, countConnectionsForEvidence,
   formatEvidenceConnection, MAX_CONTEXT_RESPONSE_BYTES, readableContainerIds,
-  retrieveEvidence, tableCellPositions, type Evidence,
+  firstTableRow, retrieveEvidence, tableCellPositions, type Evidence,
 } from "../lib/evidence.js";
 import { SectionIndex } from "../lib/sections.js";
 import type { RefinedCluster } from "../types.js";
@@ -22,6 +22,12 @@ interface Cursor {
   result: string;
   /** 1-based number of the page this cursor opens; absent in 0.5.x cursors. */
   page?: number;
+}
+
+/** Excerpts shown on a page and how many of them advance the cursor through the result sequence. */
+interface Page {
+  evidence: Evidence[];
+  consumed: number;
 }
 
 /** Readable text for MCP content and the structured result; maxChars bounds each of them. */
@@ -96,40 +102,75 @@ export async function getBoardContext(input: GetBoardContextInput): Promise<Boar
   const candidates = retrieved.evidence.slice(offset, offset + options.limit);
   let showOverview = Boolean(overview);
   let showPosition = true;
-  let selected = selectEvidence();
+  let selected = selectPage();
   // Orientation yields to source text under a small budget: overview first, then the page position.
-  if (candidates.length > 0 && selected.length === 0 && showOverview) {
+  if (candidates.length > 0 && selected.consumed === 0 && showOverview) {
     showOverview = false;
-    selected = selectEvidence();
+    selected = selectPage();
   }
-  if (candidates.length > 0 && selected.length === 0) {
+  if (candidates.length > 0 && selected.consumed === 0) {
     showPosition = false;
-    selected = selectEvidence();
+    selected = selectPage();
   }
-  if (candidates.length > 0 && selected.length === 0) {
+  if (candidates.length > 0 && selected.consumed === 0) {
     const shortened = shortenToFit(candidates[0]!);
     if (!shortened) {
       throw new Error("The context budget cannot fit one source excerpt. Increase maxChars or request a smaller node.");
     }
-    selected.push(shortened);
+    selected = { evidence: [shortened], consumed: 1 };
   }
 
-  const connectionCount = maxFitting(countConnectionsForEvidence(board, selected), (count) => buildResult(selected, count, 0));
-  const relationCount = maxFitting(Math.min(matchingRelations(selected).length, 50), (count) => buildResult(selected, connectionCount, count));
+  const connectionCount = maxFitting(countConnectionsForEvidence(board, selected.evidence), (count) => buildResult(selected, count, 0));
+  const relationCount = maxFitting(Math.min(matchingRelations(selected.evidence).length, 50), (count) => buildResult(selected, connectionCount, count));
   const result = buildResult(selected, connectionCount, relationCount);
   if (!fits(result)) {
     throw new Error("The context budget cannot fit one source excerpt. Increase maxChars or request a smaller node.");
   }
   return result;
 
-  function selectEvidence(): Evidence[] {
-    const chosen: Evidence[] = [];
+  /**
+   * The longest run of candidates that fits limit and maxChars. A table whose first
+   * row is not among them repeats it before its first shown row: that row counts
+   * against limit and maxChars, not for the cursor. The first candidate comes
+   * without it if both do not fit, so every page advances.
+   */
+  function selectPage(): Page {
+    const sequence: Evidence[] = [];
+    const withoutFirstRow = new Set<string>();
+    let selection: Page = { evidence: [], consumed: 0 };
     for (const item of candidates) {
       // The first excerpt may use the whole budget; arrows then get what is left.
-      if (!fits(buildResult([...chosen, item], 0, 0), chosen.length ? evidenceBudget : options.maxChars)) break;
-      chosen.push(item);
+      const budget = sequence.length ? evidenceBudget : options.maxChars;
+      let next = withFirstRows([...sequence, item], withoutFirstRow);
+      if (!pageFits(next, budget) && !sequence.length && item.sourceType === "table_row") {
+        withoutFirstRow.add(item.nodeId);
+        next = withFirstRows([item], withoutFirstRow);
+      }
+      if (!pageFits(next, budget)) break;
+      sequence.push(item);
+      selection = next;
     }
-    return chosen;
+    return selection;
+  }
+
+  function pageFits(selection: Page, budget: number): boolean {
+    return selection.evidence.length <= options.limit && fits(buildResult(selection, 0, 0), budget);
+  }
+
+  /** The sequence with the first row of each table it continues; nothing appears twice. */
+  function withFirstRows(sequence: Evidence[], withoutFirstRow: ReadonlySet<string>): Page {
+    const shown = new Set(sequence.map((item) => item.evidenceId));
+    const tables = new Set<string>();
+    const evidence: Evidence[] = [];
+    for (const item of sequence) {
+      if (item.sourceType === "table_row" && !tables.has(item.nodeId)) {
+        tables.add(item.nodeId);
+        const firstRow = firstTableRow(board, item.nodeId);
+        if (!withoutFirstRow.has(item.nodeId) && !firstRow.some((row) => shown.has(row.evidenceId))) evidence.push(...firstRow);
+      }
+      evidence.push(item);
+    }
+    return { evidence, consumed: sequence.length };
   }
 
   /** Largest count in [0, total] whose result fits; count 0 is the fallback. */
@@ -148,12 +189,13 @@ export async function getBoardContext(input: GetBoardContextInput): Promise<Boar
   function shortenToFit(item: Evidence): Evidence | undefined {
     const variant = (length: number): Evidence => ({ ...item, text: boundedText(item.text, length), truncated: true });
     const minimum = Math.min(item.text.length, MIN_SHORTENED_EXCERPT_CHARS);
-    if (!fits(buildResult([variant(minimum)], 0, 0))) return undefined;
+    const alone = (length: number): Page => ({ evidence: [variant(length)], consumed: 1 });
+    if (!fits(buildResult(alone(minimum), 0, 0))) return undefined;
     let low = minimum;
     let high = item.text.length - 1;
     while (low < high) {
       const middle = (low + high + 1) >>> 1;
-      if (fits(buildResult([variant(middle)], 0, 0))) low = middle;
+      if (fits(buildResult(alone(middle), 0, 0))) low = middle;
       else high = middle - 1;
     }
     return variant(low);
@@ -165,7 +207,7 @@ export async function getBoardContext(input: GetBoardContextInput): Promise<Boar
       .filter((relation) => clusterIds.has(relation.fromClusterId) && clusterIds.has(relation.toClusterId));
   }
 
-  function buildResult(evidence: Evidence[], connectionLimit: number, relationLimit: number): BoardContextResult {
+  function buildResult({ evidence, consumed }: Page, connectionLimit: number, relationLimit: number): BoardContextResult {
     const groups = groupByCluster(evidence);
     const labels = new Map<string, string>();
     const clusterLocations = new Map<string, string>();
@@ -195,11 +237,12 @@ export async function getBoardContext(input: GetBoardContextInput): Promise<Boar
       edgeCount: relation.edgeCount,
     }));
     const connections = connectionLimit > 0 ? connectionsForEvidence(board, evidence).slice(0, connectionLimit) : [];
-    const nextOffset = offset + evidence.length;
+    // Repeated first rows of tables are context; only the result sequence advances the cursor.
+    const nextOffset = offset + consumed;
     const remaining = retrieved.evidence.length - nextOffset;
 
     const orientation = [header];
-    if (evidence.length > 0 && showPosition) orientation.push(pagePosition(evidence.length, remaining));
+    if (evidence.length > 0 && showPosition) orientation.push(pagePosition(consumed, remaining));
     if (showOverview) orientation.push(overview);
     if (evidence.length === 0) orientation.push("No source evidence matched this request.");
     const parts = [...orientation, ...renderGroups(groups)];
@@ -233,7 +276,7 @@ export async function getBoardContext(input: GetBoardContextInput): Promise<Boar
         totalMatched: retrieved.evidence.length,
         truncated: Object.values(truncation).some((count) => count > 0) || evidence.some((item) => item.truncated),
         truncation,
-        nextCursor: remaining > 0 && evidence.length > 0
+        nextCursor: remaining > 0 && consumed > 0
           ? encodeCursor({ v: 1, snapshot: retrieved.snapshotId, query, result: resultFingerprint, offset: nextOffset, page: page + 1 })
           : undefined,
       },
@@ -317,7 +360,8 @@ export async function getBoardContext(input: GetBoardContextInput): Promise<Boar
 
   function partHint(item: Evidence): string {
     const total = partCount(item);
-    const shortened = item.text !== candidates.find((entry) => entry.evidenceId === item.evidenceId)?.text;
+    // Only shortenToFit changes text, and only that of the first candidate.
+    const shortened = item.evidenceId === candidates[0]?.evidenceId && item.text !== candidates[0].text;
     const prefix = shortened ? "Shortened to fit maxChars. " : "";
     const position = `Part ${item.chunkIndex + 1} of ${total}`;
     // A nodeIds request returns every part of each source it matches.

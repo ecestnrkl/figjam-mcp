@@ -653,20 +653,48 @@ describe("getBoardContext by section", () => {
 });
 
 describe("getBoardContext tables", () => {
-  /** Pages through a request with limit 100 and maxChars 24000; every page must fit both budgets. */
-  async function readAll(boardId: string, nodeIds?: string[]) {
-    const evidence: Array<{ evidenceId: string; sourceType: string }> = [];
+  type PageRequest = Omit<GetBoardContextInput, "cursor">;
+  type Shown = { evidenceId: string; sourceType: string; nodeId: string; row?: number };
+
+  /** Pages through a request to the end; every page must fit limit and both budgets. */
+  async function readPages(request: PageRequest) {
+    const pages: Shown[][] = [];
     let cursor: string | undefined;
-    let pages = 0;
+    let totalMatched = 0;
     do {
-      const { text, structuredContent } = await getBoardContext({ boardId, nodeIds, limit: 100, maxChars: 24000, cursor });
-      expect(text.length).toBeLessThanOrEqual(24000);
-      expect(JSON.stringify(structuredContent).length).toBeLessThanOrEqual(24000);
-      evidence.push(...structuredContent.evidence);
+      const { text, structuredContent } = await getBoardContext({ ...request, cursor });
+      const maxChars = request.maxChars ?? 12000;
+      expect(text.length).toBeLessThanOrEqual(maxChars);
+      expect(JSON.stringify(structuredContent).length).toBeLessThanOrEqual(maxChars);
+      expect(structuredContent.evidence.length).toBeLessThanOrEqual(request.limit ?? 20);
+      expect(structuredContent.evidence.length).toBeGreaterThan(0);
+      pages.push(structuredContent.evidence);
+      totalMatched = structuredContent.totalMatched;
       cursor = structuredContent.nextCursor;
-      pages++;
-    } while (cursor && pages < 50);
-    return { evidence, pages };
+    } while (cursor && pages.length < 500);
+    expect(cursor).toBeUndefined();
+    return { pages, totalMatched };
+  }
+
+  async function readAll(boardId: string, nodeIds?: string[]) {
+    const { pages } = await readPages({ boardId, nodeIds, limit: 100, maxChars: 24000 });
+    return { evidence: pages.flat(), pages: pages.length };
+  }
+
+  /**
+   * Every page that continues a table starts its rows with the table's first row as
+   * context; apart from that, every excerpt of the result sequence appears exactly once.
+   */
+  function expectContinuedTables(pages: Shown[][], totalMatched: number, firstRowId: string) {
+    const sequence: string[] = [];
+    pages.forEach((page, index) => {
+      const rows = page.filter((item) => item.sourceType === "table_row");
+      expect(new Set(page.map((item) => item.evidenceId)).size).toBe(page.length);
+      if (index > 0 && rows.length) expect(rows[0]!.evidenceId).toBe(firstRowId);
+      sequence.push(...page.map((item) => item.evidenceId).filter((id) => id !== firstRowId || index === 0));
+    });
+    expect(sequence).toHaveLength(totalMatched);
+    expect(new Set(sequence).size).toBe(totalMatched);
   }
 
   it("renders consecutive rows of a table as one block and keeps one evidence entry per row", async () => {
@@ -711,8 +739,10 @@ describe("getBoardContext tables", () => {
     setBoard(data.boardId, data);
     const { text } = await getBoardContext({ boardId: data.boardId, limit: 2 });
     expect(text).toMatch(/\] row 1: Column 0 note .* \[Part 1 of 2 — request get_board_context with nodeIds: \["5:1"\] for the whole table\.\]/);
+    // The cell ID returns both parts of its row, under the first row as context.
     const lookup = await getBoardContext({ boardId: data.boardId, nodeIds: ["T5:1;6:1;7:0"] });
-    expect(lookup.structuredContent.evidence.map((item) => [item.row, item.chunkIndex])).toEqual([[1, 0], [1, 1]]);
+    expect(lookup.structuredContent.evidence.map((item) => [item.row, item.chunkIndex])).toEqual([[0, 0], [1, 0], [1, 1]]);
+    expect(lookup.structuredContent.totalMatched).toBe(2);
     expect(lookup.text).toContain("[Part 2 of 2.]");
   });
 
@@ -731,5 +761,49 @@ describe("getBoardContext tables", () => {
     expect(after.evidence).toHaveLength(24);
     expect(after.evidence.every((item) => item.sourceType === "table_row")).toBe(true);
     expect(after.pages).toBe(1);
+  });
+
+  it("starts each continuation of a table with its first row, read by table ID or unfocused", async () => {
+    const data = tableBoard("TableContinued123", 24, 17);
+    setBoard(data.boardId, data);
+    const firstRowId = (await getBoardContext({ boardId: data.boardId, nodeIds: ["5:1"], limit: 1 })).structuredContent.evidence[0]!.evidenceId;
+    for (const request of [{ nodeIds: ["5:1"] }, { maxChars: 2500 }]) {
+      const { pages, totalMatched } = await readPages({ boardId: data.boardId, ...request });
+      expect(pages.length).toBeGreaterThan(1);
+      expect(totalMatched).toBe(24);
+      expect(pages[1]!.map((item) => item.row).slice(0, 2)).toEqual([0, pages[0]!.at(-1)!.row! + 1]);
+      expectContinuedTables(pages, totalMatched, firstRowId);
+    }
+    const { text, structuredContent } = await getBoardContext({ boardId: data.boardId, nodeIds: ["5:1"],
+      cursor: (await getBoardContext({ boardId: data.boardId, nodeIds: ["5:1"] })).structuredContent.nextCursor });
+    const continued = structuredContent.evidence.slice(1);
+    expect(text).toContain(`rows 0, ${continued[0]!.row}–23 shown`);
+    expect(structuredContent.contextText).toContain(`Page 2 of 2; no excerpts remaining.`);
+    expect(structuredContent.truncation.remainingEvidence).toBe(0);
+  });
+
+  it("advances one row per page with limit 1 instead of repeating the first row", async () => {
+    const data = tableBoard("TableLimit123", 6, 3);
+    setBoard(data.boardId, data);
+    const byTable = await readPages({ boardId: data.boardId, nodeIds: ["5:1"], limit: 1 });
+    expect(byTable.pages.map((page) => page.map((item) => item.row))).toEqual([[0], [1], [2], [3], [4], [5]]);
+    const byCell = await readPages({ boardId: data.boardId, nodeIds: ["T5:1;6:3;7:1"], limit: 1 });
+    expect(byCell.pages.map((page) => page.map((item) => item.row))).toEqual([[3]]);
+    const { structuredContent } = await getBoardContext({ boardId: data.boardId, nodeIds: ["T5:1;6:3;7:1"], limit: 2 });
+    expect(structuredContent.evidence.map((item) => item.row)).toEqual([0, 3]);
+  });
+
+  it("shows a topic match under its first row when the first row was on the previous page", async () => {
+    const data = evidenceBoard("TableTopicPages123", [{ ...textNode("5:1", ""), name: "Table 1", type: "TABLE", table: { cells:
+      [["Item", "Owner"], ["Kickoff", "Ada"], ["Budget review", "Grace"], ["Budget approval", "Linus"]]
+        .flatMap((cells, row) => cells.map((cellText, column) => ({ id: `T5:1;6:${row};7:${column}`, text: cellText }))),
+    } }]);
+    setBoard(data.boardId, data);
+    const { pages, totalMatched } = await readPages({ boardId: data.boardId, topic: "budget", limit: 2 });
+    expect(totalMatched).toBe(3);
+    expect(pages.map((page) => page.map((item) => item.row))).toEqual([[0, 2], [0, 3]]);
+    const second = await getBoardContext({ boardId: data.boardId, topic: "budget", limit: 2,
+      cursor: (await getBoardContext({ boardId: data.boardId, topic: "budget", limit: 2 })).structuredContent.nextCursor });
+    expect(second.text).toMatch(/\] row 0: Item \| Owner\n\[ev_[a-f0-9]+\] row 3: Budget approval \| Linus/);
   });
 });

@@ -27,7 +27,7 @@ server before retrying: ingests of the same board run one after another.
 ## Incomplete image interpretation
 
 `qualityReport.fallbackReasons` counts clusters without a vision summary by
-cause. Original text and table cells stay searchable in every case.
+cause. Original text and table rows stay searchable in every case.
 
 | Reason | Meaning | What to do |
 | --- | --- | --- |
