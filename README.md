@@ -75,9 +75,10 @@ Problems: [troubleshooting](https://github.com/ecestnrkl/figjam-mcp/blob/main/do
    their pages and sections.
 3. **Cluster.** Nearby nodes are grouped by rotation-aware distance. Arrows
    between groups become directed relations.
-4. **Interpret.** In `balanced` mode, clusters with images or little text get a
-   vision-model summary within a 40-second budget; the rest keep their extracted
-   text. Unfinished clusters continue on the next ingest.
+4. **Interpret.** In `balanced` mode, clusters with an image, or drawings without
+   any text, get a vision-model summary within a 40-second budget; text clusters,
+   however short, keep their extracted text. A cluster starts only when the time
+   left fits it; unfinished clusters continue on the next ingest.
 5. **Serve.** The snapshot is saved to a private local cache.
    `get_board_context` searches it (BM25 over original text, table cells and
    names), `answer_from_board` answers with citations and `diff_board` compares

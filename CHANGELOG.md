@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.0 — 2026-10-19
+
+- `ingest_board` in `balanced` mode interprets only clusters with an image or drawings without text;
+  short text labels keep their text and pending ones complete on the next ingest without a request.
+  A cluster or model step starts only if the time left fits 1.25 × its median duration in the ingest.
+
 ## 0.6.0 — 2026-10-19
 
 - `get_board_context` fits clients that pass only `structuredContent` to the model: `maxChars` now

@@ -233,7 +233,7 @@ describe("ingestBoard", () => {
     expect(fetchFileTreeMock).toHaveBeenCalledWith("AbC123", "environment-token", undefined);
   });
 
-  it("balanced mode uses vision only for image/low-text clusters", async () => {
+  it("balanced mode uses vision only for image clusters and clusters without text", async () => {
     const output = await ingestBoard({
       figmaFileUrl: "https://www.figma.com/board/AbC123/Test",
       docStructureHint: "freeform",
@@ -246,6 +246,60 @@ describe("ingestBoard", () => {
       visionClusters: 1,
       fallbackCount: 0,
     });
+  });
+
+  function mixedClusterTree() {
+    const tree = rawTree();
+    tree.document.children[0]!.children = [
+      { id: "label:1", name: "Ideas", type: "TEXT", absoluteBoundingBox: { x: 0, y: 0, width: 100, height: 20 }, characters: "Ideas" },
+      { id: "image:1", name: "Image", type: "SHAPE_WITH_TEXT", absoluteBoundingBox: { x: 1000, y: 0, width: 100, height: 100 },
+        fills: [{ type: "IMAGE", imageRef: "image-ref" }] },
+      { id: "vector:1", name: "Vector", type: "VECTOR", absoluteBoundingBox: { x: 2000, y: 0, width: 100, height: 100 } },
+      { id: "vector:2", name: "Vector", type: "VECTOR", absoluteBoundingBox: { x: 2110, y: 0, width: 100, height: 100 } },
+    ] as typeof tree.document.children[0]["children"];
+    return tree;
+  }
+
+  it("balanced mode leaves short text labels to their text and interprets images and drawings", async () => {
+    fetchFileTreeMock.mockResolvedValue(mixedClusterTree());
+    const balanced = await ingestBoard({ figmaFileUrl: "https://www.figma.com/board/AbC123/Test",
+      docStructureHint: "freeform", ingestMode: "balanced" });
+    const visionNodes = refineClusterWithVisionMock.mock.calls.map(call => (call[0] as Cluster).nodeIds).sort();
+    expect(visionNodes).toEqual([["image:1"], ["vector:1", "vector:2"]]);
+    expect(balanced.qualityReport).toMatchObject({ visionClusters: 2, deterministicClusters: 1, incompleteClusters: 0 });
+    const label = (persistBoardMock.mock.calls[0]?.[0] as BoardData).clusters.find(cluster => cluster.nodeIds.includes("label:1"))!;
+    expect(label).toMatchObject({ summarySource: "deterministic" });
+    expect(label.incomplete).toBeFalsy();
+
+    refineClusterWithVisionMock.mockClear();
+    const quality = await ingestBoard({ figmaFileUrl: "https://www.figma.com/board/AbC123/Test",
+      docStructureHint: "freeform", ingestMode: "max_quality", forceFullIngest: true });
+    expect(refineClusterWithVisionMock).toHaveBeenCalledTimes(3);
+    expect(quality.qualityReport?.visionClusters).toBe(3);
+  });
+
+  it("completes a previously pending text label without a request and keeps existing vision summaries", async () => {
+    const tree = mixedClusterTree();
+    const nodes = flattenNodeTree(tree);
+    const previous: BoardData = { ...cachedBoard(), nodes,
+      clusters: partitionedBoardClusters(nodes).map(cluster => cluster.nodeIds.includes("label:1")
+        ? { ...cluster, label: "Ideas", summary: "Pending.", confirmedNodeIds: cluster.nodeIds,
+          summarySource: "deterministic" as const, incomplete: true, fallbackReason: "time_budget" }
+        : { ...cluster, label: "Earlier vision", summary: "Earlier vision summary.", confirmedNodeIds: cluster.nodeIds,
+          summarySource: "vision_llm" as const, modelId: "vision-model", incomplete: false }) };
+    fetchFileTreeMock.mockResolvedValueOnce(tree);
+    readLatestBoardMock.mockResolvedValueOnce(previous);
+    const output = await ingestBoard({ figmaFileUrl: "https://www.figma.com/board/AbC123/Test",
+      docStructureHint: "freeform", ingestMode: "balanced" });
+    expect(fetchRenderUrlsMock).not.toHaveBeenCalled();
+    expect(refineClusterWithVisionMock).not.toHaveBeenCalled();
+    expect(output.qualityReport).toMatchObject({ incompleteClusters: 0, visionClusters: 2, deterministicClusters: 1 });
+    const persisted = persistBoardMock.mock.calls[0]?.[0] as BoardData;
+    const label = persisted.clusters.find(cluster => cluster.nodeIds.includes("label:1"))!;
+    expect(label.incomplete).toBeFalsy();
+    expect(label.fallbackReason).toBeUndefined();
+    expect(persisted.clusters.filter(cluster => cluster.summarySource === "vision_llm").map(cluster => cluster.summary))
+      .toEqual(["Earlier vision summary.", "Earlier vision summary."]);
   });
 
   it("max_speed mode skips vision", async () => {
@@ -526,6 +580,32 @@ describe("ingestBoard", () => {
     expect(signals.every((signal) => signal.aborted)).toBe(true);
     expect(signals.every((signal) => String(signal.reason).includes("40000 ms"))).toBe(true);
     expect(output.qualityReport).toMatchObject({ fallbackCount: 2, visionClusters: 0, fallbackReasons: { timeout: 2 } });
+  });
+
+  it.each([
+    [62_000, 2],
+    [70_000, 3],
+  ])("with a %i ms budget starts a third 20 s cluster only if 1.25 × the median still fits", async (budget, started) => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-11T12:00:00Z"));
+    fetchFileTreeMock.mockResolvedValueOnce(imageClusterTree(3));
+    vi.stubEnv("INGEST_BOARD_VISION_CONCURRENCY", "1");
+    vi.stubEnv("INGEST_BOARD_VISION_BUDGET_MS", String(budget));
+    vi.resetModules();
+    const { ingestBoard: configuredIngest } = await import("../src/tools/ingestBoard.js");
+    refineClusterWithVisionMock.mockImplementation((cluster: Cluster) => new Promise(resolve => setTimeout(() => resolve({
+      ...cluster, label: "Vision", summary: "Vision summary.", confirmedNodeIds: [...cluster.nodeIds],
+      summarySource: "vision_llm", modelId: "vision-model" }), 20_000)));
+    const ingest = configuredIngest({ figmaFileUrl: "https://www.figma.com/board/AbC123/Test",
+      docStructureHint: "freeform", ingestMode: "balanced" });
+    let settled = false;
+    ingest.then(() => { settled = true; }, () => { settled = true; });
+    for (let elapsed = 0; !settled && elapsed <= budget; elapsed += 1000) await vi.advanceTimersByTimeAsync(1000);
+    const output = await ingest;
+    // After two 20 s clusters, 22 s remain with a 62 s budget and 30 s with 70 s; 25 s are needed.
+    expect(refineClusterWithVisionMock).toHaveBeenCalledTimes(started);
+    expect(output.qualityReport).toMatchObject({ visionClusters: started,
+      fallbackReasons: started === 3 ? {} : { time_budget: 1 } });
   });
 
   it("aborts hanging screenshot requests at the hard vision deadline", async () => {

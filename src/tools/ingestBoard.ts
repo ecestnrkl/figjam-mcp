@@ -195,6 +195,9 @@ async function performIngest(input: IngestBoardInput, options: OperationOptions)
   const plannedClusters = MIN_VISION_SLOT_MS > 0 ? Math.floor(VISION_CONCURRENCY * VISION_BUDGET_MS / MIN_VISION_SLOT_MS) : Infinity;
   const { batches: renderBatches, plannedBatches } = planRenderBatches(visionQueue, screenshotNodes, plannedClusters);
   const batchOfCluster = new Map(renderBatches.flatMap((batch, number) => batch.map(index => [index, number] as const)));
+  // Successful durations of this ingest: a whole cluster, and its model step alone.
+  const clusterDurations: number[] = [];
+  const modelDurations: number[] = [];
   const renderRequests: Array<Promise<RenderUrls>> = [];
   // Render requests are shared by several clusters, so they end with the vision
   // phase or the ingest rather than with one cluster's work.
@@ -213,7 +216,8 @@ async function performIngest(input: IngestBoardInput, options: OperationOptions)
   };
   // Stays one batch ahead of the workers, and only within the planned batches.
   const prefetchRenderBatch = (batch: number) => {
-    if (batch < plannedBatches && !renderRequests[batch] && !sharedFailure && hasVisionBudget(deadline)) void renderBatch(batch);
+    if (batch < plannedBatches && !renderRequests[batch] && !sharedFailure &&
+      hasVisionBudget(deadline, requiredSlotMs(clusterDurations))) void renderBatch(batch);
   };
   let queueCursor = 0;
   let sharedFailure: { reason: VisionFallbackReason; retryAfter?: number } | undefined;
@@ -234,7 +238,8 @@ async function performIngest(input: IngestBoardInput, options: OperationOptions)
       const cluster = clusters[index]!;
       const members = clusterNodesByIndex[index]!;
       if (sharedFailure) { fallback(index, sharedFailure.reason, sharedFailure.retryAfter); continue; }
-      if (!hasVisionBudget(deadline)) { fallback(index, "time_budget"); continue; }
+      if (!hasVisionBudget(deadline, requiredSlotMs(clusterDurations))) { fallback(index, "time_budget"); continue; }
+      const clusterStartedAt = Date.now();
       let stage: VisionStage = "render";
       try {
         const batch = batchOfCluster.get(index)!;
@@ -246,12 +251,16 @@ async function performIngest(input: IngestBoardInput, options: OperationOptions)
         }, deadline, signal);
         const failureAfterRendering = currentSharedFailure();
         if (failureAfterRendering) { fallback(index, failureAfterRendering.reason, failureAfterRendering.retryAfter); continue; }
-        if (!hasVisionBudget(deadline)) { fallback(index, "time_budget"); continue; }
+        if (!hasVisionBudget(deadline, requiredSlotMs(modelDurations))) { fallback(index, "time_budget"); continue; }
         const internalEdges = internalEdgesByCluster.get(cluster.id) ?? [];
         stage = "model";
+        const modelStartedAt = Date.now();
         refined[index] = { ...await withinVisionDeadline(phaseSignal => refineClusterWithVision(cluster, screenshots, members,
           signal ? AbortSignal.any([signal, phaseSignal]) : phaseSignal, internalEdges), deadline, signal),
           contentHash: contentHashes.get(cluster.id), incomplete: false };
+        const finishedAt = Date.now();
+        modelDurations.push(finishedAt - modelStartedAt);
+        clusterDurations.push(finishedAt - clusterStartedAt);
       } catch (error) {
         signal?.throwIfAborted();
         const reason = classifyVisionFailure(error, stage);
@@ -375,12 +384,25 @@ function planRenderBatches(queue: number[], screenshotNodes: Map<number, string[
   return { batches, plannedBatches };
 }
 
-function hasVisionBudget(deadline: number): boolean {
+function hasVisionBudget(deadline: number, slotMs = MIN_VISION_SLOT_MS): boolean {
   if (VISION_BUDGET_MS <= 0) {
     return false;
   }
   const now = Date.now();
-  return now < deadline && now + MIN_VISION_SLOT_MS <= deadline;
+  return now < deadline && now + slotMs <= deadline;
+}
+
+/**
+ * Free vision models often need longer than the minimum slot. A request cut off
+ * at the deadline still costs a provider request, so a step starts only when
+ * 1.25 × the median of its successful durations in this ingest still fits.
+ */
+function requiredSlotMs(durations: number[]): number {
+  if (!durations.length) return MIN_VISION_SLOT_MS;
+  const sorted = [...durations].sort((a, b) => a - b);
+  const middle = sorted.length >>> 1;
+  const median = sorted.length % 2 ? sorted[middle]! : (sorted[middle - 1]! + sorted[middle]!) / 2;
+  return Math.max(MIN_VISION_SLOT_MS, Math.ceil(1.25 * median));
 }
 
 class VisionDeadlineExceededError extends Error {
@@ -482,9 +504,10 @@ function shouldUseVision(clusterNodes: NormalizedNode[], ingestMode: IngestMode)
     return true;
   }
 
+  // Short text labels gain nothing from a screenshot; drawings without text do.
   return (
     clusterNodes.some((node) => node.imageRef) ||
-    totalExtractedTextLength(clusterNodes) < 40
+    (totalExtractedTextLength(clusterNodes) === 0 && clusterNodes.some((node) => node.type !== "TEXT"))
   );
 }
 
