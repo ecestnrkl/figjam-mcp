@@ -8,6 +8,9 @@ export const MAX_CONTEXT_RESPONSE_BYTES = 128 * 1024;
 const MAX_INDEX_ENTRIES = 100_000;
 /** Their names already reach every excerpt inside them as pageName and sectionNames. */
 const CONTAINER_TYPES = new Set(["DOCUMENT", "CANVAS", "PAGE", "SECTION"]);
+/** A nodeIds request for one of these returns every excerpt inside it. */
+const READABLE_CONTAINER_TYPES = new Set(["CANVAS", "PAGE", "SECTION", "FRAME", "GROUP"]);
+const MAX_ENCLOSING_DEPTH = 1024;
 
 /** Original board text and model interpretations remain distinguishable at every boundary. */
 export interface Evidence {
@@ -132,9 +135,13 @@ export function retrieveEvidence(board: BoardData, options: EvidenceQuery = {}):
   let matches: IndexedEvidence[];
   if (options.nodeIds) {
     const requested = new Set(options.nodeIds);
+    const containers = new Set(readableContainerIds(board, options.nodeIds));
+    const enclosing = containers.size ? enclosingIdsLookup(board) : undefined;
     matches = index.entries.filter(({ evidence }) =>
-      requested.has(evidence.nodeId) || Boolean(evidence.renderNodeId && requested.has(evidence.renderNodeId)),
+      requested.has(evidence.nodeId) || Boolean(evidence.renderNodeId && requested.has(evidence.renderNodeId)) ||
+      Boolean(enclosing && [...enclosing(evidence.renderNodeId ?? evidence.nodeId)].some((id) => containers.has(id))),
     );
+    if (containers.size) matches = contentFirst(readingOrder(board, matches), (entry) => entry.evidence);
   } else if (options.query?.trim()) {
     const queryTerms = [...new Set(evidenceTokens(options.query))];
     const scores = new Map<number, number>();
@@ -192,6 +199,59 @@ export function formatEvidenceConnection(connection: EvidenceConnection): string
 function matchingConnections(board: BoardData, evidence: Evidence[]): ConnectorEdge[] {
   const selected = new Set(evidence.flatMap((item) => [item.nodeId, ...(item.renderNodeId ? [item.renderNodeId] : [])]));
   return (board.connectorEdges ?? []).filter((edge) => selected.has(edge.fromNodeId) && selected.has(edge.toNodeId));
+}
+
+/** Requested IDs of pages, sections, frames and groups, in request order. */
+export function readableContainerIds(board: BoardData, nodeIds: string[]): string[] {
+  const types = new Map(board.nodes.map((node) => [node.id, node.type]));
+  return [...new Set(nodeIds)].filter((id) => READABLE_CONTAINER_TYPES.has(types.get(id) ?? ""));
+}
+
+/**
+ * IDs of the pages, sections, frames and groups enclosing a node, from its tree
+ * path and its recorded page and sections. The node itself is not included.
+ */
+export function enclosingIdsLookup(board: BoardData): (nodeId: string) => Set<string> {
+  const nodesById = new Map(board.nodes.map((node) => [node.id, node]));
+  const memo = new Map<string, Set<string>>();
+  return (nodeId) => {
+    const cached = memo.get(nodeId);
+    if (cached) return cached;
+    const node = nodesById.get(nodeId);
+    const ids = new Set<string>([...(node?.sectionIds ?? []), ...(node?.pageId ? [node.pageId] : [])]);
+    let parentId = node?.parentId;
+    for (let depth = 0; parentId && depth < MAX_ENCLOSING_DEPTH; depth++) {
+      ids.add(parentId);
+      parentId = nodesById.get(parentId)?.parentId;
+    }
+    ids.delete(nodeId);
+    memo.set(nodeId, ids);
+    return ids;
+  };
+}
+
+/** Cluster by cluster: page, then bounding box top to bottom, left to right. Order within a cluster is kept. */
+function readingOrder(board: BoardData, entries: IndexedEvidence[]): IndexedEvidence[] {
+  const clustersById = new Map(board.clusters.map((cluster) => [cluster.id, cluster]));
+  const nodesById = new Map(board.nodes.map((node) => [node.id, node]));
+  const pageOrder = new Map(board.nodes.filter((node) => node.type === "CANVAS" || node.type === "PAGE")
+    .map((node, position) => [node.id, position]));
+  const groups = new Map<string, { entries: IndexedEvidence[]; page: number; x: number; y: number; first: number }>();
+  entries.forEach((entry, position) => {
+    const { evidence } = entry;
+    const key = evidence.clusterId ?? `node\0${evidence.renderNodeId ?? evidence.nodeId}`;
+    let group = groups.get(key);
+    if (!group) {
+      const node = nodesById.get(evidence.renderNodeId ?? evidence.nodeId);
+      const box = (evidence.clusterId ? clustersById.get(evidence.clusterId)?.boundingBox : undefined) ?? node;
+      group = { entries: [], page: pageOrder.get(evidence.pageId ?? "") ?? -1, x: box?.x ?? 0, y: box?.y ?? 0, first: position };
+      groups.set(key, group);
+    }
+    group.entries.push(entry);
+  });
+  return [...groups.values()]
+    .sort((a, b) => a.page - b.page || a.y - b.y || a.x - b.x || a.first - b.first)
+    .flatMap((group) => group.entries);
 }
 
 /**

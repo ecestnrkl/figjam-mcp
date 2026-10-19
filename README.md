@@ -82,7 +82,8 @@ Problems: [troubleshooting](https://github.com/ecestnrkl/figjam-mcp/blob/main/do
 5. **Serve.** The snapshot is saved to a private local cache.
    `get_board_context` searches it (BM25 over original text, table cells and
    names), `answer_from_board` answers with citations and `diff_board` compares
-   snapshots.
+   snapshots. Its first page lists the board's sections with IDs; pass a page,
+   section, frame or group ID as `nodeIds` to read everything inside it.
 
 ## Models and cost
 

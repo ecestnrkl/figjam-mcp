@@ -25,10 +25,32 @@ installable in two minutes, documented, and used on real boards.
 
 - [x] `maxChars` bounds the whole structured `get_board_context` result; compact text and metadata, board overview, page position
 
-## 0.7.0 — complete image interpretation
+## 0.7.0 — large boards
 
-- [ ] Continue image interpretation in the background after ingest_board returns, capped so free-tier quotas stay usable for answers
+- [x] Vision only where there is something to see; start a vision call only when it can finish
+- [x] Read pages, sections, frames and groups by ID; the first page lists sections with IDs
+
+## 0.8.0 — denser context pages
+
+- [ ] Excerpt text once in `structuredContent`
+- [ ] Location per cluster instead of per excerpt
+
+## 0.9.0 — images without Figma renders
+
+- [ ] Image fills (Tier 2) instead of renders (Tier 1)
+- [ ] `focusNodeIds` lets the host choose which images to interpret first
+
+## 0.10.0 — tables as tables
+
+- [ ] Rows and columns from cell geometry
+
+## Proven in real use
+
+- [ ] Public demo board and a screen recording
+- [ ] Real workshops
 
 ## Later — only when real usage asks for it
 
-- Answer-kind refinements (task vs. question vs. proposal)
+- Background image interpretation with a daily limit
+- Votes and sticky colors
+- Answer-kind refinements
