@@ -3,7 +3,7 @@ import { setBoard } from "../src/lib/cache.js";
 import { getBoardContext } from "../src/tools/getBoardContext.js";
 import { getBoardContextInputSchema, getBoardContextOutputSchema, type GetBoardContextInput } from "../src/schemas/getBoardContext.js";
 import { evidenceBoard, textNode } from "./fixtures/retrieval.js";
-import { largeBoard } from "./fixtures/largeBoard.js";
+import { largeBoard, tableBoard } from "./fixtures/largeBoard.js";
 import { retrieveEvidence } from "../src/lib/evidence.js";
 import { flattenNodeTree, isGenericNodeName } from "../src/lib/nodeTree.js";
 import { partitionedBoardClusters } from "../src/lib/spatialCluster.js";
@@ -90,9 +90,11 @@ describe("getBoardContext", () => {
   });
 
   it("paginates a table label and its separately stored value as distinct source excerpts", async () => {
+    // The cell without a row keeps this table at cell excerpts.
     const data = evidenceBoard("TablePaging123", [{ ...textNode("10:1", "Budget\n999"), name: "Table 1", type: "TABLE", table: { cells: [
       { id: "label", text: "Budget", row: 0, column: 0 },
       { id: "value", text: "999", row: 0, column: 1 },
+      { id: "loose", text: "Loose note" },
     ] } }]);
     setBoard(data.boardId, data);
     const { structuredContent: first } = await getBoardContext({ boardId: data.boardId, topic: "Budget", limit: 1 });
@@ -380,6 +382,7 @@ describe("getBoardContext response size", () => {
   it("keeps the parent table of a cell", async () => {
     const data = evidenceBoard("TableKeep123", [{ ...textNode("10:1", "Budget\n999"), name: "Table 1", type: "TABLE", table: { cells: [
       { id: "label", text: "Budget", row: 0, column: 0 },
+      { id: "loose", text: "Loose note" },
     ] } }]);
     setBoard(data.boardId, data);
     const { text, structuredContent: output } = await getBoardContext({ boardId: data.boardId });
@@ -646,5 +649,87 @@ describe("getBoardContext by section", () => {
     for (const request of [{ topic: "onboarding" }, { nodeIds: ["1:0"] }]) {
       expect((await getBoardContext({ boardId: "Large300", ...request })).text).not.toContain("Largest sections");
     }
+  });
+});
+
+describe("getBoardContext tables", () => {
+  /** Pages through a request with limit 100 and maxChars 24000; every page must fit both budgets. */
+  async function readAll(boardId: string, nodeIds?: string[]) {
+    const evidence: Array<{ evidenceId: string; sourceType: string }> = [];
+    let cursor: string | undefined;
+    let pages = 0;
+    do {
+      const { text, structuredContent } = await getBoardContext({ boardId, nodeIds, limit: 100, maxChars: 24000, cursor });
+      expect(text.length).toBeLessThanOrEqual(24000);
+      expect(JSON.stringify(structuredContent).length).toBeLessThanOrEqual(24000);
+      evidence.push(...structuredContent.evidence);
+      cursor = structuredContent.nextCursor;
+      pages++;
+    } while (cursor && pages < 50);
+    return { evidence, pages };
+  }
+
+  it("renders consecutive rows of a table as one block and keeps one evidence entry per row", async () => {
+    const data = tableBoard("TableBlock123", 4, 3);
+    setBoard(data.boardId, data);
+    const { text, structuredContent: output } = await getBoardContext({ boardId: data.boardId, nodeIds: ["1:1"] });
+    expect(getBoardContextOutputSchema.safeParse(output).success).toBe(true);
+    expect(output.evidence.map((item) => [item.sourceType, item.nodeId, item.renderNodeId, item.row, item.column])).toEqual(
+      [0, 1, 2, 3].map((row) => ["table_row", "5:1", "5:1", row, undefined]));
+    const [header, ...rows] = output.evidence;
+    expect(text).toContain([
+      "Table 5:1 · original · 4 rows × 3 columns · rows 0–3 shown · https://www.figma.com/board/TableBlock123?node-id=5%3A1",
+      "Node name: Table 1",
+      `[${header!.evidenceId}] row 0: Metric 1 | Metric 2 | Metric 3`,
+      ...rows.map((item) => `[${item.evidenceId}] row ${item.row}: ${item.text}`),
+    ].join("\n"));
+    expect(rows[0]!.text).toBe("Participant 1 | 48 | 59");
+    for (const item of output.evidence) {
+      expect(text.split(item.text)).toHaveLength(2);
+      expect(JSON.stringify(output).split(item.text)).toHaveLength(2);
+    }
+  });
+
+  it("shows a match in a later row under the first row of its table", async () => {
+    const data = evidenceBoard("TableTopic123", [{ ...textNode("5:1", ""), name: "Table 1", type: "TABLE", table: { cells:
+      [["Item", "Owner"], ["Kickoff", "Ada"], ["Budget review", "Grace"], ["Retro", "Linus"]]
+        .flatMap((cells, row) => cells.map((cellText, column) => ({ id: `T5:1;6:${row};7:${column}`, text: cellText }))),
+    } }]);
+    setBoard(data.boardId, data);
+    const { text, structuredContent: output } = await getBoardContext({ boardId: data.boardId, topic: "budget" });
+    expect(output.evidence.map((item) => [item.row, item.text])).toEqual([[0, "Item | Owner"], [2, "Budget review | Grace"]]);
+    expect(text).toContain("Table 5:1 · original · 4 rows × 2 columns · rows 0, 2 shown · ");
+    expect(text).toMatch(/\] row 0: Item \| Owner\n\[ev_[a-f0-9]+\] row 2: Budget review \| Grace/);
+  });
+
+  it("points a part of a long row to its table", async () => {
+    const long = Array.from({ length: 8 }, (_, column) => `Column ${column} note `.repeat(12).trim());
+    const data = evidenceBoard("TableParts123", [{ ...textNode("5:1", ""), name: "Table 1", type: "TABLE", table: { cells:
+      [long.map((_, column) => `Heading ${column}`), long]
+        .flatMap((cells, row) => cells.map((cellText, column) => ({ id: `T5:1;6:${row};7:${column}`, text: cellText }))),
+    } }]);
+    setBoard(data.boardId, data);
+    const { text } = await getBoardContext({ boardId: data.boardId, limit: 2 });
+    expect(text).toMatch(/\] row 1: Column 0 note .* \[Part 1 of 2 — request get_board_context with nodeIds: \["5:1"\] for the whole table\.\]/);
+    const lookup = await getBoardContext({ boardId: data.boardId, nodeIds: ["T5:1;6:1;7:0"] });
+    expect(lookup.structuredContent.evidence.map((item) => [item.row, item.chunkIndex])).toEqual([[1, 0], [1, 1]]);
+    expect(lookup.text).toContain("[Part 2 of 2.]");
+  });
+
+  it("reads a section with a 24 × 17 table in 24 row excerpts on one page instead of 408 cells on 7 pages", async () => {
+    const rows = tableBoard("Table24x17", 24, 17);
+    // Cell IDs outside the T<table>;<row>;<column> form keep the cell excerpts of 0.7.0.
+    const cells = tableBoard("Cells24x17", 24, 17);
+    cells.nodes[2]!.table!.cells.forEach((cell, index) => { cell.id = `cell:${index}`; });
+    setBoard(rows.boardId, rows);
+    setBoard(cells.boardId, cells);
+    const before = await readAll(cells.boardId, ["1:1"]);
+    const after = await readAll(rows.boardId, ["1:1"]);
+    expect(before.evidence).toHaveLength(408);
+    expect(before.evidence.every((item) => item.sourceType === "table_cell")).toBe(true);
+    expect(before.pages).toBeGreaterThanOrEqual(7);
+    expect(after.evidence).toHaveLength(24);
+    expect(after.evidence.every((item) => item.sourceType === "table_row")).toBe(true);
+    expect(after.pages).toBe(1);
   });
 });

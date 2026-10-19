@@ -287,36 +287,37 @@ try {
     assert(!diff.isError, JSON.stringify(diff));
     assert.equal(diff.structuredContent.stats.editedNodes, 1);
 
-    // Exercise cell extraction, local retrieval, immutable source snapshots and
+    // Exercise table rows, local retrieval, immutable source snapshots and
     // the user-visible diff together through the installed stdio entry point.
     const tableArguments = { figmaFileUrl: "https://www.figma.com/board/TableBoard123/Smoke", ingestMode: "max_speed" };
     const tableBefore = await ingestWithProgress(client, tableArguments, "Initial table ingest");
     const tableSearch = await client.callTool({ name: "get_board_context", arguments: { boardId: "TableBoard123", topic: "Budget 100" } });
     assert(!tableSearch.isError, JSON.stringify(tableSearch));
-    const originalCell = tableSearch.structuredContent.evidence.find(item => item.nodeId === "T2:1;0;1");
-    assert(originalCell, "A full table cell must be searchable");
-    assert.equal(originalCell.text, "Budget 100");
-    assert.equal(originalCell.sourceType, "table_cell");
-    assert.equal(originalCell.modelDerived, false);
-    assert.equal(originalCell.renderNodeId, "2:1");
-    assert.equal(originalCell.row, 0);
-    assert.equal(originalCell.column, 1);
-    assert.equal(originalCell.snapshotId, tableBefore.structuredContent.snapshotId);
-    assert.equal(new URL(originalCell.url).pathname, "/board/TableBoard123");
-    assert.equal(new URL(originalCell.url).searchParams.get("node-id"), "2:1", "Cell evidence links to its renderable parent table");
+    const originalRow = tableSearch.structuredContent.evidence.find(item => item.sourceType === "table_row");
+    assert(originalRow, "A table row must be searchable");
+    assert.equal(originalRow.text, "Simulator | Budget 100");
+    assert.equal(originalRow.nodeId, "2:1");
+    assert.equal(originalRow.modelDerived, false);
+    assert.equal(originalRow.renderNodeId, "2:1");
+    assert.equal(originalRow.row, 0);
+    assert.equal(originalRow.column, undefined);
+    assert.equal(originalRow.snapshotId, tableBefore.structuredContent.snapshotId);
+    assert.equal(new URL(originalRow.url).pathname, "/board/TableBoard123");
+    assert.equal(new URL(originalRow.url).searchParams.get("node-id"), "2:1", "Row evidence links to its renderable table");
+    assert.match(tableSearch.content[0].text, /Table 2:1 · original · 1 row × 2 columns · row 0 shown · /);
 
     const tableAfter = await ingestWithProgress(client, tableArguments, "Updated table ingest");
     assert.notEqual(tableAfter.structuredContent.snapshotId, tableBefore.structuredContent.snapshotId);
     const updatedTableSearch = await client.callTool({ name: "get_board_context", arguments: { boardId: "TableBoard123", topic: "Budget 999" } });
     assert(!updatedTableSearch.isError, JSON.stringify(updatedTableSearch));
-    const changedCell = updatedTableSearch.structuredContent.evidence.find(item => item.nodeId === "T2:1;0;1");
-    assert.equal(changedCell?.text, "Budget 999");
-    assert.equal(changedCell?.snapshotId, tableAfter.structuredContent.snapshotId);
+    const changedRow = updatedTableSearch.structuredContent.evidence.find(item => item.sourceType === "table_row");
+    assert.equal(changedRow?.text, "Simulator | Budget 999");
+    assert.equal(changedRow?.snapshotId, tableAfter.structuredContent.snapshotId);
     const historicalTable = await client.callTool({ name: "get_board_context", arguments: {
       boardId: "TableBoard123", snapshotId: tableBefore.structuredContent.snapshotId, nodeIds: ["T2:1;0;1"],
     } });
     assert(!historicalTable.isError, JSON.stringify(historicalTable));
-    assert.equal(historicalTable.structuredContent.evidence[0]?.text, "Budget 100");
+    assert.equal(historicalTable.structuredContent.evidence[0]?.text, "Simulator | Budget 100", "A cell ID returns its row");
     const tableDiff = await client.callTool({ name: "diff_board", arguments: { boardId: "TableBoard123" } });
     assert(!tableDiff.isError, JSON.stringify(tableDiff));
     assert.equal(tableDiff.structuredContent.stats.editedNodes, 1, "One edited cell must count as one edited table node");
@@ -422,4 +423,4 @@ if (artifactDir) {
   console.log(`Retained tested tarball: ${artifact.archivePath}`);
   console.log(`SHA-256: ${artifact.checksum}`);
 }
-console.log(`Verified ${metadata.name}@${metadata.version}: production-only install, executable, successful calls to all five tools, offline Figma/vision/answer/diagnostic fixtures, table cell search and single-node edit diff, persisted cache reuse, modern/legacy ingest progress followed by final responses, error handling${longCheck ? ", and a real >60-second ingest" : ""}`);
+console.log(`Verified ${metadata.name}@${metadata.version}: production-only install, executable, successful calls to all five tools, offline Figma/vision/answer/diagnostic fixtures, table row search and single-cell edit diff, persisted cache reuse, modern/legacy ingest progress followed by final responses, error handling${longCheck ? ", and a real >60-second ingest" : ""}`);

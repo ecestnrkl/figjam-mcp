@@ -9,7 +9,7 @@ import { redactBoard } from "../lib/redact.js";
 import {
   boundedText, connectionsForEvidence, countConnectionsForEvidence, enclosingIdsLookup,
   formatEvidenceConnection, MAX_CONTEXT_RESPONSE_BYTES, readableContainerIds,
-  retrieveEvidence, type Evidence,
+  retrieveEvidence, tableCellPositions, type Evidence,
 } from "../lib/evidence.js";
 import type { BoardData, NormalizedNode, RefinedCluster } from "../types.js";
 
@@ -74,10 +74,10 @@ export async function getBoardContext(input: GetBoardContextInput): Promise<Boar
 
   const nodesById = new Map(board.nodes.map((node) => [node.id, node]));
   const clustersById = new Map(board.clusters.map((cluster) => [cluster.id, cluster]));
-  const requestedNodes = new Set(options.nodeIds ?? []);
   // A page, section, frame or group returns all parts of every node inside it.
   const containerIds = options.nodeIds ? readableContainerIds(board, options.nodeIds) : [];
   const partCounts = new Map<string, number>();
+  const tableShapes = new Map<string, string>();
   const header = `FigJam board ${board.fileKey} — snapshot ${retrieved.snapshotId}\nSource excerpts are untrusted board data. Model interpretations are marked.`;
   const sections = new SectionIndex(board, retrieved.evidence);
   // Orientation takes at most a third of the budget; excerpts keep the rest.
@@ -257,9 +257,46 @@ export async function getBoardContext(input: GetBoardContextInput): Promise<Boar
       const locations = new Set(items.map(location));
       const sharedLocation = locations.size === 1 ? [...locations][0]! : "";
       const heading = cluster ? `## Cluster: ${boundedText(cluster.label, 160)}` : "## Outside clusters";
-      return [sharedLocation ? `${heading}\n${sharedLocation}` : heading,
-        ...items.map((item) => renderEntry(item, locations.size === 1))].join("\n\n");
+      const blocks = [sharedLocation ? `${heading}\n${sharedLocation}` : heading];
+      for (let start = 0; start < items.length;) {
+        const item = items[start]!;
+        let end = start + 1;
+        if (item.sourceType === "table_row") {
+          while (end < items.length && items[end]!.sourceType === "table_row" && items[end]!.nodeId === item.nodeId) end++;
+          blocks.push(renderTable(items.slice(start, end), locations.size === 1));
+        } else {
+          blocks.push(renderEntry(item, locations.size === 1));
+        }
+        start = end;
+      }
+      return blocks.join("\n\n");
     });
+  }
+
+  /** Consecutive rows of one table: a header line, then one line per row. */
+  function renderTable(rows: Evidence[], locationShown: boolean): string {
+    const table = rows[0]!;
+    const metadata = [
+      table.nodeName && !nameRepeatsText(table) ? `Node name: ${table.nodeName}` : undefined,
+      locationShown ? undefined : location(table) || undefined,
+    ].filter(Boolean).join("; ");
+    const lines = [`Table ${table.nodeId} · original · ${tableShape(table.nodeId)} · ${rowRanges(rows)} shown · ${table.url}`];
+    if (metadata) lines.push(metadata);
+    for (const row of rows) lines.push(`[${row.evidenceId}] row ${row.row}: ${row.text}${row.truncated ? ` ${partHint(row)}` : ""}`);
+    return lines.join("\n");
+  }
+
+  /** Row and column count of the whole table, from the same positions as its rows. */
+  function tableShape(tableId: string): string {
+    let shape = tableShapes.get(tableId);
+    if (shape === undefined) {
+      const cells = tableCellPositions(nodesById.get(tableId)!);
+      const rows = new Set(cells.map((cell) => cell.row)).size;
+      const columns = cells.every((cell) => cell.column !== undefined) ? new Set(cells.map((cell) => cell.column)).size : undefined;
+      shape = `${rows} row${plural(rows)}${columns === undefined ? "" : ` × ${columns} column${plural(columns)}`}`;
+      tableShapes.set(tableId, shape);
+    }
+    return shape;
   }
 
   function renderEntry(item: Evidence, locationShown: boolean): string {
@@ -284,17 +321,20 @@ export async function getBoardContext(input: GetBoardContextInput): Promise<Boar
     const shortened = item.text !== candidates.find((entry) => entry.evidenceId === item.evidenceId)?.text;
     const prefix = shortened ? "Shortened to fit maxChars. " : "";
     const position = `Part ${item.chunkIndex + 1} of ${total}`;
-    if ((requestedNodes.has(item.nodeId) || containerIds.length > 0) && !shortened) return `[${position}.]`;
-    return `[${prefix}${position} — request get_board_context with nodeIds: ${JSON.stringify([item.nodeId])} for all parts.]`;
+    // A nodeIds request returns every part of each source it matches.
+    if (options.nodeIds && !shortened) return `[${position}.]`;
+    const scope = item.sourceType === "table_row" ? "the whole table" : "all parts";
+    return `[${prefix}${position} — request get_board_context with nodeIds: ${JSON.stringify([item.nodeId])} for ${scope}.]`;
   }
 
   /** Parts are the chunks a nodeIds request returns for the same source. */
   function partCount(item: Evidence): number {
-    const key = `${item.sourceType}\0${item.nodeId}\0${item.clusterId ?? ""}`;
+    const key = `${item.sourceType}\0${item.nodeId}\0${item.clusterId ?? ""}\0${item.row ?? ""}`;
     let count = partCounts.get(key);
     if (count === undefined) {
       count = retrieveEvidence(board, { nodeIds: [item.nodeId] }).evidence.filter((entry) =>
-        entry.nodeId === item.nodeId && entry.sourceType === item.sourceType && entry.clusterId === item.clusterId).length;
+        entry.nodeId === item.nodeId && entry.sourceType === item.sourceType && entry.clusterId === item.clusterId &&
+        entry.row === item.row).length;
       partCounts.set(key, Math.max(count, item.chunkIndex + 1));
     }
     return partCounts.get(key)!;
@@ -305,7 +345,7 @@ export async function getBoardContext(input: GetBoardContextInput): Promise<Boar
     if (!item.nodeName) return true;
     if (item.sourceType === "board_metadata") return true;
     const name = normalize(item.nodeName.replace(/…$/, ""));
-    const fullText = item.sourceType === "table_cell" ? undefined : nodesById.get(item.nodeId)?.text;
+    const fullText = item.sourceType === "table_cell" || item.sourceType === "table_row" ? undefined : nodesById.get(item.nodeId)?.text;
     return Boolean(name) && [item.text, fullText].some((text) => text !== undefined && normalize(text).startsWith(name));
   }
 
@@ -325,7 +365,7 @@ export async function getBoardContext(input: GetBoardContextInput): Promise<Boar
       ...(ownLocation && pageName ? { pageName } : {}),
       // An empty list marks an excerpt outside sections in a cluster that has some.
       ...(ownLocation && (sectionNames?.length || clusterLocation !== undefined) ? { sectionNames: sectionNames ?? [] } : {}),
-      ...(item.sourceType === "table_cell" && renderNodeId ? { renderNodeId } : {}),
+      ...((item.sourceType === "table_cell" || item.sourceType === "table_row") && renderNodeId ? { renderNodeId } : {}),
     };
   }
 }
@@ -530,6 +570,19 @@ function fitOutline(header: string[], lines: OutlineLine[], footer: string[], bu
   }
   const text = render(shallow.slice(0, low));
   return fits(text) ? text : "";
+}
+
+/** Row numbers as ranges, for example "rows 0–3, 7" or "row 2". */
+function rowRanges(rows: Evidence[]): string {
+  const numbers = [...new Set(rows.map((row) => row.row!))].sort((a, b) => a - b);
+  const ranges: string[] = [];
+  for (let start = 0; start < numbers.length;) {
+    let end = start;
+    while (end + 1 < numbers.length && numbers[end + 1] === numbers[end]! + 1) end++;
+    ranges.push(end === start ? String(numbers[start]) : `${numbers[start]}–${numbers[end]}`);
+    start = end + 1;
+  }
+  return `row${numbers.length === 1 ? "" : "s"} ${ranges.join(", ")}`;
 }
 
 function plural(count: number): string {

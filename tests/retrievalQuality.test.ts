@@ -10,7 +10,9 @@ describe("synthetic retrieval quality gate (20 fixtures)", () => {
     const result = retrieveEvidence(board, { query, limit: 3 });
     if (expectedNodeId) {
       // Top-1 accuracy on these known, lexical source facts; all returned evidence is traceable.
-      expect(result.evidence[0]?.nodeId).toBe(expectedNodeId);
+      // A table row that holds the expected cell counts as that cell.
+      const expected = retrieveEvidence(board, { nodeIds: [expectedNodeId] }).evidence.map((item) => item.evidenceId);
+      expect(expected).toContain(result.evidence[0]?.evidenceId);
       expect(result.evidence.every((item) => item.snapshotId === board.snapshotId && item.url.includes(board.fileKey))).toBe(true);
     } else {
       expect(result.evidence).toEqual([]);

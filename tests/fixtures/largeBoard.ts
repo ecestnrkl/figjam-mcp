@@ -79,3 +79,29 @@ export function largeBoard(
   }
   return { boardId, fileKey: boardId, docStructureHint: "freeform", createdAt: 1, snapshotId: "c".repeat(64), nodes, clusters };
 }
+
+/**
+ * One synthetic table in one section, with cell IDs in the REST API form
+ * T<table ID>;<row ID>;<column ID> and no recorded rows or columns.
+ */
+export function tableBoard(boardId: string, rows = 24, columns = 17): BoardData {
+  const page: NormalizedNode = { id: "0:1", name: "Results", type: "CANVAS", x: 0, y: 0, width: 0, height: 0, rotation: 0 };
+  const section: NormalizedNode = { id: "1:1", name: "Survey results", type: "SECTION", x: 0, y: 0, width: 4000, height: 2000, rotation: 0, pageId: page.id };
+  const cells = Array.from({ length: rows }, (_, row) => Array.from({ length: columns }, (_, column) => ({
+    id: `T5:1;6:${row};7:${column}`,
+    text: row === 0 ? `Metric ${column + 1}` : column === 0 ? `Participant ${row}` : String((row * 37 + column * 11) % 100),
+  }))).flat();
+  const table: NormalizedNode = {
+    id: "5:1", name: "Table 1", type: "TABLE", text: cells.map((cell) => cell.text).join("\n"), x: 100, y: 100, width: 3400, height: 1200,
+    rotation: 0, pageId: page.id, sectionIds: [section.id], renderNodeId: "5:1", table: { cells },
+  };
+  return {
+    boardId, fileKey: boardId, docStructureHint: "freeform", createdAt: 1, snapshotId: "d".repeat(64),
+    nodes: [page, section, table],
+    clusters: [{
+      id: "cluster_table", label: "Table 1", nodeIds: [table.id], confirmedNodeIds: [table.id],
+      boundingBox: { x: 100, y: 100, width: 3400, height: 1200 }, summarySource: "deterministic",
+      summary: `Cluster contains 1 board element with ${cells.length} extracted text items.`,
+    }],
+  };
+}

@@ -48,7 +48,7 @@ export type GetBoardContextInput = z.input<typeof getBoardContextInputSchema>;
 
 export const evidenceSchema = z.object({
   evidenceId: z.string(), snapshotId: z.string(), nodeId: z.string(), text: z.string(),
-  sourceType: z.enum(["board_text", "table_cell", "board_metadata", "model_interpretation", "cluster_summary"]),
+  sourceType: z.enum(["board_text", "table_cell", "table_row", "board_metadata", "model_interpretation", "cluster_summary"]),
   modelDerived: z.boolean(), clusterId: z.string().optional(), clusterLabel: z.string().optional(),
   nodeName: z.string().max(160).optional(),
   pageName: z.string().max(160).optional()

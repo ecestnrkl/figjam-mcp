@@ -21,7 +21,7 @@ export const answerFromBoardOutputShape = {
   snapshotId: z.string(),
   citations: z.array(z.object({
     evidenceId: z.string(), snapshotId: z.string(), nodeId: z.string(), quote: z.string(), url: z.string(),
-    sourceType: z.enum(["board_text", "table_cell", "board_metadata", "model_interpretation", "cluster_summary"]),
+    sourceType: z.enum(["board_text", "table_cell", "table_row", "board_metadata", "model_interpretation", "cluster_summary"]),
     modelDerived: z.boolean(), clusterId: z.string().optional(), clusterLabel: z.string().optional(),
     nodeName: z.string().max(160).optional(), pageName: z.string().max(160).optional(),
     sectionNames: z.array(z.string().max(80)).max(16).optional(),

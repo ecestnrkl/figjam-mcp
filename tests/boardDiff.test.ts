@@ -64,6 +64,17 @@ describe("diffBoards", () => {
     ]);
   });
 
+  it("reports a changed cell of a table read as rows per cell", () => {
+    const grid = (value: string) => node("5:1", undefined, { type: "TABLE", table: { cells: [["Item", "Amount"], ["Budget", value]]
+      .flatMap((cells, row) => cells.map((text, column) => ({ id: `T5:1;6:${row};7:${column}`, text }))) } });
+    const diff = diffBoards(board([grid("100")], [cluster("table-cluster", "Budget", ["5:1"])], 1),
+      board([grid("999")], [cluster("table-cluster", "Budget", ["5:1"])], 2));
+    expect(diff.stats).toMatchObject({ editedNodes: 1, modifiedClusters: 1 });
+    expect(diff.tableCellChanges).toEqual([expect.objectContaining({
+      tableNodeId: "5:1", cellId: "T5:1;6:1;7:1", changeType: "modified", previousText: "100", currentText: "999",
+    })]);
+  });
+
   it("detects visual edits and changes to connector direction", () => {
     const nodes = [node("a", undefined, { contentFingerprint: "red" }), node("b", "Target")];
     const clusters = [cluster("one", "Process", ["a", "b"])];

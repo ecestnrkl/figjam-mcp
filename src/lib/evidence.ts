@@ -1,10 +1,12 @@
 import { createHash } from "node:crypto";
 import { connectorArrow } from "./connectorGraph.js";
 import { isGenericNodeName } from "./nodeTree.js";
-import type { BoardData, ConnectorEdge, NormalizedNode, RefinedCluster } from "../types.js";
+import type { BoardData, ConnectorEdge, NormalizedNode, RefinedCluster, TableCell } from "../types.js";
 
 export const EVIDENCE_CHUNK_CHARS = 1200;
 export const MAX_CONTEXT_RESPONSE_BYTES = 128 * 1024;
+/** Cells of a table row excerpt are joined with this separator; an empty cell stays an empty slot. */
+export const TABLE_CELL_SEPARATOR = " | ";
 const MAX_INDEX_ENTRIES = 100_000;
 /** Their names already reach every excerpt inside them as pageName and sectionNames. */
 const CONTAINER_TYPES = new Set(["DOCUMENT", "CANVAS", "PAGE", "SECTION"]);
@@ -18,7 +20,7 @@ export interface Evidence {
   snapshotId: string;
   nodeId: string;
   text: string;
-  sourceType: "board_text" | "table_cell" | "board_metadata" | "model_interpretation" | "cluster_summary";
+  sourceType: "board_text" | "table_cell" | "table_row" | "board_metadata" | "model_interpretation" | "cluster_summary";
   modelDerived: boolean;
   clusterId?: string;
   clusterLabel?: string;
@@ -73,8 +75,12 @@ const PREFIX_MATCH_WEIGHT = 0.6;
 
 interface IndexedEvidence {
   evidence: Evidence;
+  /** Cells of a table row excerpt; a nodeIds request for one of them returns the row. */
+  cellIds?: string[];
   lengths: Record<EvidenceField, number>;
 }
+
+type EvidenceSource = Pick<IndexedEvidence, "evidence" | "cellIds">;
 
 interface FieldIndex {
   postings: Map<string, Array<{ index: number; frequency: number }>>;
@@ -137,8 +143,9 @@ export function retrieveEvidence(board: BoardData, options: EvidenceQuery = {}):
     const requested = new Set(options.nodeIds);
     const containers = new Set(readableContainerIds(board, options.nodeIds));
     const enclosing = containers.size ? enclosingIdsLookup(board) : undefined;
-    matches = index.entries.filter(({ evidence }) =>
+    matches = index.entries.filter(({ evidence, cellIds }) =>
       requested.has(evidence.nodeId) || Boolean(evidence.renderNodeId && requested.has(evidence.renderNodeId)) ||
+      Boolean(cellIds?.some((id) => requested.has(id))) ||
       Boolean(enclosing && [...enclosing(evidence.renderNodeId ?? evidence.nodeId)].some((id) => containers.has(id))),
     );
     if (containers.size) matches = contentFirst(readingOrder(board, matches), (entry) => entry.evidence);
@@ -286,7 +293,8 @@ function interleaveClusters(entries: IndexedEvidence[]): IndexedEvidence[] {
 
 export function formatEvidence(item: Evidence): string {
   const provenance = item.modelDerived ? "MODEL INTERPRETATION; verify against original" :
-    item.sourceType === "board_metadata" ? "original board metadata" : "original board text";
+    item.sourceType === "board_metadata" ? "original board metadata" :
+    item.sourceType === "table_row" ? `original table row; cells separated by "${TABLE_CELL_SEPARATOR.trim()}"` : "original board text";
   const metadata = [
     item.nodeName ? `Node name: ${item.nodeName}` : undefined,
     item.pageName ? `Page: ${item.pageName}` : undefined,
@@ -357,7 +365,7 @@ function getIndex(board: BoardData): EvidenceIndex {
   const existing = indexes.get(board);
   if (existing) return existing;
   const snapshotId = snapshotIdForBoard(board);
-  const evidence = buildEvidence(board, snapshotId);
+  const sources = buildEvidence(board, snapshotId);
   const nodesById = new Map(board.nodes.map((node) => [node.id, node]));
   const emptyField = (): FieldIndex => ({ postings: new Map(), averageLength: 1 });
   const fields: Record<EvidenceField, FieldIndex> = {
@@ -365,7 +373,7 @@ function getIndex(board: BoardData): EvidenceIndex {
   };
   const totalLengths: Record<EvidenceField, number> = { text: 0, node: 0, section: 0, page: 0, cluster: 0 };
   const entries: IndexedEvidence[] = [];
-  for (const item of evidence) {
+  for (const { evidence: item, cellIds } of sources) {
     const node = nodesById.get(item.renderNodeId ?? item.nodeId);
     const values = evidenceFields(item, node, nodesById);
     const lengths = {} as Record<EvidenceField, number>;
@@ -382,7 +390,7 @@ function getIndex(board: BoardData): EvidenceIndex {
         fields[field].postings.set(term, list);
       }
     }
-    entries.push({ evidence: item, lengths });
+    entries.push({ evidence: item, ...(cellIds ? { cellIds } : {}), lengths });
   }
   for (const field of FIELDS) {
     fields[field].averageLength = totalLengths[field] / Math.max(1, entries.length) || 1;
@@ -412,25 +420,28 @@ function evidenceFields(
   };
 }
 
-function buildEvidence(board: BoardData, snapshotId: string): Evidence[] {
+function buildEvidence(board: BoardData, snapshotId: string): EvidenceSource[] {
   const clusterOf = new Map<string, RefinedCluster>();
   for (const cluster of board.clusters) {
     for (const nodeId of cluster.nodeIds) if (!clusterOf.has(nodeId)) clusterOf.set(nodeId, cluster);
   }
-  const evidence: Evidence[] = [];
+  const evidence: EvidenceSource[] = [];
   const append = (
     text: string,
     source: Pick<Evidence, "nodeId" | "sourceType" | "modelDerived"> & Partial<Evidence>,
     cluster?: RefinedCluster,
+    cellIds?: string[],
   ) => {
     const chunks = chunkText(text);
+    // Rows of one table share its node ID; equal rows still get distinct IDs.
+    const rowKey = source.sourceType === "table_row" ? `\0${source.row}` : "";
     for (const [chunkIndex, chunk] of chunks.entries()) {
       if (evidence.length >= MAX_INDEX_ENTRIES) {
         throw new Error(`Board exceeds the ${MAX_INDEX_ENTRIES}-chunk evidence limit. Ingest a smaller board or page.`);
       }
-      evidence.push({
+      evidence.push({ evidence: {
         ...source,
-        evidenceId: `ev_${digest(`${snapshotId}\0${source.sourceType}\0${source.nodeId}\0${source.modelDerived ? cluster?.id ?? "" : ""}\0${chunkIndex}\0${chunk}`).slice(0, 32)}`,
+        evidenceId: `ev_${digest(`${snapshotId}\0${source.sourceType}\0${source.nodeId}\0${source.modelDerived ? cluster?.id ?? "" : ""}\0${chunkIndex}\0${chunk}${rowKey}`).slice(0, 32)}`,
         snapshotId,
         nodeId: source.nodeId,
         text: chunk,
@@ -439,14 +450,27 @@ function buildEvidence(board: BoardData, snapshotId: string): Evidence[] {
         chunkIndex,
         url: nodeLink(board, source.renderNodeId ?? source.nodeId),
         truncated: chunks.length > 1,
-      });
+      }, ...(cellIds ? { cellIds } : {}) });
     }
   };
   const nodesById = new Map(board.nodes.map((node) => [node.id, node]));
   for (const node of board.nodes) {
     const cluster = clusterOf.get(node.id);
     const provenance = nodeProvenance(node, nodesById);
-    if (node.table?.cells.length) {
+    const rows = node.table?.cells.length ? tableRows(node) : undefined;
+    if (rows) {
+      for (const { row, cells } of rows) {
+        if (!cells.some((cell) => cell.text.trim())) continue;
+        append(cells.map((cell) => cell.text.replace(/\s+/g, " ").trim()).join(TABLE_CELL_SEPARATOR), {
+          ...provenance,
+          nodeId: node.id,
+          renderNodeId: node.renderNodeId ?? node.id,
+          sourceType: "table_row",
+          modelDerived: false,
+          row,
+        }, cluster, cells.map((cell) => cell.id));
+      }
+    } else if (node.table?.cells.length) {
       for (const cell of node.table.cells) {
         append(cell.text, {
           ...provenance,
@@ -486,6 +510,50 @@ function buildEvidence(board: BoardData, snapshotId: string): Evidence[] {
   return evidence;
 }
 
+/**
+ * Cells with their row and column. Values recorded in the snapshot come first.
+ * Otherwise, if every cell ID has the form T<table ID>;<row ID>;<column ID> and
+ * together they form a complete rectangle, row and column are the positions of
+ * the row and column IDs in order of first appearance; else both stay empty.
+ */
+export function tableCellPositions(table: NormalizedNode): TableCell[] {
+  const cells = table.table?.cells ?? [];
+  const prefix = `T${table.id};`;
+  const rowIds = new Map<string, number>();
+  const columnIds = new Map<string, number>();
+  const pairs = new Set<string>();
+  const derived: Array<{ row: number; column: number }> = [];
+  for (const cell of cells) {
+    const parts = cell.id.startsWith(prefix) ? cell.id.slice(prefix.length).split(";") : [];
+    if (parts.length !== 2 || !parts[0] || !parts[1]) break;
+    const [rowId, columnId] = parts as [string, string];
+    if (!rowIds.has(rowId)) rowIds.set(rowId, rowIds.size);
+    if (!columnIds.has(columnId)) columnIds.set(columnId, columnIds.size);
+    pairs.add(`${rowId};${columnId}`);
+    derived.push({ row: rowIds.get(rowId)!, column: columnIds.get(columnId)! });
+  }
+  const rectangle = derived.length === cells.length && pairs.size === cells.length &&
+    pairs.size === rowIds.size * columnIds.size;
+  return cells.map((cell, index) => {
+    const row = cell.row ?? (rectangle ? derived[index]!.row : undefined);
+    const column = cell.column ?? (rectangle ? derived[index]!.column : undefined);
+    return { ...cell, ...(row === undefined ? {} : { row }), ...(column === undefined ? {} : { column }) };
+  });
+}
+
+/** Rows in order with their cells in column order, or undefined if any cell has no row. */
+export function tableRows(table: NormalizedNode): Array<{ row: number; cells: TableCell[] }> | undefined {
+  const cells = tableCellPositions(table);
+  if (!cells.length || cells.some((cell) => cell.row === undefined)) return undefined;
+  const rows = new Map<number, TableCell[]>();
+  for (const cell of cells) rows.set(cell.row!, [...(rows.get(cell.row!) ?? []), cell]);
+  return [...rows].sort(([a], [b]) => a - b).map(([row, rowCells]) => ({
+    row,
+    // Cells without a column keep their snapshot order behind the positioned ones.
+    cells: rowCells.sort((a, b) => (a.column ?? Infinity) - (b.column ?? Infinity) || 0),
+  }));
+}
+
 function nodeProvenance(node: NormalizedNode | undefined, nodesById: Map<string, NormalizedNode>):
   Pick<Evidence, "pageId" | "sectionIds" | "renderNodeId" | "nodeName" | "pageName" | "sectionNames"> {
   const sectionIds = node?.sectionIds?.slice(-16);
@@ -522,6 +590,7 @@ function chunkText(text: string): string[] {
 /** A matching cell needs nearby labels/values to retain its table meaning. */
 function addTableNeighbors(index: EvidenceIndex, selected: Evidence[], limit: number): void {
   if (limit <= 0) return;
+  let added = addHeaderRows(index, selected, limit);
   const rowGroups = new Map<string, Evidence[]>();
   const unpositionedTables = new Set<string>();
   const rowKey = (tableId: string, row: number) => `${tableId}\0${row}`;
@@ -541,7 +610,6 @@ function addTableNeighbors(index: EvidenceIndex, selected: Evidence[], limit: nu
       wholeTables.set(item.renderNodeId, group);
     }
   }
-  let added = 0;
   let active = [...rowGroups.values()].filter((group) => group.length > 0);
   for (let offset = 0; active.length && added < limit; offset++) {
     const next: Evidence[][] = [];
@@ -566,6 +634,33 @@ function addTableNeighbors(index: EvidenceIndex, selected: Evidence[], limit: nu
   }
 }
 
+/**
+ * A matching row of a table without its first row lacks the column headings:
+ * the first row is inserted before the table's first selected row. Returns how
+ * many excerpts were added.
+ */
+function addHeaderRows(index: EvidenceIndex, selected: Evidence[], limit: number): number {
+  const tables = new Set(selected.filter((item) => item.sourceType === "table_row").map((item) => item.nodeId));
+  if (!tables.size) return 0;
+  const firstRows = new Map<string, Evidence[]>();
+  for (const { evidence: item } of index.entries) {
+    if (item.sourceType !== "table_row" || !tables.has(item.nodeId)) continue;
+    const rows = firstRows.get(item.nodeId);
+    if (!rows) firstRows.set(item.nodeId, [item]);
+    else if (rows[0]!.row === item.row) rows.push(item);
+  }
+  const existing = new Set(selected.map((item) => item.evidenceId));
+  let added = 0;
+  for (const [tableId, rows] of firstRows) {
+    const missing = rows.filter((item) => !existing.has(item.evidenceId)).slice(0, limit - added);
+    if (!missing.length) continue;
+    selected.splice(selected.findIndex((item) => item.sourceType === "table_row" && item.nodeId === tableId), 0, ...missing);
+    for (const item of missing) existing.add(item.evidenceId);
+    added += missing.length;
+  }
+  return added;
+}
+
 function addNeighbors(
   board: BoardData, index: EvidenceIndex, primary: Evidence[], selected: Evidence[], limit: number,
 ): void {
@@ -578,7 +673,8 @@ function addNeighbors(
   const existing = new Set(selected.map((item) => item.evidenceId));
   const groups = new Map<string, { items: Evidence[]; wholeTable: boolean }>();
   for (const { evidence: item } of index.entries) {
-    const wholeTable = item.sourceType === "table_cell" && Boolean(item.renderNodeId && neighborIds.has(item.renderNodeId));
+    const wholeTable = (item.sourceType === "table_cell" || item.sourceType === "table_row") &&
+      Boolean(item.renderNodeId && neighborIds.has(item.renderNodeId));
     if (existing.has(item.evidenceId) || !(neighborIds.has(item.nodeId) || wholeTable ||
       Boolean(item.renderNodeId && neighborIds.has(item.renderNodeId)))) continue;
     const key = item.renderNodeId ?? item.nodeId;
