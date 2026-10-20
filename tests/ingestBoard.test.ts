@@ -1011,6 +1011,16 @@ describe("ingestBoard", () => {
     expect(output.qualityReport?.reusedClusters).toBe(0);
   });
 
+  it("forceFullIngest in max_quality interprets every cluster again", async () => {
+    readLatestBoardMock.mockResolvedValueOnce(cachedBoard());
+    const output = await ingestBoard({ figmaFileUrl: "https://www.figma.com/board/AbC123/Test",
+      docStructureHint: "freeform", ingestMode: "max_quality", forceFullIngest: true });
+    expect(fetchFileMetadataMock).not.toHaveBeenCalled();
+    expect(fetchFileTreeMock).toHaveBeenCalledTimes(1);
+    expect(refineClusterWithVisionMock).toHaveBeenCalledTimes(2);
+    expect(output.qualityReport).toMatchObject({ reusedClusters: 0, visionClusters: 2 });
+  });
+
   it("forceFullIngest bypasses cache and incremental reuse", async () => {
     const output = await ingestBoard({
       figmaFileUrl: "https://www.figma.com/board/AbC123/Test",

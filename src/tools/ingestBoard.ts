@@ -157,7 +157,7 @@ async function performIngest(input: IngestBoardInput, options: OperationOptions)
   }
   await progress("cluster", 2);
   const reuseBoard = cached ?? previousBoard;
-  const reuseIndex = input.forceFullIngest || reuseBoard?.extractionVersion !== EXTRACTION_VERSION || reuseBoard?.refinementSignature !== refinementSignature
+  const reuseIndex = reuseBoard?.extractionVersion !== EXTRACTION_VERSION || reuseBoard?.refinementSignature !== refinementSignature
     ? new Map<string, RefinedCluster>() : buildReuseIndex(reuseBoard);
   const clusters = partitionedBoardClusters(nodes);
   if (!clusters.length) throw new Error(`Board ${fileKey} contains no content nodes to ingest`);
@@ -180,7 +180,9 @@ async function performIngest(input: IngestBoardInput, options: OperationOptions)
     const members = clusterNodesByIndex[index]!;
     const contentHash = contentHashes.get(cluster.id)!;
     const previous = reuseIndex.get(contentHash);
-    if (previous && canReusePrevious(previous, members, ingestMode)) {
+    // A forced ingest redoes the vision of its mode and keeps interpretations it would not redo.
+    const redo = input.forceFullIngest && shouldUseVision(members, ingestMode);
+    if (previous && !redo && canReusePrevious(previous, members, ingestMode)) {
       refined[index] = { ...reuseCluster(cluster, previous, contentHash), cacheHit: true };
       reusedCount++;
     } else if (shouldUseVision(members, ingestMode)) visionQueue.push(index);
