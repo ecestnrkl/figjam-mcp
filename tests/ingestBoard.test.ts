@@ -548,7 +548,7 @@ describe("ingestBoard", () => {
       const { imageMimeType } = await import("../src/lib/figmaApi.js");
       expect(imageMimeType(images[0]!)).toBe("image/jpeg");
       expect(output.qualityReport?.figmaRequests).toEqual({ imageFills: 1, renders: 0 });
-      expect(output.summary).toContain("Figma image requests: 1 image fills, 0 renders.");
+      expect(output.summary).toContain("Figma requests for images: 1 image fills request (Tier 2), 0 render requests (Tier 1).");
       expect((persistBoardMock.mock.calls[0]?.[0] as BoardData).qualityReport?.figmaRequests).toEqual({ imageFills: 1, renders: 0 });
     });
 
@@ -567,7 +567,7 @@ describe("ingestBoard", () => {
         else expect(images.map(String)).toEqual(["https://cdn.example/vector:1", "https://cdn.example/vector:2"]);
       }
       expect(output.qualityReport).toMatchObject({ visionClusters: 4, figmaRequests: { imageFills: 1, renders: 1 } });
-      expect(output.summary).toContain("Figma image requests: 1 image fills, 1 render.");
+      expect(output.summary).toContain("Figma requests for images: 1 image fills request (Tier 2), 1 render request (Tier 1).");
     });
 
     it("sends the largest image nodes and nothing rendered beside them", async () => {
@@ -641,7 +641,106 @@ describe("ingestBoard", () => {
       const cooling = await ingestBoard(balanced);
       expect(fetchImageRefsMock).toHaveBeenCalledTimes(1);
       expect(cooling.qualityReport).toMatchObject({ fallbackReasons: { rate_limit: 3 }, figmaRequests: { imageFills: 0, renders: 0 } });
-      expect(cooling.summary).not.toContain("Figma image requests");
+      expect(cooling.summary).not.toContain("Figma requests");
+    });
+  });
+
+  describe("focusNodeIds", () => {
+    const balanced = { figmaFileUrl: "https://www.figma.com/board/AbC123/Test", docStructureHint: "freeform", ingestMode: "balanced" } as const;
+    const box = (x: number, y: number, size = 100) => ({ x, y, width: size, height: size });
+    /**
+     * Section 5:1 holds three image clusters without text, which the usual priority interprets first.
+     * Section 5:2 holds three image clusters with text of growing length, which it interprets last.
+     */
+    function focusTree() {
+      const early = Array.from({ length: 3 }, (_, index) => ({ id: `a:${index}`, name: "Image", type: "SHAPE_WITH_TEXT",
+        absoluteBoundingBox: box(index * 5000, 0), fills: [{ type: "IMAGE", imageRef: `ref-a${index}` }] }));
+      const late = Array.from({ length: 3 }, (_, index) => [
+        { id: `b:${index}`, name: "Image", type: "SHAPE_WITH_TEXT", absoluteBoundingBox: box(index * 5000, 20_000),
+          fills: [{ type: "IMAGE", imageRef: `ref-b${index}` }] },
+        { id: `t:${index}`, name: "Caption", type: "STICKY", absoluteBoundingBox: box(index * 5000 + 110, 20_000),
+          characters: `Caption ${"x".repeat(10 * (index + 1))}` },
+      ]).flat();
+      return { document: { id: "0:0", name: "Document", type: "DOCUMENT", children: [{ id: "0:1", name: "Page", type: "CANVAS", children: [
+        { id: "5:1", name: "Early", type: "SECTION", absoluteBoundingBox: { x: -500, y: -500, width: 16_000, height: 2000 }, children: early },
+        { id: "5:2", name: "Late", type: "SECTION", absoluteBoundingBox: { x: -500, y: 19_500, width: 16_000, height: 2000 }, children: late },
+      ] }] } };
+    }
+    const interpretedImages = () => (refineClusterWithVisionMock.mock.calls as Array<[Cluster]>)
+      .map(([cluster]) => cluster.nodeIds.find(id => !id.startsWith("t:")));
+    /** One worker whose model calls take 15 s each: the 40 s budget interprets two clusters. */
+    async function slowIngest() {
+      vi.stubEnv("INGEST_BOARD_VISION_CONCURRENCY", "1");
+      vi.resetModules();
+      vi.useFakeTimers({ toFake: ["Date"] });
+      refineClusterWithVisionMock.mockImplementation(async (cluster: Cluster) => {
+        vi.setSystemTime(Date.now() + 15_000);
+        return { ...cluster, label: "Vision", summary: "Vision summary.", confirmedNodeIds: [...cluster.nodeIds], summarySource: "vision_llm", modelId: "vision-model" };
+      });
+      return (await import("../src/tools/ingestBoard.js")).ingestBoard;
+    }
+    const interpretedIn = (board: BoardData) => board.clusters.filter(cluster => cluster.summarySource === "vision_llm")
+      .map(cluster => cluster.nodeIds.find(id => !id.startsWith("t:"))).sort();
+
+    it("interprets the image clusters of a focused section first when the budget covers only some", async () => {
+      fetchFileTreeMock.mockResolvedValue(focusTree());
+      const configuredIngest = await slowIngest();
+      const unfocused = await configuredIngest(balanced);
+      // The usual priority: two of the text-free image clusters in section 5:1.
+      const before = interpretedIn(persistBoardMock.mock.calls[0]![0] as BoardData);
+      expect(before).toHaveLength(2);
+      expect(before.every(id => id!.startsWith("a:"))).toBe(true);
+      expect(unfocused.qualityReport?.focus).toBeUndefined();
+      expect(unfocused.summary).not.toContain("Focus:");
+      expect(unfocused.summary).toContain("To interpret the images of particular sections first, pass their section IDs as focusNodeIds.");
+
+      const focused = await configuredIngest({ ...balanced, focusNodeIds: ["5:2"] });
+      expect(interpretedIn(persistBoardMock.mock.calls[1]![0] as BoardData)).toEqual(["b:0", "b:1"]);
+      expect(focused.qualityReport).toMatchObject({ visionClusters: 2, fallbackReasons: { time_budget: 4 },
+        focus: { requestedIds: ["5:2"], foundIds: ["5:2"], imageClusters: 3, interpreted: 2, pending: 1 } });
+      expect(focused.summary).toContain("Focus: 2 of 3 image clusters interpreted, 1 pending; run ingest_board again with the same focusNodeIds to continue.");
+      expect(focused.summary).not.toContain("pass their section IDs as focusNodeIds");
+      expect((persistBoardMock.mock.calls[1]![0] as BoardData).qualityReport?.focus).toEqual(focused.qualityReport?.focus);
+    });
+
+    it("orders the clusters of several focus IDs by the list and treats a single image node like its cluster", async () => {
+      fetchFileTreeMock.mockResolvedValue(focusTree());
+      vi.stubEnv("INGEST_BOARD_VISION_CONCURRENCY", "1");
+      vi.resetModules();
+      const { ingestBoard: configuredIngest } = await import("../src/tools/ingestBoard.js");
+      const output = await configuredIngest({ ...balanced, focusNodeIds: ["5:2", "a:2"] });
+      const order = interpretedImages();
+      expect(order.slice(0, 4)).toEqual(["b:0", "b:1", "b:2", "a:2"]);
+      expect(order.slice(4).sort()).toEqual(["a:0", "a:1"]);
+      expect(output.qualityReport?.focus).toEqual({ requestedIds: ["5:2", "a:2"], foundIds: ["5:2", "a:2"], imageClusters: 4, interpreted: 4, pending: 0 });
+      expect(output.summary).toContain("Focus: 4 of 4 image clusters interpreted, 0 pending.");
+      expect(output.summary).not.toContain("run ingest_board again with the same focusNodeIds");
+    });
+
+    it("names unknown focus IDs without failing", async () => {
+      fetchFileTreeMock.mockResolvedValue(focusTree());
+      const output = await ingestBoard({ ...balanced, focusNodeIds: ["9:99", "5:1", "8:88"] });
+      expect(output.qualityReport?.focus).toEqual({ requestedIds: ["9:99", "5:1", "8:88"], foundIds: ["5:1"], imageClusters: 3, interpreted: 3, pending: 0 });
+      expect(output.summary).toContain("Focus: 3 of 3 image clusters interpreted, 0 pending. 2 of 3 focusNodeIds not found on the board: 9:99, 8:88.");
+      expect(refineClusterWithVisionMock).toHaveBeenCalledTimes(6);
+    });
+
+    it("has no effect in max_speed", async () => {
+      fetchFileTreeMock.mockResolvedValue(focusTree());
+      const output = await ingestBoard({ ...balanced, ingestMode: "max_speed", focusNodeIds: ["5:2"] });
+      expect(refineClusterWithVisionMock).not.toHaveBeenCalled();
+      expect(fetchImageRefsMock).not.toHaveBeenCalled();
+      expect(output.qualityReport?.focus).toEqual({ requestedIds: ["5:2"], foundIds: ["5:2"], imageClusters: 0, interpreted: 0, pending: 0 });
+      expect(output.summary).toContain("focusNodeIds has no effect in max_speed, which interprets no images.");
+      expect(output.summary).not.toContain("Focus:");
+    });
+
+    it("reports the focus of a board loaded from cache", async () => {
+      readCachedBoardMock.mockResolvedValueOnce(cachedBoard());
+      const output = await ingestBoard({ ...balanced, focusNodeIds: ["1:2"] });
+      expect(refineClusterWithVisionMock).not.toHaveBeenCalled();
+      expect(output.qualityReport?.focus).toEqual({ requestedIds: ["1:2"], foundIds: ["1:2"], imageClusters: 1, interpreted: 1, pending: 0 });
+      expect(output.summary).toContain("Focus: 1 of 1 image cluster interpreted, 0 pending.");
     });
   });
 

@@ -91,6 +91,11 @@ unchanged clusters. The vision budget still applies, so `balanced` and
 `max_quality` may need several ingests until every image is interpreted again.
 An unchanged board gives no new snapshot for `diff_board`.
 
+`focusNodeIds` (up to 50 IDs of pages, sections, frames, groups or nodes) changes
+only the order of image interpretation: clusters inside them come first, in list
+order. The whole board is still read, and the cache key stays the same, so a later
+ingest without `focusNodeIds` reuses the interpretations. It has no effect in `max_speed`.
+
 ## Timeouts
 
 Many MCP clients cancel a tool call after the MCP SDK's default request timeout

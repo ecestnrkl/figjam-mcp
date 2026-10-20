@@ -248,7 +248,7 @@ export function readableContainerIds(board: BoardData, nodeIds: string[]): strin
  * IDs of the pages, sections, frames and groups enclosing a node, from its tree
  * path and its recorded page and sections. The node itself is not included.
  */
-export function enclosingIdsLookup(board: BoardData): (nodeId: string) => Set<string> {
+export function enclosingIdsLookup(board: Pick<BoardData, "nodes">): (nodeId: string) => Set<string> {
   const nodesById = new Map(board.nodes.map((node) => [node.id, node]));
   const memo = new Map<string, Set<string>>();
   return (nodeId) => {

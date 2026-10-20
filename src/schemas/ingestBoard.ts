@@ -62,6 +62,14 @@ export const ingestBoardInputShape = {
     .describe(
       "Download and extract the board again, skipping the unchanged-board check and cache, and redo the image interpretation of the chosen ingestMode. Interpretations this mode does not redo (all in max_speed; in balanced those of clusters without image or drawing) are kept while a cluster's content is unchanged. The vision time budget still applies, so balanced and max_quality may need several ingests until every image is interpreted again. An unchanged board gives no new snapshot for diff_board, even with forceFullIngest. Model/configuration changes are detected automatically. Default: false",
     ),
+  focusNodeIds: z
+    .array(z.string().trim().min(1).max(200))
+    .min(1)
+    .max(50)
+    .optional()
+    .describe(
+      "IDs of pages, sections, frames, groups or single nodes whose image clusters are interpreted first, in list order; the rest of the board follows in the usual order. Section IDs come from the ingest_board summary or the first page of get_board_context. Only the order of image interpretation changes: the whole board is still read and cached, and later ingests without focusNodeIds reuse the interpretations. No effect in max_speed",
+    ),
 };
 
 export const ingestBoardInputSchema = z.object(ingestBoardInputShape);
@@ -97,6 +105,16 @@ export const ingestBoardOutputShape = {
         .object({ imageFills: z.number().int().nonnegative(), renders: z.number().int().nonnegative() })
         .optional()
         .describe("Figma requests of this ingest for images: image fills (Tier 2) and renders (Tier 1)"),
+      focus: z
+        .object({
+          requestedIds: z.array(z.string()),
+          foundIds: z.array(z.string()),
+          imageClusters: z.number().int().nonnegative(),
+          interpreted: z.number().int().nonnegative(),
+          pending: z.number().int().nonnegative(),
+        })
+        .optional()
+        .describe("Only with focusNodeIds: the IDs found on the board and the clusters in focus this ingestMode interprets, of them interpreted and pending"),
     })
     .optional(),
 };

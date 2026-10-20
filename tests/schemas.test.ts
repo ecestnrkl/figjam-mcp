@@ -120,6 +120,21 @@ describe("ingest_board input validation", () => {
     }
   });
 
+  it("trims focusNodeIds and rejects empty, overlong, blank and too long IDs", () => {
+    expect(ingestBoardInputSchema.parse({ figmaFileUrl: FIGMA_URL, focusNodeIds: [" 5:2 ", "12:34"] }).focusNodeIds)
+      .toEqual(["5:2", "12:34"]);
+    expect(ingestBoardInputSchema.safeParse({ figmaFileUrl: FIGMA_URL, focusNodeIds: Array.from({ length: 50 }, (_, index) => `1:${index}`) }).success).toBe(true);
+    for (const focusNodeIds of [
+      [],
+      Array.from({ length: 51 }, (_, index) => `1:${index}`),
+      [""],
+      ["   "],
+      ["x".repeat(201)],
+    ]) {
+      expect(ingestBoardInputSchema.safeParse({ figmaFileUrl: FIGMA_URL, focusNodeIds }).success).toBe(false);
+    }
+  });
+
   it("rejects an explicitly blank Figma token", () => {
     expect(
       ingestBoardInputSchema.safeParse({

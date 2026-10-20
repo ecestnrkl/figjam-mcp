@@ -184,6 +184,28 @@ describe("offline ingest pipeline with actual persistent cache", () => {
     expect(await persistence.readBoardHistory(fileKey)).toHaveLength(1);
   });
 
+  it("reuses the interpretations of a focused ingest under the same cache key", async () => {
+    activeTree = boardTree([imageNode("photo-a", 0), imageNode("photo-b", 1000), sticky("note", "Workshop note", 2000)]);
+    const balanced = { ...input, ingestMode: "balanced" } as const;
+    let fail = true;
+    visionMock.mockImplementation((cluster: Cluster, images: Buffer[], nodes: NormalizedNode[]) => {
+      if (fail && cluster.nodeIds.includes("photo-a")) throw new Error("Temporary offline provider failure");
+      return refine(cluster, images, nodes);
+    });
+    const focused = await ingestBoard({ ...balanced, focusNodeIds: ["photo-b"] });
+    expect(focused.qualityReport?.focus).toEqual({ requestedIds: ["photo-b"], foundIds: ["photo-b"], imageClusters: 1, interpreted: 1, pending: 0 });
+    const focusedKey = (await persistence.readLatestBoard(fileKey))?.cacheKey;
+    expect((await persistence.readLatestBoard(fileKey))?.qualityReport?.focus).toEqual(focused.qualityReport?.focus);
+    fail = false;
+    visionMock.mockClear();
+    const unfocused = await ingestBoard(balanced);
+    expect((visionMock.mock.calls as Array<[Cluster]>).map(([cluster]) => cluster.nodeIds)).toEqual([["photo-a"]]);
+    expect(unfocused.qualityReport).toMatchObject({ visionClusters: 2, reusedClusters: 2, incompleteClusters: 0 });
+    expect(unfocused.qualityReport?.focus).toBeUndefined();
+    expect(unfocused.snapshotId).toBe(focused.snapshotId);
+    expect((await persistence.readLatestBoard(fileKey))?.cacheKey).toBe(focusedKey);
+  });
+
   it("keeps a vision summary of a text cluster through a forced balanced ingest", async () => {
     activeTree = boardTree([imageNode("photo", 0), sticky("note", "Workshop note", 2000)]);
     await ingestBoard(input);

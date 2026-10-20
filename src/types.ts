@@ -127,6 +127,17 @@ export interface IngestQualityReport {
   nextRetryAt?: number;
   /** Figma requests this ingest made for images: image fills (Tier 2) and renders (Tier 1). */
   figmaRequests?: { imageFills: number; renders: number };
+  /** Progress of the clusters within focusNodeIds that this ingest mode interprets. */
+  focus?: IngestFocusReport;
+}
+
+export interface IngestFocusReport {
+  requestedIds: string[];
+  foundIds: string[];
+  /** Clusters in focus that this ingest mode interprets. */
+  imageClusters: number;
+  interpreted: number;
+  pending: number;
 }
 
 /** Everything ingest_board produces and later tools read back via cache.ts. */
