@@ -4,15 +4,15 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import type { BoardData, Cluster, NormalizedNode, RefinedCluster } from "../src/types.js";
 
-const { fileTreeMock, metadataMock, screenshotMock, downloadMock, visionMock } = vi.hoisted(() => ({
-  fileTreeMock: vi.fn(), metadataMock: vi.fn(), screenshotMock: vi.fn(), downloadMock: vi.fn(), visionMock: vi.fn(),
+const { fileTreeMock, metadataMock, screenshotMock, downloadMock, imageFillsMock, visionMock } = vi.hoisted(() => ({
+  fileTreeMock: vi.fn(), metadataMock: vi.fn(), screenshotMock: vi.fn(), downloadMock: vi.fn(), imageFillsMock: vi.fn(), visionMock: vi.fn(),
 }));
 // Only the external boundaries are mocked. Normalization, hashes, clustering,
 // source snapshots, refinement cache, history, context and diff run together.
 vi.mock("../src/lib/figmaApi.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/lib/figmaApi.js")>()),
   fetchFileTree: fileTreeMock, fetchFileMetadata: metadataMock,
-  fetchRenderUrls: screenshotMock, downloadRenders: downloadMock,
+  fetchRenderUrls: screenshotMock, downloadRenders: downloadMock, fetchImageRefs: imageFillsMock,
 }));
 vi.mock("../src/lib/visionInterpreter.js", () => ({ refineClusterWithVision: visionMock }));
 
@@ -50,12 +50,17 @@ beforeEach(async () => {
   vi.stubEnv("FIGMA_ACCESS_TOKEN", "offline-test-only");
   vi.stubEnv("LLM_BASE_URL", "https://offline.invalid/v1");
   vi.stubEnv("LLM_API_KEY", "offline-test-only");
-  vi.stubGlobal("fetch", vi.fn(() => { throw new Error("Unexpected network access in offline integration test"); }));
+  // Originals from image fills are the only downloads; every other network access fails.
+  vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+    if (!String(url).startsWith("https://offline-originals.invalid/")) throw new Error("Unexpected network access in offline integration test");
+    return new Response(Buffer.from("\x89PNG\r\n\x1a\noffline-original", "latin1"));
+  }));
   activeTree = boardTree([table("Budget 100")]);
   fileTreeMock.mockImplementation(async () => activeTree);
   metadataMock.mockImplementation(async () => ({ version: activeTree.version }));
   screenshotMock.mockImplementation(async (_key: string, ids: string[]) => Object.fromEntries(ids.map(id => [id, `https://offline-images.invalid/${id}`])));
   downloadMock.mockImplementation(async (ids: string[]) => ids.map(() => Buffer.from("offline-image")));
+  imageFillsMock.mockImplementation(async () => new Proxy({}, { get: (_target, ref) => `https://offline-originals.invalid/${String(ref)}` }));
   visionMock.mockImplementation(refine);
   ({ ingestBoard } = await import("../src/tools/ingestBoard.js"));
   ({ getBoardContext } = await import("../src/tools/getBoardContext.js"));
@@ -192,7 +197,8 @@ describe("offline ingest pipeline with actual persistent cache", () => {
     const output = await running;
     expect(requestSignal?.aborted).toBe(true);
     expect(String(requestSignal?.reason)).toContain("25 ms");
-    expect(screenshotMock).toHaveBeenCalledTimes(1);
+    expect(imageFillsMock).toHaveBeenCalledTimes(1);
+    expect(screenshotMock).not.toHaveBeenCalled();
     expect(visionMock).toHaveBeenCalledTimes(1);
     expect(output.qualityReport?.fallbackReasons).toEqual({ timeout: 1, time_budget: 1 });
   });

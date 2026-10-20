@@ -85,7 +85,7 @@ export function createServer(): McpServer {
     {
       title: "Ingest FigJam Board",
       description:
-        "Read a FigJam/Figma URL with the configured Figma token and persist a local snapshot for get_board_context, answer_from_board and diff_board; the summary names the largest sections to read next and how many excerpts lie outside sections. Leaves the Figma file unchanged. Balanced/quality modes may send board text and screenshots to the configured LLM provider and incur charges; max_speed skips vision. Re-ingest to refresh stale content; local history is bounded. Supports framework phases or customPhases.",
+        "Read a FigJam/Figma URL with the configured Figma token and persist a local snapshot for get_board_context, answer_from_board and diff_board; the summary names the largest sections to read next and how many excerpts lie outside sections. Leaves the Figma file unchanged. Balanced/quality modes may send board text and images to the configured LLM provider and incur charges; max_speed skips vision. Re-ingest to refresh stale content; local history is bounded. Supports framework phases or customPhases.",
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
       inputSchema: ingestBoardInputSchema,
       outputSchema: z.object(ingestBoardOutputShape),

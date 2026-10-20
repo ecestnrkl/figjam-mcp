@@ -4,6 +4,7 @@ import { getVisionRequestTimeoutMs } from "./llmTimeouts.js";
 import { chatJson, getVisionModels, LlmInvalidJsonError } from "./llmClient.js";
 import { VISION_MAX_OUTPUT_TOKENS } from "./llmOutputBudgets.js";
 import { redactCredentials } from "./redact.js";
+import { imageMimeType } from "./figmaApi.js";
 
 /**
  * Hard prompt bounds for one cluster. These are intentionally fixed safety
@@ -29,8 +30,8 @@ const VISION_REPLY_SCHEMA = {
 /**
  * Refines one geometric cluster with a vision-capable model.
  *
- * Sends all screenshot crops for the cluster (one image per rendered node,
- * as separate image_url blocks in a single request) together with the
+ * Sends all images for the cluster (one original or render per node, as
+ * separate image_url blocks in a single request, typed by their magic bytes) together with the
  * already-extracted text content. The model:
  *  (a) confirms or corrects which nodes actually belong together
  *      thematically → `confirmedNodeIds`,
@@ -52,7 +53,7 @@ export async function refineClusterWithVision(
     ...screenshots.map(
       (buf): OpenAI.ChatCompletionContentPart => ({
         type: "image_url",
-        image_url: { url: `data:image/png;base64,${buf.toString("base64")}` },
+        image_url: { url: `data:${imageMimeType(buf) ?? "image/png"};base64,${buf.toString("base64")}` },
       }),
     ),
   ];

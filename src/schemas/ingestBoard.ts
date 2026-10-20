@@ -93,6 +93,10 @@ export const ingestBoardOutputShape = {
       incompleteClusters: z.number().int().nonnegative().optional(),
       fallbackReasons: z.record(z.string(), z.number().int().nonnegative()).optional(),
       nextRetryAt: z.number().finite().optional(),
+      figmaRequests: z
+        .object({ imageFills: z.number().int().nonnegative(), renders: z.number().int().nonnegative() })
+        .optional()
+        .describe("Figma requests of this ingest for images: image fills (Tier 2) and renders (Tier 1)"),
     })
     .optional(),
 };

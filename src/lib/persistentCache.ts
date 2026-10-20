@@ -52,7 +52,7 @@ const boardSchema = z.object({
   customPhases: z.array(z.string()).optional(), ingestMode: z.enum(["balanced", "max_quality", "max_speed"]).optional(),
   cacheKey: key.optional(), figmaVersion: z.string().optional(), figmaLastModified: z.string().optional(),
   nodeHash: z.string().optional(), refinementSignature: z.string().optional(), freshnessCheckedAt: finite.optional(),
-  qualityReport: z.object({ modelsUsed: z.array(z.string()), cachedClusters: finite, deterministicClusters: finite, visionClusters: finite, fallbackCount: finite, reusedClusters: finite.optional(), incompleteClusters: finite.optional(), fallbackReasons: z.record(z.string(), finite).optional(), nextRetryAt: finite.optional() }).optional(),
+  qualityReport: z.object({ modelsUsed: z.array(z.string()), cachedClusters: finite, deterministicClusters: finite, visionClusters: finite, fallbackCount: finite, reusedClusters: finite.optional(), incompleteClusters: finite.optional(), fallbackReasons: z.record(z.string(), finite).optional(), nextRetryAt: finite.optional(), figmaRequests: z.object({ imageFills: finite, renders: finite }).optional() }).optional(),
 }).passthrough();
 export interface BoardCacheIdentity { fileKey: string; figmaLastModified?: string; nodeHash: string; docStructureHint: DocStructureHint; customPhases?: string[]; ingestMode: IngestMode }
 export interface BoardHistoryEntry { cacheKey: string; refinementId?: string; nodeHash: string; snapshotId?: string; createdAt: number }

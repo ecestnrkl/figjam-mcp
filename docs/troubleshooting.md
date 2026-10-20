@@ -37,7 +37,7 @@ cause. Original text and table rows stay searchable in every case.
 | `config` | `LLM_BASE_URL` or `LLM_API_KEY` missing | Set both, then restart the server |
 | `auth` | Figma or the provider rejected the credentials | Check the token, scopes and file access |
 | `invalid_reply` | The model returned no usable JSON | Choose another model |
-| `render_failed`, `download_budget` | Figma could not render the nodes, or images exceeded 8 MiB each or 64 MiB per ingest | Ingest again later or split the board |
+| `render_failed`, `download_budget` | Figma could not list the image fills or render the nodes, or images exceeded 64 MiB per ingest | Ingest again later or split the board |
 | `model_failed` | Any other model error | Run `diagnose_llm_config` |
 
 ## MCP Inspector
@@ -85,7 +85,7 @@ configuration, then restart the server in the client.
 | `Invalid Figma URL — expected an HTTPS figma.com URL …` | Pass the board URL from the browser, e.g. `https://www.figma.com/board/FILE_KEY/Name`. |
 | `Figma access denied (403). Check the token, file permission and required scopes.` | The token is invalid or expired, lacks `file_content:read`, or its account cannot open the file. The same applies to 401. |
 | `Figma file not found (404): …` | Check the file key; the token's account must have access. |
-| `Figma API rate limit exceeded (429). …` | Figma limits requests by seat and plan; see [rate limits](https://developers.figma.com/docs/rest-api/rate-limits/). Use `max_speed` to avoid image renders. |
+| `Figma API rate limit exceeded (429). …` | Figma limits requests by seat and plan; see [rate limits](https://developers.figma.com/docs/rest-api/rate-limits/). `max_speed` makes no image requests; the other modes need one image fills request per ingest and renders only for drawings without an image. |
 | `Figma download exceeds the configured byte budget` | The board's file data is larger than 64 MiB. Split the board into smaller files. |
 | `LLM_API_KEY is not set — …` | Set `LLM_API_KEY` and `LLM_BASE_URL` in the client's `env` and restart. A Figma token does not replace the provider key. |
 | `LLM request failed (HTTP 429). …` | Free OpenRouter models allow 20 requests per minute and 50 or 1,000 per day. Wait, or configure your own model. |

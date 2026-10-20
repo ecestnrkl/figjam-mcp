@@ -40,6 +40,21 @@ describe("refineClusterWithVision", () => {
     expect(refined.summary).toBe("The screenshot shows the line Passwort: [redacted]");
   });
 
+  it("types each image by its magic bytes and keeps renders as PNG", async () => {
+    const { refineClusterWithVision } = await import("../src/lib/visionInterpreter.js");
+    const node = normalizedNode(0);
+    const jpeg = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 1, 2, 3]);
+    const png = Buffer.from("\x89PNG\r\n\x1a\nrender", "latin1");
+    const webp = Buffer.from("RIFF\0\0\0\0WEBPVP8 ", "latin1");
+    await refineClusterWithVision(clusterFor([node]), [jpeg, png, webp], [node]);
+    const content = chatJsonMock.mock.calls[0]![1][1].content as Array<{ type: string; image_url?: { url: string } }>;
+    expect(content.filter(part => part.type === "image_url").map(part => part.image_url!.url)).toEqual([
+      `data:image/jpeg;base64,${jpeg.toString("base64")}`,
+      `data:image/png;base64,${png.toString("base64")}`,
+      `data:image/webp;base64,${webp.toString("base64")}`,
+    ]);
+  });
+
   it("classifies invalid model fields without exposing the returned content", async () => {
     const { refineClusterWithVision } = await import("../src/lib/visionInterpreter.js");
     chatJsonMock.mockResolvedValue({ label: "", summary: "Private model output", confirmedNodeIds: [] });
