@@ -66,6 +66,8 @@ The `boardId` of every later call is the file key from that URL. To summarize
 a board, the assistant calls `ingest_board`, then `get_board_context` without
 parameters, whose first page names the largest sections and lists all sections
 with IDs, and then reads the largest sections by passing their IDs as `nodeIds`.
+Everything that lies in no section, such as loose notes and tables, comes with
+`outsideSections: true`.
 
 All settings: [configuration](https://github.com/ecestnrkl/figjam-mcp/blob/main/docs/configuration.md).
 Problems: [troubleshooting](https://github.com/ecestnrkl/figjam-mcp/blob/main/docs/troubleshooting.md).
@@ -87,7 +89,8 @@ Problems: [troubleshooting](https://github.com/ecestnrkl/figjam-mcp/blob/main/do
    `get_board_context` searches it (BM25 over original text, table rows and
    names), `answer_from_board` answers with citations and `diff_board` compares
    snapshots. Its first page lists the board's sections with IDs; pass a page,
-   section, frame or group ID as `nodeIds` to read everything inside it. Its text
+   section, frame or group ID as `nodeIds` to read everything inside it; several
+   IDs in one call take turns, so each of them appears on every page. Its text
    `content` is the readable page; `structuredContent` holds the same data without
    repeating it, with excerpts in `evidence` and location per cluster in `clusters`.
 

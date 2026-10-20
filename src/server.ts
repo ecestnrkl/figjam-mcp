@@ -85,7 +85,7 @@ export function createServer(): McpServer {
     {
       title: "Ingest FigJam Board",
       description:
-        "Read a FigJam/Figma URL with the configured Figma token and persist a local snapshot for get_board_context, answer_from_board and diff_board; the summary names the largest sections to read next. Leaves the Figma file unchanged. Balanced/quality modes may send board text and screenshots to the configured LLM provider and incur charges; max_speed skips vision. Re-ingest to refresh stale content; local history is bounded. Supports framework phases or customPhases.",
+        "Read a FigJam/Figma URL with the configured Figma token and persist a local snapshot for get_board_context, answer_from_board and diff_board; the summary names the largest sections to read next and how many excerpts lie outside sections. Leaves the Figma file unchanged. Balanced/quality modes may send board text and screenshots to the configured LLM provider and incur charges; max_speed skips vision. Re-ingest to refresh stale content; local history is bounded. Supports framework phases or customPhases.",
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
       inputSchema: ingestBoardInputSchema,
       outputSchema: z.object(ingestBoardOutputShape),
@@ -113,7 +113,7 @@ export function createServer(): McpServer {
     {
       title: "Get Board Context",
       description:
-        "Read source-cited context from an ingested board snapshot: original text, table rows, cluster summaries and arrows, each with a Figma link. Start here for overviews, summaries and documentation with one call without topic, nodeIds, limit and maxChars: its first page names the largest sections and lists all sections with IDs. Then read sections, pages, frames or groups by passing their IDs as nodeIds, search words with topic, or continue with cursor, and synthesize the answer yourself. Large pages can exceed client output limits. No network or LLM calls; does not refresh Figma content (use ingest_board).",
+        "Read source-cited context from an ingested board snapshot: original text, table rows, cluster summaries and arrows, each with a Figma link. Start here for overviews, summaries and documentation with one call without topic, nodeIds, limit and maxChars: its first page names the largest sections and lists all sections with IDs. Then read sections, pages, frames or groups by passing their IDs as nodeIds (several IDs in one call share every page), read everything outside sections with outsideSections: true, search words with topic, or continue with cursor, and synthesize the answer yourself. Large pages can exceed client output limits. No network or LLM calls; does not refresh Figma content (use ingest_board).",
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       inputSchema: getBoardContextInputSchema,
       outputSchema: z.object(getBoardContextOutputShape),

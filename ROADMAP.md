@@ -33,8 +33,9 @@ installable in two minutes, documented, and used on real boards.
 - [x] Excerpt text once in `structuredContent`; location per cluster; first answers point to the largest sections
 - [x] Tables as tables: rows and columns from cell IDs
 
-## 0.9.0 — images without Figma renders
+## 0.9.0 — the whole board
 
+- [x] Every requested ID on every page; content outside sections with `outsideSections`
 - [ ] Image fills (Tier 2) instead of renders (Tier 1)
 - [ ] `focusNodeIds` lets the host choose which images to interpret first
 

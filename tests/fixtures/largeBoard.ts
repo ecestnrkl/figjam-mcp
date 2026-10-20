@@ -7,6 +7,11 @@ export interface LargeBoardOptions {
   shortLabels?: number;
   /** Extra clusters of one image each, not yet interpreted. */
   imageClusters?: number;
+  /**
+   * Extra clusters on the page below all sections: the first holds a table with
+   * cell IDs as in tableBoard, the others five stickies each.
+   */
+  outsideClusters?: number;
 }
 
 /**
@@ -77,7 +82,31 @@ export function largeBoard(
       incomplete: true, fallbackReason: "time_budget",
     });
   }
+  for (let k = 0; k < (options.outsideClusters ?? 0); k++) {
+    const x = k * 400;
+    const y = 30000;
+    const members: NormalizedNode[] = k === 0 ? [outsideTable(page.id, x, y)] : Array.from({ length: 5 }, (_, s) => {
+      const text = `Outside note ${k}-${s} about the parking lot.`;
+      return { id: `7:${k * 10 + s}`, name: text, type: "STICKY", text, x, y: y + s * 120, width: 100, height: 100, rotation: 0, pageId: page.id };
+    });
+    nodes.push(...members);
+    clusters.push({ id: `cluster_outside_${k}`, label: k === 0 ? "Table 1" : `Outside note ${k}-0`,
+      nodeIds: members.map((node) => node.id), confirmedNodeIds: members.map((node) => node.id),
+      boundingBox: { x, y, width: 300, height: 600 }, summarySource: "deterministic", summary: "" });
+  }
   return { boardId, fileKey: boardId, docStructureHint: "freeform", createdAt: 1, snapshotId: "c".repeat(64), nodes, clusters };
+}
+
+/** A 30 × 5 table outside sections, with cell IDs T8:0;<row ID>;<column ID>. */
+function outsideTable(pageId: string, x: number, y: number): NormalizedNode {
+  const cells = Array.from({ length: 30 }, (_, row) => Array.from({ length: 5 }, (_, column) => ({
+    id: `T8:0;6:${row};7:${column}`,
+    text: row === 0 ? `Measure ${column + 1}` : column === 0 ? `Session ${row}` : String((row * 13 + column * 7) % 50),
+  }))).flat();
+  return {
+    id: "8:0", name: "Table 1", type: "TABLE", text: cells.map((cell) => cell.text).join("\n"), x, y, width: 1000, height: 600,
+    rotation: 0, pageId, renderNodeId: "8:0", table: { cells },
+  };
 }
 
 /**

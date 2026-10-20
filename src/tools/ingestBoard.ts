@@ -13,7 +13,7 @@ import { setBoard } from "../lib/cache.js";
 import { redactBoard, redactNodes } from "../lib/redact.js";
 import { readIntEnv } from "../lib/env.js";
 import { describeModelConfig } from "../lib/modelRegistry.js";
-import { largestSectionsLine } from "../lib/sections.js";
+import { sectionGuide } from "../lib/sections.js";
 import {
   buildBoardCacheKey,
   extractFigmaLastModified,
@@ -696,13 +696,15 @@ const LARGEST_SECTIONS_IN_SUMMARY = 8;
 function buildSummary(board: BoardData, qualityReport: IngestQualityReport): string {
   const { fileKey, clusters, docStructureHint, ingestMode } = board;
   // get_board_context reads redactBoard(board); counting on that object builds its search index once.
-  const largestSections = largestSectionsLine(redactBoard(board), LARGEST_SECTIONS_IN_SUMMARY);
+  const { largestLine: largestSections, outsideSections } = sectionGuide(redactBoard(board), LARGEST_SECTIONS_IN_SUMMARY);
   const labels = clusters.map((cluster) => `"${cluster.label}"`);
   const shownLabels = labels.slice(0, 8).join(", ") + (labels.length > 8 ? ", ..." : "");
   const settings = `(docStructureHint=${docStructureHint}${ingestMode ? `, ingestMode=${ingestMode}` : ""})`;
   const overview = largestSections
     ? `${clusters.length} clusters ${settings}. ${largestSections} For overviews and summaries, read these sections with ` +
-      "get_board_context and nodeIds; answer_from_board is for one specific question."
+      "get_board_context and nodeIds; answer_from_board is for one specific question." +
+      (outsideSections ? ` ${outsideSections} excerpt${outsideSections === 1 ? " lies" : "s lie"} outside sections; read ` +
+        `${outsideSections === 1 ? "it" : "them"} with get_board_context and outsideSections: true.` : "")
     : `${clusters.length} clusters - ${shownLabels} ${settings}.`;
   const fallbackNote =
     qualityReport.fallbackCount > 0

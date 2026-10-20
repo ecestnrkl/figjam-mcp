@@ -723,7 +723,7 @@ describe("ingestBoard", () => {
   });
 
   it("names the largest sections with IDs in the summary, counted as in get_board_context", async () => {
-    // Section k holds k stickies; nine sections, so the summary names the eight largest.
+    // Section k holds k stickies; nine sections, so the summary names the eight largest. One sticky lies outside.
     const sections = Array.from({ length: 9 }, (_, index) => ({
       id: `5:${index + 1}`, name: `Topic ${index + 1}`, type: "SECTION",
       absoluteBoundingBox: { x: index * 3000, y: 0, width: 2000, height: 2000 },
@@ -733,20 +733,24 @@ describe("ingestBoard", () => {
         absoluteBoundingBox: { x: index * 3000 + note * 150, y: 0, width: 100, height: 100 },
       })),
     }));
+    const outside = { id: "7:1", name: "Parking lot", type: "STICKY", characters: "Parking lot question about the budget.",
+      absoluteBoundingBox: { x: 0, y: 5000, width: 100, height: 100 } };
     fetchFileTreeMock.mockResolvedValue({ document: { id: "0:0", name: "Document", type: "DOCUMENT",
-      children: [{ id: "0:1", name: "Page", type: "CANVAS", children: sections }] } });
+      children: [{ id: "0:1", name: "Page", type: "CANVAS", children: [...sections, outside] }] } });
 
     const output = await ingestBoard({ figmaFileUrl: "https://www.figma.com/board/Sections123/Test", docStructureHint: "freeform", ingestMode: "max_speed" });
 
     const largest = Array.from({ length: 8 }, (_, index) => `5:${9 - index} Topic ${9 - index} — ${9 - index}`).join("; ");
-    expect(output.summary).toContain(`Largest sections (ID, name, excerpts): ${largest}.`);
-    expect(output.summary).toContain("For overviews and summaries, read these sections with get_board_context and nodeIds; answer_from_board is for one specific question.");
+    expect(output.summary).toContain(`Largest sections (ID, name, excerpts): ${largest}. Together they hold 44 of the board's 46 excerpts.`);
+    expect(output.summary).toContain("For overviews and summaries, read these sections with get_board_context and nodeIds; answer_from_board is for one specific question." +
+      " 1 excerpt lies outside sections; read it with get_board_context and outsideSections: true.");
     expect(output.summary).not.toContain("Topic 1 —");
     expect(output.summary).not.toContain('"Note');
     // The first get_board_context call reads the index the summary built.
     expect(hasEvidenceIndex(redactBoard(getBoard("Sections123")!))).toBe(true);
     const { contextText } = (await getBoardContext({ boardId: "Sections123" })).structuredContent;
-    expect(contextText).toContain(`Largest sections (ID, name, excerpts): ${largest}; 5:1 Topic 1 — 1.`);
+    expect(contextText).toContain(`Largest sections (ID, name, excerpts): ${largest}; 5:1 Topic 1 — 1. Together they hold 45 of the board's 46 excerpts.`);
+    expect(contextText).toContain("1 excerpt outside sections; read it with outsideSections: true.");
   });
 
   it("reuses unchanged clusters from the previous ingest", async () => {
