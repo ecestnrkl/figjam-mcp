@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { BoardData, Cluster, NormalizedNode, RefinedCluster } from "../src/types.js";
+import { pngHeader } from "./fixtures/images.js";
 
 const { fileTreeMock, metadataMock, screenshotMock, downloadMock, imageFillsMock, visionMock } = vi.hoisted(() => ({
   fileTreeMock: vi.fn(), metadataMock: vi.fn(), screenshotMock: vi.fn(), downloadMock: vi.fn(), imageFillsMock: vi.fn(), visionMock: vi.fn(),
@@ -53,13 +54,13 @@ beforeEach(async () => {
   // Originals from image fills are the only downloads; every other network access fails.
   vi.stubGlobal("fetch", vi.fn(async (url: string) => {
     if (!String(url).startsWith("https://offline-originals.invalid/")) throw new Error("Unexpected network access in offline integration test");
-    return new Response(Buffer.from("\x89PNG\r\n\x1a\noffline-original", "latin1"));
+    return new Response(pngHeader(100, 100, "offline-original"));
   }));
   activeTree = boardTree([table("Budget 100")]);
   fileTreeMock.mockImplementation(async () => activeTree);
   metadataMock.mockImplementation(async () => ({ version: activeTree.version }));
   screenshotMock.mockImplementation(async (_key: string, ids: string[]) => Object.fromEntries(ids.map(id => [id, `https://offline-images.invalid/${id}`])));
-  downloadMock.mockImplementation(async (ids: string[]) => ids.map(() => Buffer.from("offline-image")));
+  downloadMock.mockImplementation(async (ids: string[]) => ids.map(() => pngHeader(100, 100, "offline-image")));
   imageFillsMock.mockImplementation(async () => new Proxy({}, { get: (_target, ref) => `https://offline-originals.invalid/${String(ref)}` }));
   visionMock.mockImplementation(refine);
   ({ ingestBoard } = await import("../src/tools/ingestBoard.js"));

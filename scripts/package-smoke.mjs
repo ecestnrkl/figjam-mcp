@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { spawnSync } from "node:child_process";
+import { crc32, deflateSync } from "node:zlib";
 import { Client } from "@modelcontextprotocol/client";
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 import { parseSmokeOptions, requireNewArtifactDirectory, retainVerifiedArtifact } from "./package-smoke-artifact.mjs";
@@ -68,6 +69,42 @@ async function ingestWithProgress(client, arguments_, label) {
   }
 }
 
+/** A synthetic RGB PNG with colour blocks and a grid; no board content. */
+function syntheticPng(width, height) {
+  const stride = width * 3 + 1;
+  const raw = Buffer.alloc(stride * height);
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const o = y * stride + 1 + x * 3;
+      const line = x % 100 < 2 || y % 100 < 2;
+      const block = (Math.floor(x * 6 / width) + Math.floor(y * 4 / height)) % 3;
+      raw[o] = line ? 0 : block === 0 ? 220 : 40;
+      raw[o + 1] = line ? 0 : block === 1 ? 200 : 60;
+      raw[o + 2] = line ? 0 : block === 2 ? 230 : 50;
+    }
+  }
+  const chunk = (type, data) => {
+    const body = Buffer.concat([Buffer.from(type, "latin1"), data]);
+    const frame = Buffer.alloc(8);
+    frame.writeUInt32BE(data.length, 0);
+    frame.writeUInt32BE(crc32(body), 4);
+    return Buffer.concat([frame.subarray(0, 4), body, frame.subarray(4)]);
+  };
+  const header = Buffer.alloc(13);
+  header.writeUInt32BE(width, 0);
+  header.writeUInt32BE(height, 4);
+  header.set([8, 2], 8);
+  return Buffer.concat([Buffer.from("\x89PNG\r\n\x1a\n", "latin1"), chunk("IHDR", header), chunk("IDAT", deflateSync(raw)), chunk("IEND", Buffer.alloc(0))]);
+}
+
+/** Width and height from a JPEG frame header. */
+const jpegSizeSource = `(bytes => {
+  for (let offset = 2; offset + 9 <= bytes.length && bytes[offset] === 0xff; offset += 2 + bytes.readUInt16BE(offset + 2)) {
+    const marker = bytes[offset + 1];
+    if (marker >= 0xc0 && marker <= 0xcf && ![0xc4, 0xc8, 0xcc].includes(marker)) return [bytes.readUInt16BE(offset + 7), bytes.readUInt16BE(offset + 5)];
+  }
+})`;
+
 function run(command, args, options = {}) {
   const result = spawnSync(command, args, {
     encoding: "utf8", maxBuffer: 10 * 1024 * 1024, timeout: 180_000, ...options,
@@ -113,6 +150,36 @@ try {
   const shimVersion = run(process.execPath, [npmCli, "exec", "--offline", "--no", "--", metadata.name, "--version"], { cwd: consumer });
   assert.equal(shimVersion.stdout.trim(), metadata.version);
 
+  // The installed package scales a large original on a worker thread, and cancelling stops that worker.
+  const largeOriginal = join(temporary, "large-original.png");
+  await writeFile(largeOriginal, syntheticPng(2400, 1800));
+  const workerCheck = join(temporary, "worker-check.mjs");
+  await writeFile(workerCheck, `
+    import assert from 'node:assert/strict';
+    import { once } from 'node:events';
+    import { readFile } from 'node:fs/promises';
+    import { resizeInWorker } from ${JSON.stringify(pathToFileURL(join(installed, "dist", "lib", "imageWorker.js")).href)};
+    const jpegSize = ${jpegSizeSource};
+    const image = await readFile(process.argv[2]);
+    const workers = [];
+    process.on('worker', worker => workers.push(worker));
+    const started = performance.now();
+    assert.deepEqual(jpegSize(await resizeInWorker(image, 'image/png')), [1024, 768]);
+    const elapsed = Math.round(performance.now() - started);
+    assert.equal(workers.length, 1, 'Resizing must run on a worker thread');
+    const controller = new AbortController();
+    const reason = new Error('Synthetic ingest cancelled');
+    const cancelled = resizeInWorker(image, 'image/png', controller.signal);
+    const exited = once(workers[0], 'exit');
+    setImmediate(() => controller.abort(reason));
+    await assert.rejects(cancelled, error => error === reason);
+    await exited;
+    assert.deepEqual(jpegSize(await resizeInWorker(image, 'image/png')), [1024, 768]);
+    assert.equal(workers.length, 2, 'The next image must start a new worker');
+    console.log('Worker resized 2400 x 1800 px to 1024 x 768 px in ' + elapsed + ' ms; cancellation stopped the worker.');
+  `);
+  console.log(run(process.execPath, [workerCheck, largeOriginal], { cwd: consumer }).stdout.trim());
+
   const cache = join(temporary, "cache");
   const requestsFile = join(temporary, "fixture-requests.jsonl");
   const preload = join(temporary, "offline-provider.mjs");
@@ -121,13 +188,14 @@ try {
   // Unexpected requests fail closed: no fixture can contact a real provider.
   await writeFile(preload, `
     import assert from 'node:assert/strict';
-    import { appendFileSync } from 'node:fs';
+    import { appendFileSync, readFileSync } from 'node:fs';
     import { setTimeout as delay } from 'node:timers/promises';
     let fileReads = 0;
     let tableReads = 0;
     let longRenderPending = false;
     const record = kind => appendFileSync(process.env.SMOKE_REQUESTS_FILE, JSON.stringify({ kind }) + '\\n');
     const json = body => new Response(JSON.stringify(body), { headers: { 'content-type': 'application/json' } });
+    const jpegSize = ${jpegSizeSource};
     globalThis.fetch = async (input, init = {}) => {
       const url = new URL(typeof input === 'string' || input instanceof URL ? input : input.url);
       const signal = init.signal ?? (input instanceof Request ? input.signal : undefined);
@@ -206,7 +274,7 @@ try {
         }
         if (url.pathname === '/v1/files/ImageBoard123/images') {
           record('figma_image_fills');
-          return json({ error: false, status: 200, meta: { images: { 'synthetic-photo': 'https://offline-images.invalid/photo.jpg' } } });
+          return json({ error: false, status: 200, meta: { images: { 'synthetic-photo': 'https://offline-images.invalid/photo.png' } } });
         }
         if (url.pathname === '/v1/images/ImageBoard123') record('image_board_render');
         if (url.pathname === '/v1/images/LongBoard123') {
@@ -224,10 +292,10 @@ try {
           return json({ images: { '1:1': 'https://offline-images.invalid/evidence.png' } });
         }
       }
-      if (url.href === 'https://offline-images.invalid/photo.jpg') {
+      if (url.href === 'https://offline-images.invalid/photo.png') {
         record('original_download');
-        const original = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0, 16, 74, 70, 73, 70, 0, 1]);
-        return new Response(original, { headers: { 'content-type': 'image/jpeg', 'content-length': String(original.length) } });
+        const original = readFileSync(process.env.SMOKE_LARGE_ORIGINAL);
+        return new Response(original, { headers: { 'content-type': 'image/png', 'content-length': String(original.length) } });
       }
       if (url.href === 'https://offline-images.invalid/evidence.png' || url.href === 'https://offline-images.invalid/long.png') {
         record(url.pathname === '/long.png' ? 'long_image' : 'image_download');
@@ -244,7 +312,9 @@ try {
           const imageUrls = Array.isArray(parts) ? parts.filter(part => part.type === 'image_url').map(part => part.image_url.url) : [];
           if (Array.isArray(parts) && /- 4:1 /.test(parts[0].text)) {
             assert.equal(imageUrls.length, 1, 'The image cluster sends its original');
-            assert.match(imageUrls[0], /^data:image\\/jpeg;base64,/, 'The original keeps its JPEG type');
+            assert.match(imageUrls[0], /^data:image\\/jpeg;base64,/, 'The 2400 px PNG original arrives as JPEG');
+            assert.deepEqual(jpegSize(Buffer.from(imageUrls[0].split(',')[1], 'base64')), [1024, 768], 'The original arrives scaled down');
+            record('bounded_original');
             reply = { label: 'Synthetic photo', summary: 'A synthetic photo on the photo wall.', confirmedNodeIds: ['4:1'] };
           } else if (longRenderPending) {
             longRenderPending = false;
@@ -269,7 +339,7 @@ try {
       throw new Error('Unexpected network request blocked by package smoke fixture: ' + url.origin + url.pathname);
     };
   `);
-  const cleanEnv = { ...process.env, FIGJAM_MCP_CACHE_DIR: cache, SMOKE_REQUESTS_FILE: requestsFile,
+  const cleanEnv = { ...process.env, FIGJAM_MCP_CACHE_DIR: cache, SMOKE_REQUESTS_FILE: requestsFile, SMOKE_LARGE_ORIGINAL: largeOriginal,
     FIGMA_ACCESS_TOKEN: "offline-figma-token", LLM_API_KEY: "offline-model-key", LLM_BASE_URL: "https://offline-model.invalid/v1",
     LLM_MODEL_PRESET: "student-free", LLM_VISION_MODELS: "offline-test-model", LLM_TEXT_MODELS: "offline-test-model",
     LLM_FAST_TEXT_MODELS: "offline-test-model", LLM_VISION_MODEL: "", LLM_TEXT_MODEL: "", LLM_PROVIDER_REQUIRE_PARAMETERS: "false",
@@ -453,7 +523,7 @@ try {
   const requests = (await readFile(requestsFile, "utf8")).trim().split("\n").map(line => JSON.parse(line).kind);
   const expectedRequests = { figma_file: 2, figma_metadata: 1, figma_render: 1, image_download: 1,
     figjam_cluster_refinement: longCheck ? 3 : 2, figjam_evidence_answer: 1, diagnose_text_json: 1, diagnose_fast_text_json: 1, diagnose_vision_json: 1, figma_denied: 1,
-    table_file: 2, table_metadata: 1, legacy_file: 2, image_board_file: 1, figma_image_fills: 1, original_download: 1,
+    table_file: 2, table_metadata: 1, legacy_file: 2, image_board_file: 1, figma_image_fills: 1, original_download: 1, bounded_original: 1,
     ...(longCheck ? { long_file: 1, long_render: 1, long_image: 1, long_model_delay_started: 1, long_model_delay_completed: 1 } : {}),
   };
   for (const [kind, count] of Object.entries(expectedRequests)) {
@@ -469,4 +539,4 @@ if (artifactDir) {
   console.log(`Retained tested tarball: ${artifact.archivePath}`);
   console.log(`SHA-256: ${artifact.checksum}`);
 }
-console.log(`Verified ${metadata.name}@${metadata.version}: production-only install, executable, successful calls to all five tools, offline Figma/vision/answer/diagnostic fixtures, an image from image fills without a render, table row search and single-cell edit diff, persisted cache reuse, modern/legacy ingest progress followed by final responses, error handling${longCheck ? ", and a real >60-second ingest" : ""}`);
+console.log(`Verified ${metadata.name}@${metadata.version}: production-only install, executable, successful calls to all five tools, offline Figma/vision/answer/diagnostic fixtures, a large image from image fills scaled down on a worker thread without a render, table row search and single-cell edit diff, persisted cache reuse, modern/legacy ingest progress followed by final responses, error handling${longCheck ? ", and a real >60-second ingest" : ""}`);

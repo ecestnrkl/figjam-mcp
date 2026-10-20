@@ -118,10 +118,14 @@ deferred by the budget go before clusters that failed. Raise
 
 - Figma file: 64 MiB, 100,000 nodes, 1,024 nesting levels.
 - Images: up to 6 per cluster, 8 MiB per vision request and 64 MiB per ingest.
-  A cluster with images sends the originals of its largest image nodes (3.75 MiB
-  each) from one image fills request per ingest. Other clusters, and image nodes
-  whose original is missing, larger or in another format than PNG, JPEG, GIF or
-  WebP, are rendered by Figma in requests of up to 18 nodes (8 MiB each).
+  Every image goes to the model with at most 1,024 px on its longest side and
+  3.75 MiB; larger PNG and JPEG images are scaled down locally, one after another
+  on a worker thread, and sent as JPEG. A cluster with images sends the originals
+  of its largest image nodes (up to 8 MiB each to download) from one image fills
+  request per ingest. Other clusters, and image nodes whose original is missing,
+  malformed, above 8 MiB or 40 megapixels, a GIF or WebP above 1,024 px, or in
+  another format than PNG, JPEG, GIF or WebP, are rendered by Figma in requests of
+  up to 18 nodes (8 MiB each).
 - Vision text per cluster: 160 nodes and 24,000 characters (300 per node).
   Groups of more than 250 nodes are split before vision.
 - `get_board_context`: `limit` 20 (max 100) excerpts, up to 50 `nodeIds`; the section overview and

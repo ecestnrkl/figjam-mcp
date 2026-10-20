@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.9.1 — Unreleased
+
+- `ingest_board` sends every image to the vision model with at most 1,024 px on the longest side. Larger PNG and JPEG
+  originals, now downloaded up to 8 MiB, and larger renders are scaled down on a worker thread and sent as JPEG; GIF
+  and WebP above 1,024 px, originals above 40 megapixels and malformed ones are rendered instead. In 0.9.0, full-size
+  originals pushed image requests past the 40-second vision budget.
+
 ## 0.9.0 — 2026-10-20
 
 - `get_board_context` with several `nodeIds`, at least one of them a page, section, frame or group, shows

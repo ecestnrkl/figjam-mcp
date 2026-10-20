@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { BoardData, Cluster, NormalizedNode } from "../src/types.js";
 import { FigmaApiError, FigmaDownloadBudgetError, FigmaTimeoutError } from "../src/lib/figmaApi.js";
 import { LLMConfigurationError, LlmInvalidJsonError, LlmRequestError, LlmTimeoutError } from "../src/lib/llmClient.js";
+import { gifHeader, jpegHeader, pngHeader, syntheticJpeg, syntheticPng } from "./fixtures/images.js";
 
 const {
   fetchFileTreeMock,
@@ -14,6 +15,7 @@ const {
   readCachedBoardMock,
   persistBoardMock,
   readLatestBoardMock,
+  resizeInWorkerMock,
   fakeHashClusterNodes,
 } = vi.hoisted(() => ({
   fetchFileTreeMock: vi.fn(),
@@ -26,6 +28,7 @@ const {
   readCachedBoardMock: vi.fn(),
   persistBoardMock: vi.fn(),
   readLatestBoardMock: vi.fn(),
+  resizeInWorkerMock: vi.fn(),
   // Deterministic stand-in with the same semantics as the real hash:
   // id + text + imageRef, order-independent.
   fakeHashClusterNodes: (nodes: Array<{ id: string; text?: string; imageRef?: string }>) =>
@@ -47,6 +50,9 @@ vi.mock("../src/lib/visionInterpreter.js", () => ({
   refineClusterWithVision: refineClusterWithVisionMock,
 }));
 
+// The worker thread runs only from the built package (see package:smoke); here the same function runs inline.
+vi.mock("../src/lib/imageWorker.js", () => ({ resizeInWorker: resizeInWorkerMock }));
+
 vi.mock("../src/lib/persistentCache.js", () => ({
   EXTRACTION_VERSION: 5,
   extractFigmaLastModified: () => "2026-07-04T00:00:00Z",
@@ -67,11 +73,15 @@ const { getBoardContext } = await import("../src/tools/getBoardContext.js");
 const { getBoard } = await import("../src/lib/cache.js");
 const { redactBoard } = await import("../src/lib/redact.js");
 const { hasEvidenceIndex } = await import("../src/lib/evidence.js");
+const { imageSize, resizeToJpeg } = await import("../src/lib/imageResize.js");
 
-/** A JPEG original whose bytes name its URL, so tests can check which cluster receives it. */
+/** A 100 px JPEG original whose bytes name its URL, so tests can check which cluster receives it. */
 function jpeg(tag: string, size = 0): Buffer {
-  const header = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.from(tag)]);
-  return size > header.length ? Buffer.concat([header, Buffer.alloc(size - header.length)]) : header;
+  return jpegHeader(100, 100, tag, size);
+}
+/** A 100 px render whose bytes name its URL. */
+function render(url: string): Buffer {
+  return pngHeader(100, 100, url);
 }
 function imageResponse(body: Buffer, contentLength: number | undefined = body.length): Response {
   return new Response(body, { headers: contentLength === undefined ? {} : { "Content-Length": String(contentLength) } });
@@ -199,11 +209,12 @@ beforeEach(() => {
     Object.fromEntries(ids.map(id => [id, `https://cdn.example/${id}`])));
   // Each image carries its render URL, so tests can check which cluster receives it.
   downloadRendersMock.mockImplementation(async (ids: string[], urls: Record<string, string>) =>
-    ids.map(id => Buffer.from(urls[id]!)));
+    ids.map(id => render(urls[id]!)));
   // Every imageRef has an original; originals download through the real downloadOriginals.
   fetchImageRefsMock.mockImplementation(async () => new Proxy({}, { get: (_target, ref) => `https://originals.example/${String(ref)}` }));
   downloadFetchMock.mockImplementation(async (url: string) => imageResponse(jpeg(url)));
   vi.stubGlobal("fetch", downloadFetchMock);
+  resizeInWorkerMock.mockImplementation(async (data: Uint8Array, format: "image/png" | "image/jpeg") => resizeToJpeg(data, format));
   refineClusterWithVisionMock.mockImplementation(
     async (cluster: Cluster, _screenshots: Buffer[], _nodes: NormalizedNode[]) => ({
       ...cluster,
@@ -467,7 +478,7 @@ describe("ingestBoard", () => {
       .toEqual(Array.from({ length: 25 }, (_, index) => `drawing:${index}`).sort());
     expect(downloadRendersMock).toHaveBeenCalledTimes(25);
     for (const [cluster, screenshots] of refineClusterWithVisionMock.mock.calls as Array<[Cluster, Buffer[]]>) {
-      expect(screenshots.map(String)).toEqual(cluster.nodeIds.map(id => `https://cdn.example/${id}`));
+      expect(screenshots).toEqual(cluster.nodeIds.map(id => render(`https://cdn.example/${id}`)));
     }
     expect(output.qualityReport).toMatchObject({ visionClusters: 25, fallbackCount: 0 });
   });
@@ -564,7 +575,7 @@ describe("ingestBoard", () => {
       for (const [cluster, images] of refineClusterWithVisionMock.mock.calls as Array<[Cluster, Buffer[]]>) {
         const imageId = cluster.nodeIds.find(id => id.startsWith("image:"));
         if (imageId) expect(images).toHaveLength(1);
-        else expect(images.map(String)).toEqual(["https://cdn.example/vector:1", "https://cdn.example/vector:2"]);
+        else expect(images).toEqual([render("https://cdn.example/vector:1"), render("https://cdn.example/vector:2")]);
       }
       expect(output.qualityReport).toMatchObject({ visionClusters: 4, figmaRequests: { imageFills: 1, renders: 1 } });
       expect(output.summary).toContain("Figma requests for images: 1 image fills request (Tier 2), 1 render request (Tier 1).");
@@ -590,12 +601,12 @@ describe("ingestBoard", () => {
       fetchImageRefsMock.mockResolvedValueOnce({ "good-ref": "https://originals.example/good", "large-ref": "https://originals.example/large",
         "svg-ref": "https://originals.example/svg" });
       downloadFetchMock.mockImplementation(async (url: string) => url.endsWith("/large")
-        ? imageResponse(jpeg(url), 3.75 * MiB + 1) : url.endsWith("/svg") ? imageResponse(Buffer.from("<svg/>")) : imageResponse(jpeg(url)));
+        ? imageResponse(jpeg(url), 8 * MiB + 1) : url.endsWith("/svg") ? imageResponse(Buffer.from("<svg/>")) : imageResponse(jpeg(url)));
       const output = await ingestBoard(balanced);
       expect(fetchRenderUrlsMock).toHaveBeenCalledTimes(1);
       expect(fetchRenderUrlsMock.mock.calls[0]![1]).toEqual(["missing", "large", "svg"]);
-      expect((refineClusterWithVisionMock.mock.calls[0]![1] as Buffer[]).map(String)).toEqual([
-        String(jpeg("https://originals.example/good")), "https://cdn.example/missing", "https://cdn.example/large", "https://cdn.example/svg",
+      expect(refineClusterWithVisionMock.mock.calls[0]![1] as Buffer[]).toEqual([
+        jpeg("https://originals.example/good"), render("https://cdn.example/missing"), render("https://cdn.example/large"), render("https://cdn.example/svg"),
       ]);
       expect(output.qualityReport).toMatchObject({ visionClusters: 1, figmaRequests: { imageFills: 1, renders: 1 } });
     });
@@ -612,6 +623,55 @@ describe("ingestBoard", () => {
       expect(images.map(image => image.length)).toEqual([3.5 * MiB, 3.5 * MiB, 1024]);
       expect(images.reduce((sum, image) => sum + image.length, 0)).toBeLessThanOrEqual(8 * MiB);
       expect(fetchRenderUrlsMock).not.toHaveBeenCalled();
+    });
+
+    it("scales PNG and JPEG originals above 1,024 px down to JPEG and sends smaller ones byte-identical", async () => {
+      fetchFileTreeMock.mockResolvedValueOnce(treeWith([
+        imageNode("photo", "jpeg-ref", 0, 140), imageNode("screen", "png-ref", 110, 130), imageNode("small", "small-ref", 220, 120),
+      ]));
+      const originals: Record<string, Buffer> = {
+        "jpeg-ref": syntheticJpeg(2400, 1800), "png-ref": syntheticPng(2400, 1800, true), "small-ref": jpegHeader(900, 600, "small", 200 * 1024),
+      };
+      downloadFetchMock.mockImplementation(async (url: string) => imageResponse(originals[url.split("/").at(-1)!]!));
+      const { imageMimeType } = await import("../src/lib/figmaApi.js");
+      await ingestBoard(balanced);
+      const images = refineClusterWithVisionMock.mock.calls[0]![1] as Buffer[];
+      expect(images).toHaveLength(3);
+      for (const image of images.slice(0, 2)) {
+        expect(imageMimeType(image)).toBe("image/jpeg");
+        expect(imageSize(image, "image/jpeg")).toEqual({ width: 1024, height: 768 });
+      }
+      expect(images[2]!.equals(originals["small-ref"]!)).toBe(true);
+      expect(resizeInWorkerMock.mock.calls.map(call => call[1])).toEqual(["image/jpeg", "image/png"]);
+      expect(fetchRenderUrlsMock).not.toHaveBeenCalled();
+    });
+
+    it("renders instead of decoding 60 megapixels, a broken PNG or a GIF above 1,024 px", async () => {
+      fetchFileTreeMock.mockResolvedValueOnce(treeWith([
+        imageNode("huge", "huge-ref", 0, 140), imageNode("broken", "broken-ref", 110, 130), imageNode("gif", "gif-ref", 220, 120),
+      ]));
+      const originals: Record<string, Buffer> = {
+        "huge-ref": pngHeader(10_000, 6_000), "broken-ref": Buffer.from("\x89PNG\r\n\x1a\nbroken", "latin1"), "gif-ref": gifHeader(2000, 1500),
+      };
+      downloadFetchMock.mockImplementation(async (url: string) => imageResponse(originals[url.split("/").at(-1)!]!));
+      const output = await ingestBoard(balanced);
+      expect(resizeInWorkerMock).not.toHaveBeenCalled();
+      expect(fetchRenderUrlsMock.mock.calls.map(call => call[1])).toEqual([["huge", "broken", "gif"]]);
+      expect(refineClusterWithVisionMock.mock.calls[0]![1]).toEqual(
+        ["huge", "broken", "gif"].map(id => render(`https://cdn.example/${id}`)));
+      expect(output.qualityReport).toMatchObject({ visionClusters: 1, figmaRequests: { imageFills: 1, renders: 1 } });
+    });
+
+    it("scales renders above 1,024 px down and fails a cluster whose images cannot be bounded like a failed render", async () => {
+      fetchFileTreeMock.mockResolvedValueOnce(drawingClusterTree(2));
+      downloadRendersMock.mockImplementation(async (ids: string[]) =>
+        ids.map(id => id === "drawing:0" ? syntheticPng(2400, 1800) : Buffer.from("not an image")));
+      const output = await ingestBoard(balanced);
+      expect(refineClusterWithVisionMock).toHaveBeenCalledTimes(1);
+      const [cluster, images] = refineClusterWithVisionMock.mock.calls[0] as [Cluster, Buffer[]];
+      expect(cluster.nodeIds).toEqual(["drawing:0"]);
+      expect(imageSize(images[0]!, "image/jpeg")).toEqual({ width: 1024, height: 768 });
+      expect(output.qualityReport?.fallbackReasons).toEqual({ render_failed: 1 });
     });
 
     it.each([
