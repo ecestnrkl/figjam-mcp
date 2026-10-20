@@ -105,12 +105,14 @@ and time out.
 - OpenRouter allows free models 20 requests per minute and 50 requests per day,
   or 1,000 per day once you have bought at least 10 credits
   ([limits](https://openrouter.ai/docs/api-reference/limits)).
-- Figma limits file downloads and image renders by seat and plan: Dev and Full
-  seats on paid plans get 10–20 requests per minute, View and Collab seats and
-  files in Starter plans at most 20 per month
-  ([rate limits](https://developers.figma.com/docs/rest-api/rate-limits/)).
-  One render request covers up to 18 screenshots (about three clusters), so a
-  default ingest usually needs at most four; `max_speed` needs none.
+- Figma limits requests by seat and plan
+  ([rate limits](https://developers.figma.com/docs/rest-api/rate-limits/)). File
+  downloads and image renders are Tier 1: Dev and Full seats on paid plans get
+  10–20 requests per minute, View and Collab seats and files in Starter plans at
+  most 20 per month. Images come from the image fills instead, Tier 2 with at
+  least 5 requests per minute, in one request per ingest. Renders are left for
+  drawings without an image and as a fallback for single images; one render
+  request covers up to 18 nodes. `max_speed` needs neither.
 - For a team, configure your own model: `LLM_BASE_URL` takes any
   OpenAI-compatible endpoint, and `LLM_TEXT_MODELS` / `LLM_VISION_MODELS` set
   the model lists.
@@ -120,8 +122,8 @@ and time out.
 ## Privacy
 
 - The server reads from Figma and never changes a board.
-- `balanced` and `max_quality` ingests send board text and screenshots to the
-  configured LLM provider. `answer_from_board` sends the question and selected
+- `balanced` and `max_quality` ingests send board text and images (originals or
+  renders) to the configured LLM provider. `answer_from_board` sends the question and selected
   excerpts. `max_speed` with `get_board_context` and `diff_board` sends nothing
   to an LLM provider.
 - Snapshots stay in a private per-user cache on your machine. Delete the cache
@@ -129,7 +131,7 @@ and time out.
 - Explicit credentials such as `Passwort: …` or API keys are redacted before they
   reach the cache, tool output or an LLM provider
   ([`FIGJAM_MCP_REDACT_CREDENTIALS`](docs/configuration.md#privacy)). This is a
-  safety net, not a guarantee: screenshots are not redacted, so keep credentials
+  safety net, not a guarantee: images are not redacted, so keep credentials
   off the board.
 - Keep tokens in the client's environment. A token passed as a tool argument can
   appear in client logs.

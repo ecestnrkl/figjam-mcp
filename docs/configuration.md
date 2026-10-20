@@ -48,7 +48,7 @@ invalid JSON or an unavailable model. Changing any model setting or
 | `INGEST_BOARD_VISION_BUDGET_MS` | `40000` | Time for the vision phase of one ingest. `0` starts no vision work; use `max_speed` for text-only ingests. |
 | `INGEST_BOARD_MIN_VISION_SLOT_MS` | `10000` | A cluster (rendering included) or its model step starts only if the budget left is at least this value and 1.25 × the median duration of that step among clusters finished in the same ingest. Concurrency × budget ÷ slot (12 by default) is how many clusters are planned for rendering. |
 | `FIGMA_FILE_REQUEST_TIMEOUT_MS` | `60000` | Download of the board's file tree. |
-| `FIGMA_REQUEST_TIMEOUT_MS` | `15000` | Each other Figma request: version check, image render, image download. |
+| `FIGMA_REQUEST_TIMEOUT_MS` | `15000` | Each other Figma request: version check, image fills, image render, image download. |
 | `LLM_REQUEST_TIMEOUT_MS` | — | When set, each LLM request whose role has no value of its own. |
 | `LLM_ANSWER_REQUEST_TIMEOUT_MS` | `40000` | Each answer request and the text checks of `diagnose_llm_config`. Without it, an explicit `LLM_REQUEST_TIMEOUT_MS` applies. `answer_from_board` stops after 50 s across all model candidates (or this value, if larger); a fallback candidate gets only the time left. |
 | `LLM_VISION_REQUEST_TIMEOUT_MS` | `60000` | Each image request. Without it, an explicit `LLM_REQUEST_TIMEOUT_MS` applies. |
@@ -70,7 +70,7 @@ invalid JSON or an unavailable model. Changing any model setting or
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `INGEST_BOARD_VISION_CONCURRENCY` | `3` | Clusters interpreted in parallel. |
-| `FIGMA_SCREENSHOT_DOWNLOAD_CONCURRENCY` | `3` | Parallel image downloads per cluster. |
+| `FIGMA_SCREENSHOT_DOWNLOAD_CONCURRENCY` | `3` | Parallel render downloads per cluster; the originals of a cluster download together. |
 | `FIGJAM_MCP_MEMORY_CACHE_MAX_BOARDS` | `10` | Boards kept in memory; others are reloaded from disk. |
 | `FIGJAM_MCP_CACHE_DIR` | OS cache directory | Cache root. Use an absolute, dedicated directory. |
 
@@ -85,8 +85,11 @@ Invalid numbers fail with an error that names the variable and its minimum.
 | `max_quality` | Every cluster | Yes |
 
 Clusters without vision keep a summary built from their extracted text.
-`forceFullIngest: true` re-downloads the board and skips all reuse; the vision
-budget still applies.
+`forceFullIngest: true` downloads and extracts the board again and redoes the
+vision of the chosen mode; interpretations that mode does not redo are kept for
+unchanged clusters. The vision budget still applies, so `balanced` and
+`max_quality` may need several ingests until every image is interpreted again.
+An unchanged board gives no new snapshot for `diff_board`.
 
 ## Timeouts
 
@@ -109,8 +112,11 @@ deferred by the budget go before clusters that failed. Raise
 ## Limits
 
 - Figma file: 64 MiB, 100,000 nodes, 1,024 nesting levels.
-- Images: 8 MiB each and 64 MiB per ingest; up to 6 screenshots per cluster,
-  rendered by Figma in requests of up to 18 nodes.
+- Images: up to 6 per cluster, 8 MiB per vision request and 64 MiB per ingest.
+  A cluster with images sends the originals of its largest image nodes (3.75 MiB
+  each) from one image fills request per ingest. Other clusters, and image nodes
+  whose original is missing, larger or in another format than PNG, JPEG, GIF or
+  WebP, are rendered by Figma in requests of up to 18 nodes (8 MiB each).
 - Vision text per cluster: 160 nodes and 24,000 characters (300 per node).
   Groups of more than 250 nodes are split before vision.
 - `get_board_context`: `limit` 20 (max 100) excerpts, up to 50 `nodeIds`; the section overview and

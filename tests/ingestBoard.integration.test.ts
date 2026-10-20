@@ -4,15 +4,15 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import type { BoardData, Cluster, NormalizedNode, RefinedCluster } from "../src/types.js";
 
-const { fileTreeMock, metadataMock, screenshotMock, downloadMock, visionMock } = vi.hoisted(() => ({
-  fileTreeMock: vi.fn(), metadataMock: vi.fn(), screenshotMock: vi.fn(), downloadMock: vi.fn(), visionMock: vi.fn(),
+const { fileTreeMock, metadataMock, screenshotMock, downloadMock, imageFillsMock, visionMock } = vi.hoisted(() => ({
+  fileTreeMock: vi.fn(), metadataMock: vi.fn(), screenshotMock: vi.fn(), downloadMock: vi.fn(), imageFillsMock: vi.fn(), visionMock: vi.fn(),
 }));
 // Only the external boundaries are mocked. Normalization, hashes, clustering,
 // source snapshots, refinement cache, history, context and diff run together.
 vi.mock("../src/lib/figmaApi.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/lib/figmaApi.js")>()),
   fetchFileTree: fileTreeMock, fetchFileMetadata: metadataMock,
-  fetchRenderUrls: screenshotMock, downloadRenders: downloadMock,
+  fetchRenderUrls: screenshotMock, downloadRenders: downloadMock, fetchImageRefs: imageFillsMock,
 }));
 vi.mock("../src/lib/visionInterpreter.js", () => ({ refineClusterWithVision: visionMock }));
 
@@ -50,12 +50,17 @@ beforeEach(async () => {
   vi.stubEnv("FIGMA_ACCESS_TOKEN", "offline-test-only");
   vi.stubEnv("LLM_BASE_URL", "https://offline.invalid/v1");
   vi.stubEnv("LLM_API_KEY", "offline-test-only");
-  vi.stubGlobal("fetch", vi.fn(() => { throw new Error("Unexpected network access in offline integration test"); }));
+  // Originals from image fills are the only downloads; every other network access fails.
+  vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+    if (!String(url).startsWith("https://offline-originals.invalid/")) throw new Error("Unexpected network access in offline integration test");
+    return new Response(Buffer.from("\x89PNG\r\n\x1a\noffline-original", "latin1"));
+  }));
   activeTree = boardTree([table("Budget 100")]);
   fileTreeMock.mockImplementation(async () => activeTree);
   metadataMock.mockImplementation(async () => ({ version: activeTree.version }));
   screenshotMock.mockImplementation(async (_key: string, ids: string[]) => Object.fromEntries(ids.map(id => [id, `https://offline-images.invalid/${id}`])));
   downloadMock.mockImplementation(async (ids: string[]) => ids.map(() => Buffer.from("offline-image")));
+  imageFillsMock.mockImplementation(async () => new Proxy({}, { get: (_target, ref) => `https://offline-originals.invalid/${String(ref)}` }));
   visionMock.mockImplementation(refine);
   ({ ingestBoard } = await import("../src/tools/ingestBoard.js"));
   ({ getBoardContext } = await import("../src/tools/getBoardContext.js"));
@@ -157,6 +162,40 @@ describe("offline ingest pipeline with actual persistent cache", () => {
     expect(metadataMock).toHaveBeenCalledTimes(1);
   });
 
+  it("keeps interpretations a forced ingest does not redo", async () => {
+    activeTree = boardTree([imageNode("photo-a", 0), imageNode("photo-b", 1000), sticky("note", "Workshop note", 2000)]);
+    const balanced = { ...input, ingestMode: "balanced" } as const;
+    const first = await ingestBoard(balanced);
+    expect(visionMock).toHaveBeenCalledTimes(2);
+    const forcedSpeed = await ingestBoard({ ...balanced, ingestMode: "max_speed", forceFullIngest: true });
+    expect(fileTreeMock).toHaveBeenCalledTimes(2);
+    expect(forcedSpeed.qualityReport).toMatchObject({ visionClusters: 2, reusedClusters: 3, incompleteClusters: 0 });
+    visionMock.mockClear();
+    const again = await ingestBoard(balanced);
+    expect(visionMock).not.toHaveBeenCalled();
+    expect(again.qualityReport).toMatchObject({ visionClusters: 2, deterministicClusters: 1, incompleteClusters: 0 });
+
+    // A forced balanced ingest interprets image clusters again and keeps the text cluster.
+    const forcedBalanced = await ingestBoard({ ...balanced, forceFullIngest: true });
+    expect((visionMock.mock.calls as Array<[Cluster]>).map(([cluster]) => cluster.nodeIds).sort()).toEqual([["photo-a"], ["photo-b"]]);
+    expect(forcedBalanced.qualityReport).toMatchObject({ visionClusters: 2, reusedClusters: 1, figmaRequests: { imageFills: 1, renders: 0 } });
+    // An unchanged board keeps its snapshot, so diff_board sees no new state.
+    expect(forcedBalanced.snapshotId).toBe(first.snapshotId);
+    expect(await persistence.readBoardHistory(fileKey)).toHaveLength(1);
+  });
+
+  it("keeps a vision summary of a text cluster through a forced balanced ingest", async () => {
+    activeTree = boardTree([imageNode("photo", 0), sticky("note", "Workshop note", 2000)]);
+    await ingestBoard(input);
+    expect(visionMock).toHaveBeenCalledTimes(2);
+    visionMock.mockClear();
+    const forced = await ingestBoard({ ...input, ingestMode: "balanced", forceFullIngest: true });
+    expect((visionMock.mock.calls as Array<[Cluster]>).map(([cluster]) => cluster.nodeIds)).toEqual([["photo"]]);
+    expect(forced.qualityReport).toMatchObject({ visionClusters: 2, reusedClusters: 1 });
+    const note = (await persistence.readLatestBoard(fileKey))?.clusters.find(cluster => cluster.nodeIds.includes("note"));
+    expect(note).toMatchObject({ summarySource: "vision_llm", summary: "Workshop note" });
+  });
+
   it("uses unchanged metadata without downloading the file or rerunning vision", async () => {
     const before = await ingestBoard(input);
     const after = await ingestBoard(input);
@@ -192,7 +231,8 @@ describe("offline ingest pipeline with actual persistent cache", () => {
     const output = await running;
     expect(requestSignal?.aborted).toBe(true);
     expect(String(requestSignal?.reason)).toContain("25 ms");
-    expect(screenshotMock).toHaveBeenCalledTimes(1);
+    expect(imageFillsMock).toHaveBeenCalledTimes(1);
+    expect(screenshotMock).not.toHaveBeenCalled();
     expect(visionMock).toHaveBeenCalledTimes(1);
     expect(output.qualityReport?.fallbackReasons).toEqual({ timeout: 1, time_budget: 1 });
   });

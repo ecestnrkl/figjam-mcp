@@ -189,6 +189,26 @@ try {
             }]
           } });
         }
+        if (url.pathname === '/v1/files/ImageBoard123/meta') {
+          record('image_board_metadata');
+          return json({ file: { version: '1' } });
+        }
+        if (url.pathname === '/v1/files/ImageBoard123') {
+          record('image_board_file');
+          return json({ version: '1', document: {
+            id: '0:0', name: 'Document', type: 'DOCUMENT', children: [{
+              id: '0:1', name: 'Photo wall', type: 'CANVAS', children: [{
+                id: '4:1', name: 'Photo', type: 'RECTANGLE', fills: [{ type: 'IMAGE', imageRef: 'synthetic-photo' }],
+                absoluteBoundingBox: { x: 0, y: 0, width: 120, height: 80 }
+              }]
+            }]
+          } });
+        }
+        if (url.pathname === '/v1/files/ImageBoard123/images') {
+          record('figma_image_fills');
+          return json({ error: false, status: 200, meta: { images: { 'synthetic-photo': 'https://offline-images.invalid/photo.jpg' } } });
+        }
+        if (url.pathname === '/v1/images/ImageBoard123') record('image_board_render');
         if (url.pathname === '/v1/images/LongBoard123') {
           assert.equal(process.env.SMOKE_LONG_CHECK, '1');
           record('long_render');
@@ -204,6 +224,11 @@ try {
           return json({ images: { '1:1': 'https://offline-images.invalid/evidence.png' } });
         }
       }
+      if (url.href === 'https://offline-images.invalid/photo.jpg') {
+        record('original_download');
+        const original = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0, 16, 74, 70, 73, 70, 0, 1]);
+        return new Response(original, { headers: { 'content-type': 'image/jpeg', 'content-length': String(original.length) } });
+      }
       if (url.href === 'https://offline-images.invalid/evidence.png' || url.href === 'https://offline-images.invalid/long.png') {
         record(url.pathname === '/long.png' ? 'long_image' : 'image_download');
         return new Response(Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=', 'base64'), { headers: { 'content-type': 'image/png' } });
@@ -215,7 +240,13 @@ try {
         record(schema ?? 'missing_schema');
         let reply;
         if (schema === 'figjam_cluster_refinement') {
-          if (longRenderPending) {
+          const parts = body.messages.find(message => message.role === 'user')?.content;
+          const imageUrls = Array.isArray(parts) ? parts.filter(part => part.type === 'image_url').map(part => part.image_url.url) : [];
+          if (Array.isArray(parts) && /- 4:1 /.test(parts[0].text)) {
+            assert.equal(imageUrls.length, 1, 'The image cluster sends its original');
+            assert.match(imageUrls[0], /^data:image\\/jpeg;base64,/, 'The original keeps its JPEG type');
+            reply = { label: 'Synthetic photo', summary: 'A synthetic photo on the photo wall.', confirmedNodeIds: ['4:1'] };
+          } else if (longRenderPending) {
             longRenderPending = false;
             record('long_model_delay_started');
             await delay(65_000, undefined, { signal });
@@ -334,6 +365,12 @@ try {
       tableNodeId: "2:1", cellId: "T2:1;0;1", changeType: "modified", previousText: "Budget 100", currentText: "Budget 999",
       previousRow: 0, currentRow: 0, previousColumn: 1, currentColumn: 1,
     }]);
+    // An image node is read from GET image fills (Tier 2) and its original download, without a render request.
+    const imageIngest = await ingestWithProgress(client, { figmaFileUrl: "https://www.figma.com/board/ImageBoard123/Smoke", ingestMode: "balanced" }, "Image ingest");
+    assert.equal(imageIngest.structuredContent.qualityReport.visionClusters, 1);
+    assert.deepEqual(imageIngest.structuredContent.qualityReport.figmaRequests, { imageFills: 1, renders: 0 });
+    assert.match(imageIngest.structuredContent.summary, /Figma image requests: 1 image fills, 0 renders\./);
+
     for (const request of [
       { name: "get_board_context", arguments: { boardId: "MissingBoard123" } },
       { name: "answer_from_board", arguments: { boardId: "MissingBoard123", question: "What changed?" } },
@@ -410,8 +447,8 @@ try {
   }
   const requests = (await readFile(requestsFile, "utf8")).trim().split("\n").map(line => JSON.parse(line).kind);
   const expectedRequests = { figma_file: 2, figma_metadata: 1, figma_render: 1, image_download: 1,
-    figjam_cluster_refinement: longCheck ? 2 : 1, figjam_evidence_answer: 1, diagnose_text_json: 1, diagnose_fast_text_json: 1, diagnose_vision_json: 1, figma_denied: 1,
-    table_file: 2, table_metadata: 1, legacy_file: 2,
+    figjam_cluster_refinement: longCheck ? 3 : 2, figjam_evidence_answer: 1, diagnose_text_json: 1, diagnose_fast_text_json: 1, diagnose_vision_json: 1, figma_denied: 1,
+    table_file: 2, table_metadata: 1, legacy_file: 2, image_board_file: 1, figma_image_fills: 1, original_download: 1,
     ...(longCheck ? { long_file: 1, long_render: 1, long_image: 1, long_model_delay_started: 1, long_model_delay_completed: 1 } : {}),
   };
   for (const [kind, count] of Object.entries(expectedRequests)) {
@@ -427,4 +464,4 @@ if (artifactDir) {
   console.log(`Retained tested tarball: ${artifact.archivePath}`);
   console.log(`SHA-256: ${artifact.checksum}`);
 }
-console.log(`Verified ${metadata.name}@${metadata.version}: production-only install, executable, successful calls to all five tools, offline Figma/vision/answer/diagnostic fixtures, table row search and single-cell edit diff, persisted cache reuse, modern/legacy ingest progress followed by final responses, error handling${longCheck ? ", and a real >60-second ingest" : ""}`);
+console.log(`Verified ${metadata.name}@${metadata.version}: production-only install, executable, successful calls to all five tools, offline Figma/vision/answer/diagnostic fixtures, an image from image fills without a render, table row search and single-cell edit diff, persisted cache reuse, modern/legacy ingest progress followed by final responses, error handling${longCheck ? ", and a real >60-second ingest" : ""}`);

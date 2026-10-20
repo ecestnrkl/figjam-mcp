@@ -125,6 +125,8 @@ export interface IngestQualityReport {
   fallbackReasons?: Record<string, number>;
   /** Earliest known retry time among incomplete clusters, in epoch milliseconds. */
   nextRetryAt?: number;
+  /** Figma requests this ingest made for images: image fills (Tier 2) and renders (Tier 1). */
+  figmaRequests?: { imageFills: number; renders: number };
 }
 
 /** Everything ingest_board produces and later tools read back via cache.ts. */

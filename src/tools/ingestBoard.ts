@@ -2,7 +2,8 @@ import type { IngestBoardInput, IngestBoardOutput } from "../schemas/ingestBoard
 import { setImmediate as yieldToRequests } from "node:timers/promises";
 import { extractFigmaFileKeyFromUrl } from "../schemas/common.js";
 import type { Cluster, IngestMode, IngestQualityReport, NormalizedNode, RefinedCluster, BoardData, OperationOptions } from "../types.js";
-import { fetchFileTree, fetchRenderUrls, downloadRenders, fetchFileMetadata, FigmaApiError, FigmaDownloadBudgetError, FigmaTimeoutError, INGEST_IMAGE_MAX_BYTES, type RenderUrls } from "../lib/figmaApi.js";
+import { fetchFileTree, fetchRenderUrls, downloadRenders, fetchFileMetadata, fetchImageRefs, downloadOriginals, FigmaApiError, FigmaDownloadBudgetError,
+  FigmaTimeoutError, INGEST_IMAGE_MAX_BYTES, ORIGINAL_IMAGE_MAX_BYTES, type RenderUrls } from "../lib/figmaApi.js";
 import { LLMConfigurationError, LlmInvalidJsonError, LlmRequestError, LlmTimeoutError, validateLlmConfiguration } from "../lib/llmClient.js";
 import { flattenNodeTree, isGenericNodeName } from "../lib/nodeTree.js";
 import { partitionedBoardClusters } from "../lib/spatialCluster.js";
@@ -28,12 +29,14 @@ import {
 } from "../lib/persistentCache.js";
 
 /**
- * Max node screenshots sent to the vision model per cluster. Nodes with
- * image fills are prioritized (their content is invisible in extracted
- * text), then the largest remaining nodes. The text inventory has its own
- * hard node/character bounds in visionInterpreter.ts.
+ * Max images sent to the vision model per cluster. A cluster with image fills
+ * sends the originals of its largest image nodes (their content is invisible
+ * in extracted text); other clusters send renders of their largest nodes. The
+ * text inventory has its own hard node/character bounds in visionInterpreter.ts.
  */
 const MAX_SCREENSHOTS_PER_CLUSTER = 6;
+/** Image data per vision request: two to three large originals, while most clusters stay far below. */
+const VISION_REQUEST_IMAGE_MAX_BYTES = 8 * 1024 * 1024;
 
 /**
  * Many MCP clients cancel a tool call after the SDK's 60 s request timeout, and
@@ -54,8 +57,9 @@ const VISION_CONCURRENCY = readIntEnv("INGEST_BOARD_VISION_CONCURRENCY", 3, 1);
 
 /**
  * Figma's image render endpoint is Tier 1 (View/Collab seats: 20 requests per
- * month; Full/Dev seats: 10–20 per minute), so one request renders the
- * screenshots of several clusters. Render time grows with the node count:
+ * month; Full/Dev seats: 10–20 per minute). Image clusters therefore take their
+ * originals from the Tier 2 image fills, and one request renders the
+ * screenshots of several other clusters. Render time grows with the node count:
  * measured cold on a real board, 3–5 nodes took 2.6–3.5 s, 12–24 nodes 4–8 s
  * and 71 nodes 24 s, beyond the 15 s FIGMA_REQUEST_TIMEOUT_MS. 18 nodes are
  * three full clusters (one per default worker), start the first vision call
@@ -145,7 +149,7 @@ async function performIngest(input: IngestBoardInput, options: OperationOptions)
     // Cached labels and summaries may predate redaction being switched on.
     const board = redactBoard({ ...cached, clusters, freshnessCheckedAt, figmaVersion, figmaLastModified,
       createdAt: previousBoard?.snapshotId === snapshotId ? previousBoard.createdAt : Date.now(),
-      qualityReport: buildQualityReport(clusters, clusters.length) });
+      qualityReport: { ...buildQualityReport(clusters, clusters.length), figmaRequests: { imageFills: 0, renders: 0 } } });
     await progress("persist", 4);
     await publishBoard(board, signal);
     await complete();
@@ -153,7 +157,7 @@ async function performIngest(input: IngestBoardInput, options: OperationOptions)
   }
   await progress("cluster", 2);
   const reuseBoard = cached ?? previousBoard;
-  const reuseIndex = input.forceFullIngest || reuseBoard?.extractionVersion !== EXTRACTION_VERSION || reuseBoard?.refinementSignature !== refinementSignature
+  const reuseIndex = reuseBoard?.extractionVersion !== EXTRACTION_VERSION || reuseBoard?.refinementSignature !== refinementSignature
     ? new Map<string, RefinedCluster>() : buildReuseIndex(reuseBoard);
   const clusters = partitionedBoardClusters(nodes);
   if (!clusters.length) throw new Error(`Board ${fileKey} contains no content nodes to ingest`);
@@ -176,7 +180,9 @@ async function performIngest(input: IngestBoardInput, options: OperationOptions)
     const members = clusterNodesByIndex[index]!;
     const contentHash = contentHashes.get(cluster.id)!;
     const previous = reuseIndex.get(contentHash);
-    if (previous && canReusePrevious(previous, members, ingestMode)) {
+    // A forced ingest redoes the vision of its mode and keeps interpretations it would not redo.
+    const redo = input.forceFullIngest && shouldUseVision(members, ingestMode);
+    if (previous && !redo && canReusePrevious(previous, members, ingestMode)) {
       refined[index] = { ...reuseCluster(cluster, previous, contentHash), cacheHit: true };
       reusedCount++;
     } else if (shouldUseVision(members, ingestMode)) visionQueue.push(index);
@@ -191,10 +197,14 @@ async function performIngest(input: IngestBoardInput, options: OperationOptions)
   await progress("interpret", 3);
   const deadline = Date.now() + VISION_BUDGET_MS;
   const imageBudget = { usedBytes: 0, maxBytes: INGEST_IMAGE_MAX_BYTES };
-  const screenshotNodes = new Map(visionQueue.map(index => [index, pickScreenshotNodes(clusterNodesByIndex[index]!)]));
+  const imageNodes = new Map(visionQueue.map(index => [index, pickImageNodes(clusterNodesByIndex[index]!)] as const)
+    .filter(([, picked]) => picked.length));
+  const screenshotNodes = new Map(visionQueue.filter(index => !imageNodes.has(index))
+    .map(index => [index, pickScreenshotNodes(clusterNodesByIndex[index]!)]));
   // Only clusters the budget can realistically reach share the first batches.
   const plannedClusters = MIN_VISION_SLOT_MS > 0 ? Math.floor(VISION_CONCURRENCY * VISION_BUDGET_MS / MIN_VISION_SLOT_MS) : Infinity;
   const { batches: renderBatches, plannedBatches } = planRenderBatches(visionQueue, screenshotNodes, plannedClusters);
+  const figmaRequests = { imageFills: 0, renders: 0 };
   const batchOfCluster = new Map(renderBatches.flatMap((batch, number) => batch.map(index => [index, number] as const)));
   // Successful durations of this ingest: a whole cluster, and its model step alone.
   const clusterDurations: number[] = [];
@@ -208,6 +218,7 @@ async function performIngest(input: IngestBoardInput, options: OperationOptions)
   const renderBatch = (batch: number): Promise<RenderUrls> => {
     let request = renderRequests[batch];
     if (!request) {
+      figmaRequests.renders++;
       request = fetchRenderUrls(fileKey, renderBatches[batch]!.flatMap(index => screenshotNodes.get(index)!), token!, renderSignal, figmaVersion);
       // Workers observe the outcome; a prefetch may end unobserved.
       request.catch(() => undefined);
@@ -220,6 +231,16 @@ async function performIngest(input: IngestBoardInput, options: OperationOptions)
     if (batch < plannedBatches && !renderRequests[batch] && !sharedFailure &&
       hasVisionBudget(deadline, requiredSlotMs(clusterDurations))) void renderBatch(batch);
   };
+  // One image fills request (Tier 2) serves every image cluster of the ingest.
+  let imageFillsRequest: Promise<Record<string, string>> | undefined;
+  const imageFills = (): Promise<Record<string, string>> => {
+    if (!imageFillsRequest) {
+      figmaRequests.imageFills++;
+      imageFillsRequest = fetchImageRefs(fileKey, token!, renderSignal);
+      imageFillsRequest.catch(() => undefined);
+    }
+    return imageFillsRequest;
+  };
   let queueCursor = 0;
   let sharedFailure: { reason: VisionFallbackReason; retryAfter?: number } | undefined;
   const currentSharedFailure = (): typeof sharedFailure => sharedFailure;
@@ -227,11 +248,28 @@ async function performIngest(input: IngestBoardInput, options: OperationOptions)
     try { validateLlmConfiguration(); }
     catch (error) { sharedFailure = { reason: classifyVisionFailure(error, "model") }; }
   }
+  if (imageNodes.size && !sharedFailure && hasVisionBudget(deadline)) void imageFills();
   const fallback = (index: number, reason: VisionFallbackReason, retryAfter?: number) => {
     const members = clusterNodesByIndex[index]!;
     refined[index] = { ...refineClusterFromText(clusters[index]!, members), contentHash: contentHashes.get(clusters[index]!.id),
       incomplete: true, fallbackReason: reason, retryAfter };
   };
+  /** Originals of an image cluster's nodes; single nodes whose original is unusable are rendered instead. */
+  async function clusterImages(nodes: NormalizedNode[], imageUrls: Record<string, string>, requestSignal: AbortSignal): Promise<Buffer[]> {
+    const originals = await downloadOriginals(nodes.map(node => imageUrls[node.imageRef!]),
+      { imageMaxBytes: ORIGINAL_IMAGE_MAX_BYTES, requestMaxBytes: VISION_REQUEST_IMAGE_MAX_BYTES }, requestSignal, imageBudget);
+    const renderIds = nodes.filter((_node, position) => "fallback" in originals[position]!).map(node => node.id);
+    const renders = new Map<string, Buffer>();
+    if (renderIds.length) {
+      figmaRequests.renders++;
+      const renderUrls = await fetchRenderUrls(fileKey, renderIds, token!, requestSignal, figmaVersion);
+      (await downloadRenders(renderIds, renderUrls, requestSignal, imageBudget)).forEach((image, position) => renders.set(renderIds[position]!, image));
+    }
+    return withinRequestLimit(nodes.flatMap((node, position) => {
+      const original = originals[position]!;
+      return "data" in original ? [original.data] : "fallback" in original ? [renders.get(node.id)!] : [];
+    }));
+  }
   async function worker(): Promise<void> {
     while (queueCursor < visionQueue.length) {
       signal?.throwIfAborted();
@@ -243,12 +281,14 @@ async function performIngest(input: IngestBoardInput, options: OperationOptions)
       const clusterStartedAt = Date.now();
       let stage: VisionStage = "render";
       try {
-        const batch = batchOfCluster.get(index)!;
+        const images = imageNodes.get(index);
         const screenshots = await withinVisionDeadline(async phaseSignal => {
+          const requestSignal = signal ? AbortSignal.any([signal, phaseSignal]) : phaseSignal;
+          if (images) return clusterImages(images, await imageFills(), requestSignal);
+          const batch = batchOfCluster.get(index)!;
           const renderUrls = await renderBatch(batch);
           prefetchRenderBatch(batch + 1);
-          return downloadRenders(screenshotNodes.get(index)!, renderUrls,
-            signal ? AbortSignal.any([signal, phaseSignal]) : phaseSignal, imageBudget);
+          return withinRequestLimit(await downloadRenders(screenshotNodes.get(index)!, renderUrls, requestSignal, imageBudget));
         }, deadline, signal);
         const failureAfterRendering = currentSharedFailure();
         if (failureAfterRendering) { fallback(index, failureAfterRendering.reason, failureAfterRendering.retryAfter); continue; }
@@ -278,7 +318,7 @@ async function performIngest(input: IngestBoardInput, options: OperationOptions)
   finally { clearTimeout(renderPhaseTimer); renderPhase.abort(); }
   signal?.throwIfAborted();
   const finalClusters = mapClustersToPhases(refined, input.docStructureHint, input.customPhases);
-  const qualityReport = { ...buildQualityReport(finalClusters, reusedCount), reusedClusters: reusedCount };
+  const qualityReport = { ...buildQualityReport(finalClusters, reusedCount), reusedClusters: reusedCount, figmaRequests };
   // Reused labels and summaries may predate redaction being switched on.
   const board = redactBoard({
     schemaVersion: 4, extractionVersion: EXTRACTION_VERSION, boardId: fileKey, fileKey, docStructureHint: input.docStructureHint,
@@ -348,39 +388,55 @@ export function parseFigmaFileKey(url: string): string {
   return fileKey;
 }
 
-/** Chooses which cluster members to screenshot (see MAX_SCREENSHOTS_PER_CLUSTER). */
+/** Chooses which cluster members to render (see MAX_SCREENSHOTS_PER_CLUSTER). */
 function pickScreenshotNodes(clusterNodes: NormalizedNode[]): string[] {
-  const ranked = [...clusterNodes].sort((a, b) => {
-    const imageDiff = Number(Boolean(b.imageRef)) - Number(Boolean(a.imageRef));
-    if (imageDiff !== 0) {
-      return imageDiff;
-    }
-    const areaDiff = b.width * b.height - a.width * a.height;
-    return areaDiff !== 0 ? areaDiff : compareStrings(a.id, b.id);
+  return [...clusterNodes].sort(compareNodeArea).slice(0, MAX_SCREENSHOTS_PER_CLUSTER).map((node) => node.id);
+}
+
+/** Chooses the image nodes whose originals a cluster sends (see MAX_SCREENSHOTS_PER_CLUSTER). */
+function pickImageNodes(clusterNodes: NormalizedNode[]): NormalizedNode[] {
+  return clusterNodes.filter(node => node.imageRef).sort(compareNodeArea).slice(0, MAX_SCREENSHOTS_PER_CLUSTER);
+}
+
+function compareNodeArea(a: NormalizedNode, b: NormalizedNode): number {
+  const areaDiff = b.width * b.height - a.width * a.height;
+  return areaDiff !== 0 ? areaDiff : compareStrings(a.id, b.id);
+}
+
+/** Keeps images in priority order up to VISION_REQUEST_IMAGE_MAX_BYTES; the first image always stays. */
+function withinRequestLimit(images: Buffer[]): Buffer[] {
+  let bytes = 0;
+  return images.filter((image, position) => {
+    if (position > 0 && bytes + image.byteLength > VISION_REQUEST_IMAGE_MAX_BYTES) return false;
+    bytes += image.byteLength;
+    return true;
   });
-  return ranked.slice(0, MAX_SCREENSHOTS_PER_CLUSTER).map((node) => node.id);
 }
 
 /**
- * Splits the vision queue, in priority order, into render batches of whole
- * clusters with at most MAX_RENDER_BATCH_NODES nodes. Clusters beyond the
- * planned count start a new batch, so they are rendered only when reached.
+ * Splits the clusters to render, in vision queue order, into render batches of
+ * whole clusters with at most MAX_RENDER_BATCH_NODES nodes. Clusters beyond the
+ * planned queue position start a new batch, so they are rendered only when reached.
  */
 function planRenderBatches(queue: number[], screenshotNodes: Map<number, string[]>, plannedClusters: number): { batches: number[][]; plannedBatches: number } {
   const batches: number[][] = [];
   let plannedBatches = 0;
   let batchNodes = 0;
+  let batchPlanned = true;
   queue.forEach((index, position) => {
-    const nodeCount = screenshotNodes.get(index)!.length;
+    const nodeCount = screenshotNodes.get(index)?.length;
+    if (nodeCount === undefined) return;
+    const planned = position < plannedClusters;
     const current = batches.at(-1);
-    if (!current || batchNodes + nodeCount > MAX_RENDER_BATCH_NODES || position === plannedClusters) {
+    if (!current || batchNodes + nodeCount > MAX_RENDER_BATCH_NODES || planned !== batchPlanned) {
       batches.push([index]);
       batchNodes = nodeCount;
+      batchPlanned = planned;
     } else {
       current.push(index);
       batchNodes += nodeCount;
     }
-    if (position < plannedClusters) plannedBatches = batches.length;
+    if (planned) plannedBatches = batches.length;
   });
   return { batches, plannedBatches };
 }
@@ -718,9 +774,12 @@ function buildSummary(board: BoardData, qualityReport: IngestQualityReport): str
     (qualityReport.reusedClusters ?? 0) > 0
       ? ` Reused ${qualityReport.reusedClusters} unchanged cluster${qualityReport.reusedClusters === 1 ? "" : "s"} from the previous ingest.`
       : "";
+  const requests = qualityReport.figmaRequests;
+  const requestNote = requests && requests.imageFills + requests.renders > 0
+    ? ` Figma image requests: ${requests.imageFills} image fills, ${requests.renders} render${requests.renders === 1 ? "" : "s"}.` : "";
   return (
     `Ingested board ${fileKey}: ${overview}${cacheNote}${reuseNote}`
-    + ` ${qualityReport.visionClusters} visually interpreted; ${qualityReport.deterministicClusters} use extracted text.${fallbackNote}`
+    + ` ${qualityReport.visionClusters} visually interpreted; ${qualityReport.deterministicClusters} use extracted text.${requestNote}${fallbackNote}`
   );
 }
 

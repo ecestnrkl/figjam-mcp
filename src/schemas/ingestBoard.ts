@@ -60,7 +60,7 @@ export const ingestBoardInputShape = {
     .boolean()
     .optional()
     .describe(
-      "Deliberately skip all caching and incremental reuse, including successful interpretations. The vision time budget still applies. Model/configuration changes are detected automatically. Default: false",
+      "Download and extract the board again, skipping the unchanged-board check and cache, and redo the image interpretation of the chosen ingestMode. Interpretations this mode does not redo (all in max_speed; in balanced those of clusters without image or drawing) are kept while a cluster's content is unchanged. The vision time budget still applies, so balanced and max_quality may need several ingests until every image is interpreted again. An unchanged board gives no new snapshot for diff_board, even with forceFullIngest. Model/configuration changes are detected automatically. Default: false",
     ),
 };
 
@@ -93,6 +93,10 @@ export const ingestBoardOutputShape = {
       incompleteClusters: z.number().int().nonnegative().optional(),
       fallbackReasons: z.record(z.string(), z.number().int().nonnegative()).optional(),
       nextRetryAt: z.number().finite().optional(),
+      figmaRequests: z
+        .object({ imageFills: z.number().int().nonnegative(), renders: z.number().int().nonnegative() })
+        .optional()
+        .describe("Figma requests of this ingest for images: image fills (Tier 2) and renders (Tier 1)"),
     })
     .optional(),
 };

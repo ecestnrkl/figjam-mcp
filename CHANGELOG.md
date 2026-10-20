@@ -10,6 +10,12 @@
   cluster by cluster in reading order. The largest sections in the `ingest_board` summary and on the first
   page skip sections inside an already named one and state how many excerpts they hold together; both
   name the excerpts outside sections and how to read them.
+- `ingest_board` sends image clusters to the vision model as original images from one Figma image fills
+  request (Tier 2) per ingest instead of renders (Tier 1): up to 6 image nodes per cluster, the largest first,
+  3.75 MiB each and 8 MiB per request. Renders remain for drawings without an image and for single images
+  without a usable original. `qualityReport.figmaRequests` counts the image fills and render requests.
+- `ingest_board` with `forceFullIngest` redoes only the image interpretation of its `ingestMode` and keeps the
+  others for unchanged clusters: a forced `max_speed` ingest no longer discards earlier interpretations.
 
 ## 0.8.0 — 2026-10-19
 
