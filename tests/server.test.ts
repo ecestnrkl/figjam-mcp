@@ -61,6 +61,14 @@ describe("MCP wire contract", () => {
     expect(handlers.context).not.toHaveBeenCalled();
   });
 
+  it("rejects outsideSections with topic or nodeIds", async () => {
+    for (const extra of [{ topic: "budget" }, { nodeIds: ["1:1"] }]) {
+      const result = await client.callTool({ name: "get_board_context", arguments: { boardId: "Board123", outsideSections: true, ...extra } }).catch(error => error);
+      expect(result instanceof Error || result.isError === true).toBe(true);
+    }
+    expect(handlers.context).not.toHaveBeenCalled();
+  });
+
   it("returns handler failures as tool errors", async () => {
     handlers.context.mockRejectedValue(new Error("Board not ingested. Run ingest_board first."));
     const result = await client.callTool({ name: "get_board_context", arguments: { boardId: "Board123" } });

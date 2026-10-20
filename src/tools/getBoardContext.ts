@@ -63,7 +63,7 @@ export async function getBoardContext(input: GetBoardContextInput): Promise<Boar
   // Snapshots cached before redaction existed are redacted here too.
   const board = redactBoard(stored);
   const retrieved = retrieveEvidence(board, {
-    query: options.topic, nodeIds: options.nodeIds,
+    query: options.topic, nodeIds: options.nodeIds, outsideSections: options.outsideSections,
     includeNeighbors: Boolean(options.topic), neighborLimit: 6,
   });
   const resultFingerprint = createHash("sha256")
@@ -88,7 +88,8 @@ export async function getBoardContext(input: GetBoardContextInput): Promise<Boar
   const sections = new SectionIndex(board, retrieved.evidence);
   // Orientation takes at most a third of the budget; excerpts keep the rest.
   const orientationBudget = Math.floor(options.maxChars / 3);
-  const overview = cursor || options.topic ? "" : options.nodeIds ? focusOutline() : sections.boardOverview(orientationBudget);
+  const overview = cursor || options.topic ? "" : options.outsideSections ? sections.outsideOverview(orientationBudget)
+    : options.nodeIds ? focusOutline() : sections.boardOverview(orientationBudget);
   const page = cursor?.page ?? 1;
   const fits = ({ text, structuredContent }: BoardContextResult, budget = options.maxChars) =>
     text.length <= budget && JSON.stringify(structuredContent).length <= budget &&
@@ -293,7 +294,7 @@ export async function getBoardContext(input: GetBoardContextInput): Promise<Boar
     if (remaining <= 0) return `Page ${page} of ${page}; no excerpts remaining.`;
     const remainingPages = Math.ceil(remaining / shown);
     const position = `Page ${page} of about ${page + remainingPages}; ${remaining} excerpt${remaining === 1 ? "" : "s"} remaining; pass nextCursor to continue.`;
-    return !options.topic && !options.nodeIds && remainingPages > MAX_PAGES_TO_PAGE_THROUGH && sections.count > 0
+    return !options.topic && !options.nodeIds && !options.outsideSections && remainingPages > MAX_PAGES_TO_PAGE_THROUGH && sections.count > 0
       ? `${position} With more than ${MAX_PAGES_TO_PAGE_THROUGH} pages left, read sections by ID instead: pass a section ID from the first page as nodeIds.`
       : position;
   }
@@ -516,6 +517,7 @@ function querySignature(input: GetBoardContextInput): string {
     topic: input.topic ?? "",
     // Several IDs take turns on every page in request order, so the order is part of the query.
     nodeIds: input.nodeIds ? [...new Set(input.nodeIds)] : null,
+    ...(input.outsideSections ? { outsideSections: true } : {}),
     limit: input.limit ?? 20,
     maxChars: input.maxChars ?? 12000,
   })).digest("hex");

@@ -6,6 +6,10 @@
   every requested ID on every page: the IDs take turns in request order, each excerpt counts for its own or
   the innermost requested ID, and the first page names each ID with its excerpts. The cursor now depends on
   the order of `nodeIds`. A table of which a page shows only some rows names the request for all of them.
+- `get_board_context` reads every excerpt outside sections with the new input `outsideSections: true`,
+  cluster by cluster in reading order. The largest sections in the `ingest_board` summary and on the first
+  page skip sections inside an already named one and state how many excerpts they hold together; both
+  name the excerpts outside sections and how to read them.
 
 ## 0.8.0 — 2026-10-19
 

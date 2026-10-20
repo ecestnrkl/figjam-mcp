@@ -1,15 +1,16 @@
-import { boundedText, enclosingIdsLookup, retrieveEvidence, type Evidence } from "./evidence.js";
+import { boundedText, enclosingIdsLookup, inSectionLookup, retrieveEvidence, type Evidence } from "./evidence.js";
 import type { BoardData, NormalizedNode } from "../types.js";
 
 /** The first page names this many of the largest sections before the section tree. */
 const LARGEST_SECTIONS_IN_OVERVIEW = 10;
 
 /**
- * The largest sections by excerpts, counted as on the first page of
- * get_board_context, as one line; "" for a board without sections.
+ * The largest sections by excerpts as one line, "" for a board without sections,
+ * and the excerpts outside sections, counted as on the first page of get_board_context.
  */
-export function largestSectionsLine(board: BoardData, limit: number): string {
-  return new SectionIndex(board, retrieveEvidence(board).evidence).largestLine(limit);
+export function sectionGuide(board: BoardData, limit: number): { largestLine: string; outsideSections: number } {
+  const index = new SectionIndex(board, retrieveEvidence(board).evidence);
+  return { largestLine: index.largestLine(limit), outsideSections: index.outsideSections };
 }
 
 interface OutlineLine { depth: number; text: string; section: boolean }
@@ -24,7 +25,8 @@ export class SectionIndex {
   private readonly pendingImageClusters = new Map<string, number>();
   private readonly children = new Map<string, NormalizedNode[]>();
   private readonly nodesById: Map<string, NormalizedNode>;
-  private outsideSections = 0;
+  /** Excerpts that lie in no section. */
+  readonly outsideSections: number = 0;
 
   constructor(private readonly board: BoardData, private readonly evidence: Evidence[]) {
     this.nodesById = new Map(board.nodes.map((node) => [node.id, node]));
@@ -40,14 +42,10 @@ export class SectionIndex {
         (section.pageId && this.pages.some((page) => page.id === section.pageId) ? section.pageId : "");
       this.children.set(parent, [...(this.children.get(parent) ?? []), section]);
     }
+    const inSection = inSectionLookup(board);
     for (const item of evidence) {
-      const enclosing = this.enclosing(item.renderNodeId ?? item.nodeId);
-      let inSection = false;
-      for (const id of enclosing) {
-        this.excerpts.set(id, (this.excerpts.get(id) ?? 0) + 1);
-        inSection ||= this.nodesById.get(id)?.type === "SECTION";
-      }
-      if (!inSection) this.outsideSections++;
+      for (const id of this.enclosing(item.renderNodeId ?? item.nodeId)) this.excerpts.set(id, (this.excerpts.get(id) ?? 0) + 1);
+      if (!inSection(item)) this.outsideSections++;
     }
     for (const cluster of board.clusters) {
       if (!cluster.incomplete || !cluster.nodeIds[0]) continue;
@@ -83,7 +81,8 @@ export class SectionIndex {
       addSections(pages[0]?.id ?? "", 0);
     }
     const footer = [
-      ...(this.sections.length ? [`${this.outsideSections} excerpt${plural(this.outsideSections)} outside sections.`] : []),
+      ...(this.sections.length ? [`${this.outsideSections} excerpt${plural(this.outsideSections)} outside sections` +
+        `${this.outsideSections ? `; read ${this.outsideSections === 1 ? "it" : "them"} with outsideSections: true` : ""}.`] : []),
       `Read a ${this.sections.length ? "section" : "page"} with nodeIds: ["<ID>"]; use topic for word search.`,
     ];
     // The largest sections belong to the header, so a small budget shortens the tree first.
@@ -93,13 +92,35 @@ export class SectionIndex {
     lines, footer, budget, pages.length > 1 ? 1 : 0);
   }
 
-  /** Sections with the most excerpts, nested sections included; ties in reading order. */
+  /**
+   * Sections with the most excerpts, nested sections included, skipping each that
+   * lies in one already named; ties go to the outer section, then reading order.
+   */
   largestLine(limit: number): string {
-    const largest = this.sections.filter((section) => this.excerpts.has(section.id))
-      .sort((a, b) => this.excerpts.get(b.id)! - this.excerpts.get(a.id)!).slice(0, limit);
+    const depth = (section: NormalizedNode) => [...this.enclosing(section.id)].filter((id) => this.nodesById.get(id)?.type === "SECTION").length;
+    const ranked = this.sections.filter((section) => this.excerpts.has(section.id))
+      .sort((a, b) => this.excerpts.get(b.id)! - this.excerpts.get(a.id)! || depth(a) - depth(b));
+    const largest: NormalizedNode[] = [];
+    for (const section of ranked) {
+      if (largest.length === limit) break;
+      if (!largest.some((named) => this.enclosing(section.id).has(named.id))) largest.push(section);
+    }
     if (!largest.length) return "";
+    const covered = largest.reduce((sum, section) => sum + this.excerpts.get(section.id)!, 0);
     return `Largest sections (ID, name, excerpts): ${largest.map((section) =>
-      `${section.id} ${this.name(section)} — ${this.excerpts.get(section.id)}`).join("; ")}.`;
+      `${section.id} ${this.name(section)} — ${this.excerpts.get(section.id)}`).join("; ")}. ` +
+      `Together they hold ${covered} of the board's ${this.evidence.length} excerpts.`;
+  }
+
+  /** First page of an outsideSections request; its excerpts are the evidence of this index. */
+  outsideOverview(budget: number): string {
+    const excerpts = this.evidence.length;
+    const clusters = new Set(this.evidence.flatMap((item) => item.clusterId ? [item.clusterId] : [])).size;
+    const size = `${excerpts} excerpt${plural(excerpts)} in ${clusters} cluster${plural(clusters)}`;
+    const text = ["## Outside sections", this.count
+      ? `${size} lie outside sections; they follow cluster by cluster in reading order.`
+      : `The board has no sections: all ${size}, cluster by cluster in reading order.`].join("\n");
+    return JSON.stringify(text).length - 2 <= budget ? text : "";
   }
 
   /** First page of a nodeIds request: the direct subsections of each requested container. */

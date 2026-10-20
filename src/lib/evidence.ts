@@ -55,6 +55,8 @@ export interface EvidenceQuery {
   neighborLimit?: number;
   /** Bounded cell context for lexical table matches, separate from graph neighbors. */
   tableNeighborLimit?: number;
+  /** Every excerpt that lies in no section, cluster by cluster in reading order. */
+  outsideSections?: boolean;
 }
 
 export interface EvidenceResult {
@@ -173,6 +175,9 @@ export function retrieveEvidence(board: BoardData, options: EvidenceQuery = {}):
     } else if (containers.size) {
       matches = contentFirst(readingOrder(board, matches), (entry) => entry.evidence);
     }
+  } else if (options.outsideSections) {
+    const inSection = inSectionLookup(board);
+    matches = contentFirst(readingOrder(board, index.entries.filter(({ evidence }) => !inSection(evidence))), (entry) => entry.evidence);
   } else if (options.query?.trim()) {
     const queryTerms = [...new Set(evidenceTokens(options.query))];
     const scores = new Map<number, number>();
@@ -260,6 +265,13 @@ export function enclosingIdsLookup(board: BoardData): (nodeId: string) => Set<st
     memo.set(nodeId, ids);
     return ids;
   };
+}
+
+/** Whether an excerpt lies in a section, by its node or, for a table row or cell, by the table. */
+export function inSectionLookup(board: BoardData): (item: Evidence) => boolean {
+  const types = new Map(board.nodes.map((node) => [node.id, node.type]));
+  const enclosing = enclosingIdsLookup(board);
+  return (item) => [...enclosing(item.renderNodeId ?? item.nodeId)].some((id) => types.get(id) === "SECTION");
 }
 
 /**

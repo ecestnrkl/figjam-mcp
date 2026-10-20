@@ -276,6 +276,10 @@ try {
     assert.match(context.content[0].text, /Workshop finding version 2/);
     assert(context.structuredContent.evidence.some(item => /Workshop finding version 2/.test(item.text)));
     assert.doesNotMatch(context.structuredContent.contextText, /Workshop finding version 2/, "Excerpt text must appear once in structuredContent");
+    const outside = await client.callTool({ name: "get_board_context", arguments: { boardId: "SmokeBoard123", outsideSections: true } });
+    assert(!outside.isError, JSON.stringify(outside));
+    assert.equal(outside.structuredContent.totalMatched, context.structuredContent.totalMatched, "A board without sections is read whole outside sections");
+    assert.match(outside.structuredContent.contextText, /## Outside sections/);
     const answer = await client.callTool({ name: "answer_from_board", arguments: { boardId: "SmokeBoard123", question: "What is the workshop finding?" } });
     assert(!answer.isError, JSON.stringify(answer));
     assert.match(answer.structuredContent.answer, /Workshop finding version 2/);
