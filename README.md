@@ -101,7 +101,8 @@ The default preset `student-free` uses free OpenRouter models: text goes to
 `nvidia/nemotron-3-super-120b-a12b:free` and then `openrouter/free`; images go to
 `openrouter/free`, which picks a free model that accepts images and structured
 outputs. The free default is best effort: free models change, hit rate limits
-and time out.
+and time out. Images go to the model with at most 1,024 px on the longest side;
+larger ones are scaled down locally.
 
 - OpenRouter allows free models 20 requests per minute and 50 requests per day,
   or 1,000 per day once you have bought at least 10 credits

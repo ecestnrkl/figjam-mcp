@@ -115,6 +115,8 @@ async function runCheck(
 ): Promise<CheckResult> {
   signal?.throwIfAborted();
   let modelUsed: string | undefined;
+  // The checks send only synthetic data, so the provider's own message may be shown here, unlike in other tools.
+  let providerMessage: string | undefined;
   // One signal cancels the provider request and ends the race, even for a
   // request that ignores the abort.
   const deadline = new AbortController();
@@ -138,6 +140,9 @@ async function runCheck(
         onModelUsed: (model) => {
           modelUsed = model;
         },
+        onProviderError: (message) => {
+          providerMessage = message;
+        },
       }),
       aborted,
     ]);
@@ -149,11 +154,12 @@ async function runCheck(
     return { name, ok: true, modelUsed };
   } catch (error) {
     signal?.throwIfAborted();
+    const message = error instanceof Error ? error.message : String(error);
     return {
       name,
       ok: false,
       modelUsed,
-      error: error instanceof Error ? error.message : String(error),
+      error: providerMessage ? `${message} Provider message: ${providerMessage}` : message,
     };
   } finally {
     clearTimeout(timer);

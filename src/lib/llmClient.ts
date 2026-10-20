@@ -2,6 +2,7 @@ import OpenAI from "openai";
 import { readIntEnv } from "./env.js";
 import { getModelConfig, getModelsForRole } from "./modelRegistry.js";
 import { getLlmRequestTimeoutMs } from "./llmTimeouts.js";
+import { redactCredentials } from "./redact.js";
 
 /**
  * Shared LLM access for visionInterpreter.ts and answerFromBoard.ts.
@@ -53,6 +54,11 @@ export interface ChatJsonOptions {
   onModelUsed?: (model: string) => void;
   onUsage?: (usage: { model: string; promptTokens?: number; completionTokens?: number; totalTokens?: number }) => void;
   onRequest?: (model: string) => void;
+  /**
+   * Receives the provider's message (message, code and metadata.provider_name, at most 200 characters) when the
+   * request finally fails with a provider error. Only for synthetic requests: provider text can echo the prompt.
+   */
+  onProviderError?: (message: string) => void;
   /** Optional caller-owned cancellation, e.g. an ingest phase deadline. */
   signal?: AbortSignal;
 }
@@ -199,6 +205,8 @@ export async function chatJson(
         );
         continue;
       }
+      const providerMessage = options.onProviderError && describeProviderError(error);
+      if (providerMessage) options.onProviderError!(providerMessage);
       throw normalizeLlmError(error);
     }
   }
@@ -334,8 +342,42 @@ function providerErrorDetail(error: InstanceType<typeof OpenAI.APIError>): strin
     .join(" ");
 }
 
+/** Error bodies of failures that arrive in a 200 response; kept off the error objects so they never reach messages or logs. */
+const embeddedErrors = new WeakMap<LlmRequestError, NonNullable<EmbeddedErrorEnvelope["error"]>>();
+
+function providerErrorBody(error: unknown): { message?: unknown; code?: unknown; metadata?: unknown } | undefined {
+  if (error instanceof OpenAI.APIError) return error.error && typeof error.error === "object" ? error.error : undefined;
+  return error instanceof LlmRequestError ? embeddedErrors.get(error) : undefined;
+}
+
+/** OpenRouter's wording when the upstream provider of a model failed; another model may still answer. */
+function isProviderReturnedError(error: unknown): boolean {
+  const message = providerErrorBody(error)?.message;
+  return typeof message === "string" && /\bprovider returned error\b/i.test(message);
+}
+
+/** The provider's message for diagnose_llm_config: message, code and metadata.provider_name, never metadata.raw. */
+function describeProviderError(error: unknown): string | undefined {
+  const body = providerErrorBody(error);
+  if (!body) return undefined;
+  const metadata = body.metadata && typeof body.metadata === "object" ? body.metadata as Record<string, unknown> : {};
+  const parts = [
+    typeof body.message === "string" ? body.message : undefined,
+    typeof body.code === "string" || typeof body.code === "number" ? `code ${body.code}` : undefined,
+    typeof metadata.provider_name === "string" ? `provider ${metadata.provider_name}` : undefined,
+  ].filter((part): part is string => Boolean(part?.trim()));
+  return parts.length ? redactCredentials(parts.join(", ").replace(/\s+/g, " ").trim()).slice(0, 200) : undefined;
+}
+
+/**
+ * A missing or failing model goes to the next candidate: 404, 410, OpenRouter's "Provider returned error",
+ * timeouts, rate limits and server errors. Other 4xx (400, 401, 402, 403, 422) stay with the request unless
+ * they name an unavailable model or an unsupported format.
+ */
 function shouldTryNextModel(error: unknown): boolean {
-  if (error instanceof LlmRequestError) return error.status === 429 || (error.status ?? 0) >= 500;
+  if (error instanceof LlmRequestError) {
+    return [404, 410, 429].includes(error.status ?? 0) || (error.status ?? 0) >= 500 || isProviderReturnedError(error);
+  }
   if (error instanceof LlmInvalidJsonError || isLlmTimeout(error)) {
     return true;
   }
@@ -343,7 +385,7 @@ function shouldTryNextModel(error: unknown): boolean {
     return true;
   }
   if (error instanceof OpenAI.APIError) {
-    return error.status === 408 || error.status === 429 || error.status >= 500 ||
+    return [404, 408, 410, 429].includes(error.status) || error.status >= 500 || isProviderReturnedError(error) ||
       isUnavailableModelError(error) || isUnsupportedParamError(error);
   }
   if (error instanceof Error) {
@@ -373,7 +415,7 @@ interface EmbeddedErrorEnvelope {
   error?: {
     message?: string;
     code?: number | string;
-    metadata?: { error_type?: string };
+    metadata?: { error_type?: string; provider_name?: string };
   };
 }
 
@@ -441,8 +483,10 @@ async function createCompletion(
       await backoff(2 ** attempt * 2000, attempt, signal);
       continue;
     }
-    throw new LlmRequestError(`LLM request failed: ${isRateLimit(embedded) ? "rate limit exceeded (429)" : "response contained no choices"}`,
+    const failure = new LlmRequestError(`LLM request failed: ${isRateLimit(embedded) ? "rate limit exceeded (429)" : "response contained no choices"}`,
       isRateLimit(embedded) ? 429 : Number(embedded.code) || 502);
+    embeddedErrors.set(failure, embedded);
+    throw failure;
   }
 }
 

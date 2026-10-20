@@ -302,11 +302,10 @@ describe("chatJson", () => {
 
   it.each([
     [400, "Invalid schema: missing required property"],
-    [404, "The requested API path does not exist"],
-    [404, "Not Found"],
     [401, "Authentication failed; response_format unsupported"],
     [402, "Insufficient credits; response_format unsupported"],
     [403, "Permission denied; response_format unsupported"],
+    [422, "Unprocessable request"],
   ])("does not retry unrelated request failures or expose their details (%s)", async (status, message) => {
     createMock.mockRejectedValueOnce(providerError(status, message));
     const pending = chatJson(["first-model", "second-model"], MESSAGES, SCHEMA_OPTIONS);
@@ -319,9 +318,48 @@ describe("chatJson", () => {
     '{"message":"response_format unsupported"',
     JSON.stringify({ message: "response_format unsupported", padding: "x".repeat(16_384) }),
   ])("does not interpret malformed or oversized raw provider metadata", async raw => {
-    createMock.mockRejectedValueOnce(providerError(400, "Provider returned error", { metadata: { raw } }));
+    createMock.mockRejectedValueOnce(providerError(400, "Upstream request rejected", { metadata: { raw } }));
     await expect(chatJson(["first-model", "second-model"], MESSAGES, SCHEMA_OPTIONS)).rejects.toMatchObject({ status: 400 });
     expect(createMock).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    [404, "Provider returned error", { code: 404, metadata: { provider_name: "Synthetic", raw: "private provider body" } }],
+    [404, "Not Found", {}],
+    [410, "Model is gone", {}],
+    [400, "Provider returned error", { code: 400 }],
+    [403, "Provider returned error", { code: 403 }],
+  ])("moves to the next model after a %s %s", async (status, message, fields) => {
+    createMock.mockRejectedValueOnce(providerError(status, message, fields)).mockResolvedValueOnce(okCompletion('{"ok":true}'));
+    await expect(chatJson(["first-model", "second-model"], MESSAGES, SCHEMA_OPTIONS)).resolves.toEqual({ ok: true });
+    expect(createMock.mock.calls.map(([params]) => params.model)).toEqual(["first-model", "second-model"]);
+  });
+
+  it("moves to the next model after a 404 or provider error inside a 200 body", async () => {
+    createMock.mockResolvedValueOnce({ error: { message: "Provider returned error", code: 404 } })
+      .mockResolvedValueOnce({ error: { message: "Provider returned error", code: 400 } })
+      .mockResolvedValueOnce(okCompletion('{"ok":true}'));
+    await expect(chatJson(["first-model", "second-model", "third-model"], MESSAGES)).resolves.toEqual({ ok: true });
+    expect(createMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("reports the provider's message only to an explicit callback, bounded and without metadata.raw", async () => {
+    const message = `Provider returned error ${"x".repeat(300)}`;
+    const failure = () => providerError(404, message, { code: 404, metadata: { provider_name: "Synthetic", raw: "private provider body" } });
+    createMock.mockRejectedValueOnce(failure()).mockRejectedValueOnce(failure());
+    const onProviderError = vi.fn();
+    const pending = chatJson(["first-model", "second-model"], MESSAGES, { ...SCHEMA_OPTIONS, onProviderError });
+    await expect(pending).rejects.toThrow("LLM request failed (HTTP 404). Check provider availability and configuration.");
+    await expect(pending).rejects.not.toThrow(/Provider returned error|private provider body|Synthetic/);
+    expect(onProviderError).toHaveBeenCalledOnce();
+    const [reported] = onProviderError.mock.calls[0] as [string];
+    expect(reported).toHaveLength(200);
+    expect(reported).toMatch(/^Provider returned error x+$/);
+    expect(reported).not.toContain("private provider body");
+    // Short messages carry the code and the provider name.
+    createMock.mockRejectedValueOnce(providerError(404, "Provider returned error", { code: 404, metadata: { provider_name: "Synthetic", raw: "private provider body" } }));
+    await expect(chatJson("only-model", MESSAGES, { ...SCHEMA_OPTIONS, onProviderError })).rejects.toMatchObject({ status: 404 });
+    expect(onProviderError).toHaveBeenLastCalledWith("Provider returned error, code 404, provider Synthetic");
   });
 
   it("falls back to the next model when the first model returns invalid JSON", async () => {

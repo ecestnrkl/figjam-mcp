@@ -3,11 +3,12 @@ import { setImmediate as yieldToRequests } from "node:timers/promises";
 import { extractFigmaFileKeyFromUrl } from "../schemas/common.js";
 import type { Cluster, IngestFocusReport, IngestMode, IngestQualityReport, NormalizedNode, RefinedCluster, BoardData, OperationOptions } from "../types.js";
 import { fetchFileTree, fetchRenderUrls, downloadRenders, fetchFileMetadata, fetchImageRefs, downloadOriginals, FigmaApiError, FigmaDownloadBudgetError,
-  FigmaTimeoutError, INGEST_IMAGE_MAX_BYTES, ORIGINAL_IMAGE_MAX_BYTES, type RenderUrls } from "../lib/figmaApi.js";
+  FigmaTimeoutError, IMAGE_MAX_BYTES, INGEST_IMAGE_MAX_BYTES, type OriginalImage, type RenderUrls } from "../lib/figmaApi.js";
 import { LLMConfigurationError, LlmInvalidJsonError, LlmRequestError, LlmTimeoutError, validateLlmConfiguration } from "../lib/llmClient.js";
 import { flattenNodeTree, isGenericNodeName } from "../lib/nodeTree.js";
 import { partitionedBoardClusters } from "../lib/spatialCluster.js";
 import { refineClusterWithVision } from "../lib/visionInterpreter.js";
+import { prepareRenders, prepareVisionImage } from "../lib/visionImages.js";
 import { mapClustersToPhases } from "../lib/docStructureMapper.js";
 import { buildClusterRelations, extractConnectorEdges } from "../lib/connectorGraph.js";
 import { setBoard } from "../lib/cache.js";
@@ -36,7 +37,7 @@ import {
  * text inventory has its own hard node/character bounds in visionInterpreter.ts.
  */
 const MAX_SCREENSHOTS_PER_CLUSTER = 6;
-/** Image data per vision request: two to three large originals, while most clusters stay far below. */
+/** Image data sent per vision request; images reach the model with at most 1,024 px on the longest side. */
 const VISION_REQUEST_IMAGE_MAX_BYTES = 8 * 1024 * 1024;
 
 /**
@@ -261,20 +262,26 @@ async function performIngest(input: IngestBoardInput, options: OperationOptions)
     refined[index] = { ...refineClusterFromText(clusters[index]!, members), contentHash: contentHashes.get(clusters[index]!.id),
       incomplete: true, fallbackReason: reason, retryAfter };
   };
-  /** Originals of an image cluster's nodes; single nodes whose original is unusable are rendered instead. */
+  /**
+   * Bounded originals of an image cluster's nodes; single nodes whose original is unusable are rendered instead.
+   * An original may be downloaded with up to 8 MiB because a larger one is scaled down before sending.
+   */
   async function clusterImages(nodes: NormalizedNode[], imageUrls: Record<string, string>, requestSignal: AbortSignal): Promise<Buffer[]> {
-    const originals = await downloadOriginals(nodes.map(node => imageUrls[node.imageRef!]),
-      { imageMaxBytes: ORIGINAL_IMAGE_MAX_BYTES, requestMaxBytes: VISION_REQUEST_IMAGE_MAX_BYTES }, requestSignal, imageBudget);
+    const originals: OriginalImage[] = [];
+    for (const original of await downloadOriginals(nodes.map(node => imageUrls[node.imageRef!]), IMAGE_MAX_BYTES, requestSignal, imageBudget)) {
+      originals.push("data" in original ? await prepareVisionImage(original.data, requestSignal) : original);
+    }
     const renderIds = nodes.filter((_node, position) => "fallback" in originals[position]!).map(node => node.id);
-    const renders = new Map<string, Buffer>();
+    const renders = new Map<string, Buffer | undefined>();
     if (renderIds.length) {
       figmaRequests.renders++;
       const renderUrls = await fetchRenderUrls(fileKey, renderIds, token!, requestSignal, figmaVersion);
-      (await downloadRenders(renderIds, renderUrls, requestSignal, imageBudget)).forEach((image, position) => renders.set(renderIds[position]!, image));
+      (await prepareRenders(await downloadRenders(renderIds, renderUrls, requestSignal, imageBudget), requestSignal))
+        .forEach((image, position) => renders.set(renderIds[position]!, image));
     }
-    return withinRequestLimit(nodes.flatMap((node, position) => {
+    return withinRequestLimit(nodes.map((node, position) => {
       const original = originals[position]!;
-      return "data" in original ? [original.data] : "fallback" in original ? [renders.get(node.id)!] : [];
+      return "data" in original ? original.data : renders.get(node.id);
     }));
   }
   async function worker(): Promise<void> {
@@ -295,7 +302,7 @@ async function performIngest(input: IngestBoardInput, options: OperationOptions)
           const batch = batchOfCluster.get(index)!;
           const renderUrls = await renderBatch(batch);
           prefetchRenderBatch(batch + 1);
-          return withinRequestLimit(await downloadRenders(screenshotNodes.get(index)!, renderUrls, requestSignal, imageBudget));
+          return withinRequestLimit(await prepareRenders(await downloadRenders(screenshotNodes.get(index)!, renderUrls, requestSignal, imageBudget), requestSignal));
         }, deadline, signal);
         const failureAfterRendering = currentSharedFailure();
         if (failureAfterRendering) { fallback(index, failureAfterRendering.reason, failureAfterRendering.retryAfter); continue; }
@@ -444,14 +451,19 @@ function compareNodeArea(a: NormalizedNode, b: NormalizedNode): number {
   return areaDiff !== 0 ? areaDiff : compareStrings(a.id, b.id);
 }
 
-/** Keeps images in priority order up to VISION_REQUEST_IMAGE_MAX_BYTES; the first image always stays. */
-function withinRequestLimit(images: Buffer[]): Buffer[] {
+/**
+ * Keeps images in priority order up to VISION_REQUEST_IMAGE_MAX_BYTES; the first image always stays.
+ * Images that could not be bounded are left out, and a cluster without any image fails like a failed render.
+ */
+function withinRequestLimit(images: Array<Buffer | undefined>): Buffer[] {
   let bytes = 0;
-  return images.filter((image, position) => {
-    if (position > 0 && bytes + image.byteLength > VISION_REQUEST_IMAGE_MAX_BYTES) return false;
+  const kept = images.filter((image): image is Buffer => {
+    if (!image || (bytes > 0 && bytes + image.byteLength > VISION_REQUEST_IMAGE_MAX_BYTES)) return false;
     bytes += image.byteLength;
     return true;
   });
+  if (!kept.length) throw new Error("No image of this cluster could be prepared for the vision model");
+  return kept;
 }
 
 /**

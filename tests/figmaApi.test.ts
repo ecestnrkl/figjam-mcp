@@ -81,35 +81,40 @@ describe("bounded Figma requests", () => {
     let oversizedRead = false;
     const responses: Record<string, () => Response> = {
       "https://cdn.example/large": () => new Response(new ReadableStream({ pull(controller) { oversizedRead = true; controller.close(); } }, { highWaterMark: 0 }),
-        { headers: { "Content-Length": String(4 * MiB) } }),
-      "https://cdn.example/first": () => new Response(png(3 * MiB), { headers: { "Content-Length": String(3 * MiB) } }),
-      "https://cdn.example/second": () => new Response(png(3 * MiB), { headers: { "Content-Length": String(3 * MiB) } }),
-      "https://cdn.example/third": () => new Response(png(3 * MiB), { headers: { "Content-Length": String(3 * MiB) } }),
-      "https://cdn.example/unannounced": () => new Response(png(3 * MiB)),
+        { headers: { "Content-Length": String(8 * MiB + 1) } }),
+      "https://cdn.example/first": () => new Response(png(5 * MiB), { headers: { "Content-Length": String(5 * MiB) } }),
+      "https://cdn.example/second": () => new Response(png(5 * MiB), { headers: { "Content-Length": String(5 * MiB) } }),
+      "https://cdn.example/unannounced": () => new Response(png(9 * MiB)),
       "https://cdn.example/svg": () => new Response("<svg></svg>"),
       "https://cdn.example/gone": () => new Response("", { status: 403 }),
     };
     vi.stubGlobal("fetch", vi.fn((url: string) => Promise.resolve(responses[url]!())));
     const { downloadOriginals } = await import("../src/lib/figmaApi.js");
     const budget = { usedBytes: 0, maxBytes: 64 * MiB };
-    const limits = { imageMaxBytes: 3.75 * MiB, requestMaxBytes: 8 * MiB };
+    // Up to 8 MiB per original: the caller scales large originals down and bounds each vision request itself.
     const results = await downloadOriginals([undefined, "https://cdn.example/large", "https://cdn.example/svg", "https://cdn.example/gone",
-      "https://cdn.example/first", "https://cdn.example/second", "https://cdn.example/third"], limits, undefined, budget);
+      "https://cdn.example/first", "https://cdn.example/second"], 8 * MiB, undefined, budget);
     expect(results.map(result => "data" in result ? result.data.length : result)).toEqual([
-      { fallback: "missing_url" }, { fallback: "too_large" }, { fallback: "unknown_format" }, { fallback: "download_failed" },
-      3 * MiB, 3 * MiB, { skipped: true }]);
+      { fallback: "missing_url" }, { fallback: "too_large" }, { fallback: "unknown_format" }, { fallback: "download_failed" }, 5 * MiB, 5 * MiB]);
     expect(oversizedRead).toBe(false);
-    // The third announced image is never read, so it does not count against the ingest budget.
-    expect(budget.usedBytes).toBe(6 * MiB + "<svg></svg>".length);
-    // Without Content-Length, the request limit applies after reading.
-    const unannounced = await downloadOriginals(["https://cdn.example/first", "https://cdn.example/second", "https://cdn.example/unannounced"], limits);
-    expect(unannounced.map(result => "data" in result ? result.data.length : result)).toEqual([3 * MiB, 3 * MiB, { skipped: true }]);
+    // The oversized announced image is never read, so it does not count against the ingest budget.
+    expect(budget.usedBytes).toBe(10 * MiB + "<svg></svg>".length);
+    // Without Content-Length, the per-image limit applies while reading.
+    const unannounced = await downloadOriginals(["https://cdn.example/first", "https://cdn.example/unannounced"], 8 * MiB);
+    expect(unannounced.map(result => "data" in result ? result.data.length : result)).toEqual([5 * MiB, { fallback: "too_large" }]);
   });
   it("fails the whole download only for the shared ingest budget", async () => {
     vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(new Response(Buffer.from([0xff, 0xd8, 0xff, 0, 0, 0, 0, 0])))));
     const { downloadOriginals } = await import("../src/lib/figmaApi.js");
-    await expect(downloadOriginals(["https://cdn.example/a", "https://cdn.example/b"], { imageMaxBytes: 100, requestMaxBytes: 100 },
-      undefined, { usedBytes: 0, maxBytes: 12 })).rejects.toMatchObject({ name: "FigmaDownloadBudgetError" });
+    await expect(downloadOriginals(["https://cdn.example/a", "https://cdn.example/b"], 100, undefined, { usedBytes: 0, maxBytes: 12 }))
+      .rejects.toMatchObject({ name: "FigmaDownloadBudgetError" });
+    // Announced sizes that together exceed the budget fail before any body is read.
+    const announced = () => new Response(new Uint8Array(8), { headers: { "Content-Length": "8" } });
+    vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(announced())));
+    const budget = { usedBytes: 0, maxBytes: 12 };
+    await expect(downloadOriginals(["https://cdn.example/a", "https://cdn.example/b"], 100, undefined, budget))
+      .rejects.toMatchObject({ name: "FigmaDownloadBudgetError" });
+    expect(budget.usedBytes).toBe(0);
   });
   it("exposes typed byte-budget and metadata-timeout errors", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(new Response("{}", { headers: { "Content-Length": String(65 * 1024 * 1024) } }))

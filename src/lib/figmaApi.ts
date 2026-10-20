@@ -114,15 +114,13 @@ export function imageMimeType(data: Uint8Array): ImageMimeType | undefined {
 }
 /** Why an original image is replaced by a render of its node. */
 export type OriginalFallbackReason = "missing_url" | "too_large" | "unknown_format" | "download_failed";
-export type OriginalImage = { data: Buffer } | { fallback: OriginalFallbackReason } | { skipped: true };
-export interface OriginalImageLimits { imageMaxBytes: number; requestMaxBytes: number }
+export type OriginalImage = { data: Buffer } | { fallback: OriginalFallbackReason };
 /**
  * Downloads original images for one vision request, in priority order. Content-Length is checked before a body is
  * read: an image above `imageMaxBytes`, without URL, in an unknown format or with a failed download needs a render
- * instead; an image that would push the request above `requestMaxBytes` is skipped once an earlier one is kept.
- * Only the shared ingest budget and cancellation fail the whole request.
+ * instead. The caller bounds what is sent per request. Only the shared ingest budget and cancellation fail the whole request.
  */
-export async function downloadOriginals(urls: Array<string | undefined>, limits: OriginalImageLimits, signal?: AbortSignal, budget?: DownloadBudget): Promise<OriginalImage[]> {
+export async function downloadOriginals(urls: Array<string | undefined>, imageMaxBytes: number, signal?: AbortSignal, budget?: DownloadBudget): Promise<OriginalImage[]> {
   const controller = new AbortController();
   const requestSignal = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;
   const downloadFailed = (error: unknown): OriginalImage => {
@@ -147,34 +145,25 @@ export async function downloadOriginals(urls: Array<string | undefined>, limits:
       const announced = Number(response?.headers.get("Content-Length") || NaN);
       if (response === undefined) results.push({ fallback: "missing_url" });
       else if (response === null) results.push({ fallback: "download_failed" });
-      else if (announced > limits.imageMaxBytes) results.push({ fallback: "too_large" });
-      else if (announced + announcedBytes > limits.requestMaxBytes && results.some(result => result instanceof Response)) results.push({ skipped: true });
+      else if (announced > imageMaxBytes) results.push({ fallback: "too_large" });
       else {
-        if (budget && announced > budget.maxBytes - budget.usedBytes) throw new FigmaDownloadBudgetError();
+        if (budget && announcedBytes + announced > budget.maxBytes - budget.usedBytes) throw new FigmaDownloadBudgetError();
         if (Number.isFinite(announced)) announcedBytes += announced;
         results.push(response);
         continue;
       }
       await responses[index]?.body?.cancel();
     }
-    const read = await Promise.all(results.map(async (result): Promise<OriginalImage> => {
+    return await Promise.all(results.map(async (result): Promise<OriginalImage> => {
       if (!(result instanceof Response)) return result;
       let data: Buffer;
-      try { data = await readBounded(result, limits.imageMaxBytes, requestSignal, budget); }
+      try { data = await readBounded(result, imageMaxBytes, requestSignal, budget); }
       catch (error) {
         if (error instanceof FigmaDownloadBudgetError && !(budget && budget.usedBytes > budget.maxBytes)) return { fallback: "too_large" };
         return downloadFailed(error);
       }
       return imageMimeType(data) ? { data } : { fallback: "unknown_format" };
     }));
-    // Servers that omit or misstate Content-Length are held to the request limit after reading.
-    let requestBytes = 0;
-    return read.map(result => {
-      if (!("data" in result)) return result;
-      if (requestBytes > 0 && requestBytes + result.data.byteLength > limits.requestMaxBytes) return { skipped: true };
-      requestBytes += result.data.byteLength;
-      return result;
-    });
   } catch (error) { controller.abort(error); throw error; }
 }
 export type RenderUrls = Record<string, string | null | undefined>;
