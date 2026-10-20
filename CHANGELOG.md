@@ -16,6 +16,9 @@
   without a usable original. `qualityReport.figmaRequests` counts the image fills and render requests.
 - `ingest_board` with `forceFullIngest` redoes only the image interpretation of its `ingestMode` and keeps the
   others for unchanged clusters: a forced `max_speed` ingest no longer discards earlier interpretations.
+- `ingest_board` takes `focusNodeIds`: the image clusters inside these pages, sections, frames, groups or nodes
+  are interpreted first, in list order, and `qualityReport.focus` and the summary report their progress.
+  The summary states the Figma image requests with their tier.
 
 ## 0.8.0 — 2026-10-19
 

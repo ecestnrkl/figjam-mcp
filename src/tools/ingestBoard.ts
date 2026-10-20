@@ -1,7 +1,7 @@
 import type { IngestBoardInput, IngestBoardOutput } from "../schemas/ingestBoard.js";
 import { setImmediate as yieldToRequests } from "node:timers/promises";
 import { extractFigmaFileKeyFromUrl } from "../schemas/common.js";
-import type { Cluster, IngestMode, IngestQualityReport, NormalizedNode, RefinedCluster, BoardData, OperationOptions } from "../types.js";
+import type { Cluster, IngestFocusReport, IngestMode, IngestQualityReport, NormalizedNode, RefinedCluster, BoardData, OperationOptions } from "../types.js";
 import { fetchFileTree, fetchRenderUrls, downloadRenders, fetchFileMetadata, fetchImageRefs, downloadOriginals, FigmaApiError, FigmaDownloadBudgetError,
   FigmaTimeoutError, INGEST_IMAGE_MAX_BYTES, ORIGINAL_IMAGE_MAX_BYTES, type RenderUrls } from "../lib/figmaApi.js";
 import { LLMConfigurationError, LlmInvalidJsonError, LlmRequestError, LlmTimeoutError, validateLlmConfiguration } from "../lib/llmClient.js";
@@ -15,6 +15,7 @@ import { redactBoard, redactNodes } from "../lib/redact.js";
 import { readIntEnv } from "../lib/env.js";
 import { describeModelConfig } from "../lib/modelRegistry.js";
 import { sectionGuide } from "../lib/sections.js";
+import { enclosingIdsLookup } from "../lib/evidence.js";
 import {
   buildBoardCacheKey,
   extractFigmaLastModified,
@@ -146,10 +147,13 @@ async function performIngest(input: IngestBoardInput, options: OperationOptions)
   const cached = cacheCandidate?.extractionVersion === EXTRACTION_VERSION ? cacheCandidate : undefined;
   if (cached && !cached.clusters.some(cluster => cluster.incomplete)) {
     const clusters = cached.clusters.map(cluster => ({ ...cluster, cacheHit: true }));
+    const clusterNodes = clusterMembers(clusters, nodes);
+    const focus = resolveFocus(input.focusNodeIds, clusterNodes, nodes);
     // Cached labels and summaries may predate redaction being switched on.
     const board = redactBoard({ ...cached, clusters, freshnessCheckedAt, figmaVersion, figmaLastModified,
       createdAt: previousBoard?.snapshotId === snapshotId ? previousBoard.createdAt : Date.now(),
-      qualityReport: { ...buildQualityReport(clusters, clusters.length), figmaRequests: { imageFills: 0, renders: 0 } } });
+      qualityReport: { ...buildQualityReport(clusters, clusters.length), figmaRequests: { imageFills: 0, renders: 0 },
+        ...(focus ? { focus: focusReport(focus, clusters, clusterNodes, ingestMode) } : {}) } });
     await progress("persist", 4);
     await publishBoard(board, signal);
     await complete();
@@ -161,8 +165,7 @@ async function performIngest(input: IngestBoardInput, options: OperationOptions)
     ? new Map<string, RefinedCluster>() : buildReuseIndex(reuseBoard);
   const clusters = partitionedBoardClusters(nodes);
   if (!clusters.length) throw new Error(`Board ${fileKey} contains no content nodes to ingest`);
-  const nodesById = new Map(nodes.map(node => [node.id, node]));
-  const clusterNodesByIndex = clusters.map(cluster => cluster.nodeIds.map(id => nodesById.get(id)!).filter(Boolean));
+  const clusterNodesByIndex = clusterMembers(clusters, nodes);
   const contentHashes = clusterContentHashes(clusters, nodes);
   const clusterByNode = new Map(clusters.flatMap(cluster => cluster.nodeIds.map(id => [id, cluster.id] as const)));
   const internalEdgesByCluster = new Map<string, typeof connectorEdges>();
@@ -192,7 +195,11 @@ async function performIngest(input: IngestBoardInput, options: OperationOptions)
   // Previously deferred work must not sit behind the same failing requests on
   // every ingest. Existing cache reasons are enough; no attempt log is needed.
   const retryPriorities = clusters.map(cluster => retryPriority(reuseIndex.get(contentHashes.get(cluster.id)!)));
-  visionQueue.sort((left, right) => retryPriorities[left]! - retryPriorities[right]!
+  // Clusters within focusNodeIds come first, by their first matching ID; the usual order applies within and after them.
+  const focus = resolveFocus(input.focusNodeIds, clusterNodesByIndex, nodes);
+  const focusRanks = focus?.ranks ?? clusters.map(() => 0);
+  visionQueue.sort((left, right) => focusRanks[left]! - focusRanks[right]!
+    || retryPriorities[left]! - retryPriorities[right]!
     || compareVisionPriority(priorities[left]!, priorities[right]!));
   await progress("interpret", 3);
   const deadline = Date.now() + VISION_BUDGET_MS;
@@ -318,7 +325,8 @@ async function performIngest(input: IngestBoardInput, options: OperationOptions)
   finally { clearTimeout(renderPhaseTimer); renderPhase.abort(); }
   signal?.throwIfAborted();
   const finalClusters = mapClustersToPhases(refined, input.docStructureHint, input.customPhases);
-  const qualityReport = { ...buildQualityReport(finalClusters, reusedCount), reusedClusters: reusedCount, figmaRequests };
+  const qualityReport = { ...buildQualityReport(finalClusters, reusedCount), reusedClusters: reusedCount, figmaRequests,
+    ...(focus ? { focus: focusReport(focus, refined, clusterNodesByIndex, ingestMode) } : {}) };
   // Reused labels and summaries may predate redaction being switched on.
   const board = redactBoard({
     schemaVersion: 4, extractionVersion: EXTRACTION_VERSION, boardId: fileKey, fileKey, docStructureHint: input.docStructureHint,
@@ -367,6 +375,39 @@ function classifyVisionFailure(error: unknown, stage: VisionStage): VisionFallba
     if (error.status === 401 || error.status === 403) return "auth";
   }
   return stage === "render" ? "render_failed" : "model_failed";
+}
+
+function clusterMembers(clusters: Cluster[], nodes: NormalizedNode[]): NormalizedNode[][] {
+  const nodesById = new Map(nodes.map(node => [node.id, node]));
+  return clusters.map(cluster => cluster.nodeIds.map(id => nodesById.get(id)!).filter(Boolean));
+}
+
+interface Focus {
+  requestedIds: string[];
+  foundIds: string[];
+  /** Per cluster: the position of its first matching focus ID, requestedIds.length outside the focus. */
+  ranks: number[];
+}
+
+/** A cluster is in focus when one of its nodes is a focus ID or lies within one. */
+function resolveFocus(focusNodeIds: string[] | undefined, clusterNodes: NormalizedNode[][], nodes: NormalizedNode[]): Focus | undefined {
+  if (!focusNodeIds?.length) return undefined;
+  const requestedIds = [...new Set(focusNodeIds)];
+  const positions = new Map(requestedIds.map((id, position) => [id, position]));
+  const enclosing = enclosingIdsLookup({ nodes });
+  const nodeRank = (node: NormalizedNode) => [node.id, ...enclosing(node.id)]
+    .reduce((rank, id) => Math.min(rank, positions.get(id) ?? rank), requestedIds.length);
+  const known = new Set(nodes.map(node => node.id));
+  return { requestedIds, foundIds: requestedIds.filter(id => known.has(id)),
+    ranks: clusterNodes.map(members => members.reduce((rank, node) => Math.min(rank, nodeRank(node)), requestedIds.length)) };
+}
+
+function focusReport(focus: Focus, clusters: RefinedCluster[], clusterNodes: NormalizedNode[][], ingestMode: IngestMode): IngestFocusReport {
+  const inFocus = clusters.filter((_cluster, index) => focus.ranks[index]! < focus.requestedIds.length
+    && shouldUseVision(clusterNodes[index]!, ingestMode));
+  const interpreted = inFocus.filter(cluster => cluster.summarySource === "vision_llm" && !cluster.incomplete).length;
+  return { requestedIds: focus.requestedIds, foundIds: focus.foundIds, imageClusters: inFocus.length, interpreted,
+    pending: inFocus.length - interpreted };
 }
 
 function retryPriority(previous?: RefinedCluster): number {
@@ -776,11 +817,30 @@ function buildSummary(board: BoardData, qualityReport: IngestQualityReport): str
       : "";
   const requests = qualityReport.figmaRequests;
   const requestNote = requests && requests.imageFills + requests.renders > 0
-    ? ` Figma image requests: ${requests.imageFills} image fills, ${requests.renders} render${requests.renders === 1 ? "" : "s"}.` : "";
+    ? ` Figma requests for images: ${requests.imageFills} image fills request${requests.imageFills === 1 ? "" : "s"} (Tier 2),`
+      + ` ${requests.renders} render request${requests.renders === 1 ? "" : "s"} (Tier 1).` : "";
+  const focusNote = qualityReport.focus ? describeFocus(qualityReport.focus, ingestMode) : "";
   return (
     `Ingested board ${fileKey}: ${overview}${cacheNote}${reuseNote}`
-    + ` ${qualityReport.visionClusters} visually interpreted; ${qualityReport.deterministicClusters} use extracted text.${requestNote}${fallbackNote}`
+    + ` ${qualityReport.visionClusters} visually interpreted; ${qualityReport.deterministicClusters} use extracted text.${requestNote}${focusNote}${fallbackNote}`
   );
+}
+
+/** Unknown focus IDs named in the summary; the full list is in qualityReport.focus. */
+const MISSING_FOCUS_IDS_IN_SUMMARY = 5;
+
+function describeFocus(focus: IngestFocusReport, ingestMode?: IngestMode): string {
+  const found = new Set(focus.foundIds);
+  const missing = focus.requestedIds.filter(id => !found.has(id));
+  const missingNote = missing.length
+    ? ` ${missing.length} of ${focus.requestedIds.length} focusNodeIds not found on the board: `
+      + `${missing.slice(0, MISSING_FOCUS_IDS_IN_SUMMARY).join(", ")}${missing.length > MISSING_FOCUS_IDS_IN_SUMMARY ? ", ..." : ""}.`
+    : "";
+  if (ingestMode === "max_speed") return ` focusNodeIds has no effect in max_speed, which interprets no images.${missingNote}`;
+  const progress = !focus.imageClusters ? "Focus: no image clusters to interpret."
+    : `Focus: ${focus.interpreted} of ${focus.imageClusters} image cluster${focus.imageClusters === 1 ? "" : "s"} interpreted, ${focus.pending} pending`
+      + (focus.pending ? "; run ingest_board again with the same focusNodeIds to continue." : ".");
+  return ` ${progress}${missingNote}`;
 }
 
 function describeFallbackReasons(reasons?: Record<string, number>): string {
@@ -805,5 +865,6 @@ function describeNextSteps(report: IngestQualityReport): string {
   instructions.push(reasons.time_budget || reasons.vision_budget
     ? "Run ingest_board again without forceFullIngest to continue the remaining visual interpretation; finished clusters are reused."
     : "Re-ingest without forceFullIngest to retain successful interpretations and retry pending work.");
+  if (!report.focus) instructions.push("To interpret the images of particular sections first, pass their section IDs as focusNodeIds.");
   return ` ${instructions.join(" ")}`;
 }

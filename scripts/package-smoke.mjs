@@ -366,10 +366,15 @@ try {
       previousRow: 0, currentRow: 0, previousColumn: 1, currentColumn: 1,
     }]);
     // An image node is read from GET image fills (Tier 2) and its original download, without a render request.
-    const imageIngest = await ingestWithProgress(client, { figmaFileUrl: "https://www.figma.com/board/ImageBoard123/Smoke", ingestMode: "balanced" }, "Image ingest");
+    // focusNodeIds puts the image first; an unknown ID is reported, not rejected.
+    const imageIngest = await ingestWithProgress(client, { figmaFileUrl: "https://www.figma.com/board/ImageBoard123/Smoke", ingestMode: "balanced",
+      focusNodeIds: ["4:1", "9:404"] }, "Image ingest");
     assert.equal(imageIngest.structuredContent.qualityReport.visionClusters, 1);
+    assert.deepEqual(imageIngest.structuredContent.qualityReport.focus,
+      { requestedIds: ["4:1", "9:404"], foundIds: ["4:1"], imageClusters: 1, interpreted: 1, pending: 0 });
+    assert.match(imageIngest.structuredContent.summary, /Focus: 1 of 1 image cluster interpreted, 0 pending\. 1 of 2 focusNodeIds not found on the board: 9:404\./);
     assert.deepEqual(imageIngest.structuredContent.qualityReport.figmaRequests, { imageFills: 1, renders: 0 });
-    assert.match(imageIngest.structuredContent.summary, /Figma image requests: 1 image fills, 0 renders\./);
+    assert.match(imageIngest.structuredContent.summary, /Figma requests for images: 1 image fills request \(Tier 2\), 0 render requests \(Tier 1\)\./);
 
     for (const request of [
       { name: "get_board_context", arguments: { boardId: "MissingBoard123" } },

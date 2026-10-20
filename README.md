@@ -17,7 +17,7 @@ every answer to the nodes it came from.
 
 | Tool | What it does | LLM call |
 | --- | --- | --- |
-| `ingest_board` | Reads a board, clusters it and saves a local snapshot. Re-ingests reuse unchanged clusters. | In `balanced` (default) and `max_quality` mode |
+| `ingest_board` | Reads a board, clusters it and saves a local snapshot. Re-ingests reuse unchanged clusters; `focusNodeIds` chooses which sections' images are interpreted first. | In `balanced` (default) and `max_quality` mode |
 | `get_board_context` | Returns paginated, source-linked context, optionally for a topic or exact node IDs. Use it for overviews, summaries and documentation. | No |
 | `answer_from_board` | Answers one specific question (a number, status or decision) from the most relevant excerpts, with node-level citations or an insufficient-evidence result. Not meant for whole-board summaries. | Yes |
 | `diff_board` | Compares two snapshots: new, removed and changed clusters, nodes, table cells and arrows. | No |
@@ -84,7 +84,8 @@ Problems: [troubleshooting](https://github.com/ecestnrkl/figjam-mcp/blob/main/do
 4. **Interpret.** In `balanced` mode, clusters with an image, or drawings without
    any text, get a vision-model summary within a 40-second budget; text clusters,
    however short, keep their extracted text. A cluster starts only when the time
-   left fits it; unfinished clusters continue on the next ingest.
+   left fits it; unfinished clusters continue on the next ingest. With
+   `focusNodeIds`, the images of the given sections, frames or nodes come first.
 5. **Serve.** The snapshot is saved to a private local cache.
    `get_board_context` searches it (BM25 over original text, table rows and
    names), `answer_from_board` answers with citations and `diff_board` compares
