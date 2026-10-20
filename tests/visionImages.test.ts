@@ -1,13 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { decode as decodeJpeg } from "jpeg-js";
 import { PNG } from "pngjs";
-import { gifHeader, jpegHeader, pngHeader, syntheticJpeg, syntheticPng } from "./fixtures/images.js";
+import { cornerColours, exifSegment, gifHeader, jpegHeader, markedJpeg, pngHeader, syntheticJpeg, syntheticPng, withOrientation } from "./fixtures/images.js";
 
 const { resizeInWorkerMock } = vi.hoisted(() => ({ resizeInWorkerMock: vi.fn() }));
 // The worker thread runs only from the built package (see package:smoke); here the same function runs inline.
 vi.mock("../src/lib/imageWorker.js", () => ({ resizeInWorker: resizeInWorkerMock }));
 
-const { imageSize, resizeToJpeg } = await import("../src/lib/imageResize.js");
+const { imageSize, jpegOrientation, resizeToJpeg } = await import("../src/lib/imageResize.js");
 const { prepareVisionImage, prepareRenders } = await import("../src/lib/visionImages.js");
 const { imageMimeType } = await import("../src/lib/figmaApi.js");
 
@@ -86,6 +86,51 @@ describe("resizeToJpeg", () => {
   });
 });
 
+describe("EXIF orientation", () => {
+  it("reads Orientation from big- and little-endian EXIF, after other APP1 segments", () => {
+    const jpeg = jpegHeader(900, 600);
+    expect(jpegOrientation(jpeg)).toBe(1);
+    expect(jpegOrientation(withOrientation(jpeg, 6))).toBe(6);
+    expect(jpegOrientation(withOrientation(jpeg, 8, true))).toBe(8);
+    const xmp = Buffer.concat([Buffer.from([0xff, 0xe1, 0, 12]), Buffer.from("http://ns.", "latin1")]);
+    const withXmp = withOrientation(jpeg, 3);
+    expect(jpegOrientation(Buffer.concat([withXmp.subarray(0, 2), xmp, withXmp.subarray(2)]))).toBe(3);
+  });
+
+  it("treats broken or truncated EXIF data as upright without an error", () => {
+    const jpeg = markedJpeg(64, 48);
+    const valid = withOrientation(jpeg, 6);
+    const tiff = valid.subarray(12, 38);
+    const broken = [
+      withOrientation(jpeg, 0), withOrientation(jpeg, 9),
+      exifSegment(jpeg, Buffer.concat([Buffer.from("XX", "latin1"), tiff.subarray(2)])),
+      exifSegment(jpeg, Buffer.concat([tiff.subarray(0, 2), Buffer.from([0, 43]), tiff.subarray(4)])),
+      exifSegment(jpeg, Buffer.concat([tiff.subarray(0, 4), Buffer.from([0x7f, 0xff, 0xff, 0xff]), tiff.subarray(8)])),
+      exifSegment(jpeg, Buffer.concat([tiff.subarray(0, 8), Buffer.from([0, 0]), tiff.subarray(10)])),
+      exifSegment(jpeg, Buffer.concat([tiff.subarray(0, 12), Buffer.from([0, 4]), tiff.subarray(14)])),
+      exifSegment(jpeg, tiff.subarray(0, 6)),
+      valid.subarray(0, 30),
+    ];
+    for (const image of broken) expect(jpegOrientation(image)).toBe(1);
+    // An entry count beyond the segment reads only the entries inside it.
+    expect(jpegOrientation(exifSegment(jpeg, Buffer.concat([tiff.subarray(0, 8), Buffer.from([0xff, 0xff]), tiff.subarray(10, 22)])))).toBe(6);
+    for (const image of broken.slice(0, -1)) expect(cornerColours(resizeToJpeg(image, "image/jpeg")).topLeft).toBe("red");
+  });
+
+  it.each([
+    [1, [64, 48], { topLeft: "red", topRight: "blue" }],
+    [2, [64, 48], { topLeft: "blue", topRight: "red" }],
+    [3, [64, 48], { bottomLeft: "blue", bottomRight: "red" }],
+    [4, [64, 48], { bottomLeft: "red", bottomRight: "blue" }],
+    [5, [48, 64], { topLeft: "red", bottomLeft: "blue" }],
+    [6, [48, 64], { topRight: "red", bottomRight: "blue" }],
+    [7, [48, 64], { topRight: "blue", bottomRight: "red" }],
+    [8, [48, 64], { topLeft: "blue", bottomLeft: "red" }],
+  ] as const)("turns orientation %i upright", (orientation, size, corners) => {
+    expect(cornerColours(resizeToJpeg(withOrientation(markedJpeg(64, 48), orientation), "image/jpeg"))).toMatchObject({ size, ...corners });
+  });
+});
+
 describe("prepareVisionImage", () => {
   it("sends an original within 1,024 px and 3.75 MiB unchanged", async () => {
     const original = jpegHeader(900, 600, "small", 200 * 1024);
@@ -93,6 +138,9 @@ describe("prepareVisionImage", () => {
     expect(prepared).toEqual({ data: original });
     expect("data" in prepared && prepared.data).toBe(original);
     expect(await prepareVisionImage(gifHeader(800, 600))).toEqual({ data: gifHeader(800, 600) });
+    // Broken EXIF counts as upright.
+    const brokenExif = exifSegment(original, Buffer.from("MM\0+\0\0\0\x08", "latin1"));
+    expect(await prepareVisionImage(brokenExif)).toEqual({ data: brokenExif });
     expect(resizeInWorkerMock).not.toHaveBeenCalled();
   });
 

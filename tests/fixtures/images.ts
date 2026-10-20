@@ -1,4 +1,4 @@
-import { encode as encodeJpeg } from "jpeg-js";
+import { decode as decodeJpeg, encode as encodeJpeg } from "jpeg-js";
 import { PNG } from "pngjs";
 
 /** Synthetic images for the vision image path; no real board content. */
@@ -65,4 +65,48 @@ export function syntheticPng(width: number, height: number, alpha = false): Buff
 
 export function syntheticJpeg(width: number, height: number): Buffer {
   return once(`jpeg ${width} ${height}`, () => encodeJpeg({ data: pixels(width, height, false), width, height }, 90).data);
+}
+
+/** Grey JPEG with a red block in the stored top-left and a blue block in the stored top-right corner. */
+export function markedJpeg(width: number, height: number): Buffer {
+  return once(`marked ${width} ${height}`, () => {
+    const data = Buffer.alloc(width * height * 4);
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const top = y < height / 4;
+        const colour = top && x < width / 4 ? [230, 30, 30] : top && x >= width * 3 / 4 ? [30, 30, 230] : [200, 200, 200];
+        data.set([...colour, 255], (y * width + x) * 4);
+      }
+    }
+    return encodeJpeg({ data, width, height }, 90).data;
+  });
+}
+
+/** Inserts an APP1 "Exif" segment whose IFD0 holds only the Orientation tag, as phone cameras write it. */
+export function withOrientation(jpeg: Buffer, orientation: number, littleEndian = false): Buffer {
+  const tiff = Buffer.alloc(26);
+  tiff.write(littleEndian ? "II" : "MM", 0, "latin1");
+  const u16 = (value: number, offset: number) => littleEndian ? tiff.writeUInt16LE(value, offset) : tiff.writeUInt16BE(value, offset);
+  const u32 = (value: number, offset: number) => littleEndian ? tiff.writeUInt32LE(value, offset) : tiff.writeUInt32BE(value, offset);
+  u16(42, 2); u32(8, 4); u16(1, 8);
+  u16(0x0112, 10); u16(3, 12); u32(1, 14); u16(orientation, 18);
+  return exifSegment(jpeg, tiff);
+}
+
+/** Inserts an APP1 "Exif" segment with the given TIFF bytes right after SOI. */
+export function exifSegment(jpeg: Buffer, tiff: Buffer, declaredLength = tiff.length + 8): Buffer {
+  const header = Buffer.from([0xff, 0xe1, declaredLength >> 8, declaredLength & 0xff]);
+  return Buffer.concat([jpeg.subarray(0, 2), header, Buffer.from("Exif\0\0", "latin1"), tiff, jpeg.subarray(2)]);
+}
+
+/** Colour near each corner of a decoded JPEG, as made by markedJpeg. */
+export function cornerColours(jpeg: Buffer): { size: [number, number]; topLeft: string; topRight: string; bottomLeft: string; bottomRight: string } {
+  const { width, height, data } = decodeJpeg(jpeg, { useTArray: true });
+  const at = (x: number, y: number) => {
+    const o = (Math.floor(y) * width + Math.floor(x)) * 4;
+    const [r, , b] = [data[o]!, data[o + 1]!, data[o + 2]!];
+    return r > 150 && b < 100 ? "red" : b > 150 && r < 100 ? "blue" : "grey";
+  };
+  return { size: [width, height], topLeft: at(width * 0.05, height * 0.05), topRight: at(width * 0.95, height * 0.05),
+    bottomLeft: at(width * 0.05, height * 0.95), bottomRight: at(width * 0.95, height * 0.95) };
 }

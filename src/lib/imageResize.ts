@@ -37,22 +37,52 @@ export function imageSize(data: Uint8Array, format: HeaderFormat): ImageSize | u
     }
     return undefined;
   }
-  // JPEG: walk the marker segments up to the first frame header (SOF0–SOF15 except DHT, JPG and DAC).
+  // JPEG: the first frame header (SOF0–SOF15 except DHT, JPG and DAC).
+  for (const { marker, start, end } of jpegSegments(data, view)) {
+    if (marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc) {
+      return end - start >= 5 ? size(view.getUint16(start + 3), view.getUint16(start + 1)) : undefined;
+    }
+  }
+  return undefined;
+}
+
+/** Marker segments of a JPEG up to its scan data; ends at malformed data. */
+function* jpegSegments(data: Uint8Array, view: DataView): Generator<{ marker: number; start: number; end: number }> {
   let offset = 2;
-  while (offset + 4 <= data.length) {
-    if (data[offset] !== 0xff) return undefined;
+  while (offset + 4 <= data.length && data[offset] === 0xff) {
     const marker = data[offset + 1]!;
     if (marker === 0xff) { offset++; continue; }
     if (marker === 0x01 || (marker >= 0xd0 && marker <= 0xd7)) { offset += 2; continue; }
-    if (marker === 0xd9 || marker === 0xda) return undefined;
-    if (marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc) {
-      return offset + 9 <= data.length ? size(view.getUint16(offset + 7), view.getUint16(offset + 5)) : undefined;
-    }
+    if (marker === 0xd9 || marker === 0xda) return;
     const length = view.getUint16(offset + 2);
-    if (length < 2) return undefined;
+    if (length < 2) return;
+    yield { marker, start: offset + 4, end: Math.min(data.length, offset + 2 + length) };
     offset += 2 + length;
   }
-  return undefined;
+}
+
+/**
+ * EXIF Orientation of a JPEG (tag 0x0112 in IFD0 of the first APP1 "Exif" segment): 1 is upright,
+ * 2 to 8 mirror or turn the stored pixels. Missing, invalid or truncated data counts as 1.
+ */
+export function jpegOrientation(data: Uint8Array): number {
+  const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
+  for (const { marker, start, end } of jpegSegments(data, view)) {
+    if (marker !== 0xe1 || end - start < 14 || Buffer.from(data.subarray(start, start + 6)).toString("latin1") !== "Exif\0\0") continue;
+    const tiff = start + 6;
+    const order = view.getUint16(tiff);
+    const little = order === 0x4949 ? true : order === 0x4d4d ? false : undefined;
+    if (little === undefined || view.getUint16(tiff + 2, little) !== 42) return 1;
+    const ifd = tiff + view.getUint32(tiff + 4, little);
+    if (ifd + 2 > end) return 1;
+    for (let entry = ifd + 2, count = view.getUint16(ifd, little); count > 0 && entry + 12 <= end; entry += 12, count--) {
+      if (view.getUint16(entry, little) !== 0x0112) continue;
+      const value = view.getUint16(entry + 2, little) === 3 ? view.getUint16(entry + 8, little) : 0;
+      return value >= 1 && value <= 8 ? value : 1;
+    }
+    return 1;
+  }
+  return 1;
 }
 
 /** Same aspect ratio, longest side VISION_IMAGE_MAX_SIDE; smaller images keep their size. */
@@ -63,8 +93,9 @@ export function scaledSize({ width, height }: ImageSize): ImageSize {
 
 /**
  * Decodes a PNG or JPEG, scales it to scaledSize with area averaging, puts
- * transparency on white and encodes a JPEG with quality 85. Throws on
- * malformed data or more than MAX_DECODE_PIXELS.
+ * transparency on white, turns a JPEG upright by its EXIF orientation and
+ * encodes a JPEG with quality 85. Throws on malformed data or more than
+ * MAX_DECODE_PIXELS.
  */
 export function resizeToJpeg(data: Uint8Array, format: ResizableFormat): Buffer {
   const header = imageSize(data, format);
@@ -77,8 +108,27 @@ export function resizeToJpeg(data: Uint8Array, format: ResizableFormat): Buffer 
   const channels = source.data.length / (width * height);
   if (channels !== 3 && channels !== 4) throw new Error("Unsupported decoded pixel layout");
   const target = scaledSize(header);
-  const pixels = areaAverage(source.data, width, height, channels, target);
-  return encodeJpeg({ data: pixels, width: target.width, height: target.height }, JPEG_QUALITY).data;
+  const upright = orient(areaAverage(source.data, width, height, channels, target), target,
+    format === "image/jpeg" ? jpegOrientation(data) : 1);
+  return encodeJpeg(upright, JPEG_QUALITY).data;
+}
+
+/** Applies an EXIF orientation to RGBA pixels; 5 to 8 swap width and height. */
+function orient(pixels: Uint8Array, { width, height }: ImageSize, orientation: number): { data: Uint8Array; width: number; height: number } {
+  if (orientation < 2 || orientation > 8) return { data: pixels, width, height };
+  const swap = orientation >= 5;
+  const outWidth = swap ? height : width;
+  const turned = new Uint8Array(pixels.length);
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      // Where the stored pixel (x, y) is shown.
+      const [tx, ty] = orientation === 2 ? [width - 1 - x, y] : orientation === 3 ? [width - 1 - x, height - 1 - y]
+        : orientation === 4 ? [x, height - 1 - y] : orientation === 5 ? [y, x] : orientation === 6 ? [height - 1 - y, x]
+        : orientation === 7 ? [height - 1 - y, width - 1 - x] : [y, width - 1 - x];
+      turned.set(pixels.subarray((y * width + x) * 4, (y * width + x) * 4 + 4), (ty * outWidth + tx) * 4);
+    }
+  }
+  return { data: turned, width: outWidth, height: swap ? width : height };
 }
 
 /**

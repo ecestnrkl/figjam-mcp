@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { BoardData, Cluster, NormalizedNode } from "../src/types.js";
 import { FigmaApiError, FigmaDownloadBudgetError, FigmaTimeoutError } from "../src/lib/figmaApi.js";
 import { LLMConfigurationError, LlmInvalidJsonError, LlmRequestError, LlmTimeoutError } from "../src/lib/llmClient.js";
-import { gifHeader, jpegHeader, pngHeader, syntheticJpeg, syntheticPng } from "./fixtures/images.js";
+import { cornerColours, gifHeader, jpegHeader, markedJpeg, pngHeader, syntheticJpeg, syntheticPng, withOrientation } from "./fixtures/images.js";
 
 const {
   fetchFileTreeMock,
@@ -644,6 +644,34 @@ describe("ingestBoard", () => {
       expect(images[2]!.equals(originals["small-ref"]!)).toBe(true);
       expect(resizeInWorkerMock.mock.calls.map(call => call[1])).toEqual(["image/jpeg", "image/png"]);
       expect(fetchRenderUrlsMock).not.toHaveBeenCalled();
+    });
+
+    it("turns phone photos upright by their EXIF orientation before the 1,024 px bound", async () => {
+      fetchFileTreeMock.mockResolvedValueOnce(treeWith([
+        imageNode("turned-right", "o6-ref", 0, 140), imageNode("upside-down", "o3-ref", 110, 130), imageNode("turned-left", "o8-ref", 220, 120),
+      ]));
+      const photo = markedJpeg(2400, 1800);
+      const originals: Record<string, Buffer> = { "o6-ref": withOrientation(photo, 6), "o3-ref": withOrientation(photo, 3, true), "o8-ref": withOrientation(photo, 8) };
+      downloadFetchMock.mockImplementation(async (url: string) => imageResponse(originals[url.split("/").at(-1)!]!));
+      await ingestBoard(balanced);
+      // The stored top-left corner is red and the stored top-right corner blue.
+      expect((refineClusterWithVisionMock.mock.calls[0]![1] as Buffer[]).map(cornerColours)).toEqual([
+        { size: [768, 1024], topLeft: "grey", topRight: "red", bottomLeft: "grey", bottomRight: "blue" },
+        { size: [1024, 768], topLeft: "grey", topRight: "grey", bottomLeft: "blue", bottomRight: "red" },
+        { size: [768, 1024], topLeft: "blue", topRight: "grey", bottomLeft: "red", bottomRight: "grey" },
+      ]);
+      expect(fetchRenderUrlsMock).not.toHaveBeenCalled();
+    });
+
+    it("encodes a small JPEG again only when its EXIF orientation turns it", async () => {
+      fetchFileTreeMock.mockResolvedValueOnce(treeWith([imageNode("turned", "turned-ref", 0, 140), imageNode("plain", "plain-ref", 110, 130)]));
+      const originals: Record<string, Buffer> = { "turned-ref": withOrientation(markedJpeg(900, 600), 6), "plain-ref": markedJpeg(900, 600) };
+      downloadFetchMock.mockImplementation(async (url: string) => imageResponse(originals[url.split("/").at(-1)!]!));
+      await ingestBoard(balanced);
+      const [turned, plain] = refineClusterWithVisionMock.mock.calls[0]![1] as Buffer[];
+      expect(cornerColours(turned!)).toMatchObject({ size: [600, 900], topRight: "red", bottomRight: "blue" });
+      expect(plain!.equals(originals["plain-ref"]!)).toBe(true);
+      expect(resizeInWorkerMock).toHaveBeenCalledOnce();
     });
 
     it("renders instead of decoding 60 megapixels, a broken PNG or a GIF above 1,024 px", async () => {
