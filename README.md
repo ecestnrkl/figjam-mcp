@@ -87,7 +87,8 @@ Problems: [troubleshooting](https://github.com/ecestnrkl/figjam-mcp/blob/main/do
    `get_board_context` searches it (BM25 over original text, table rows and
    names), `answer_from_board` answers with citations and `diff_board` compares
    snapshots. Its first page lists the board's sections with IDs; pass a page,
-   section, frame or group ID as `nodeIds` to read everything inside it. Its text
+   section, frame or group ID as `nodeIds` to read everything inside it; several
+   IDs in one call take turns, so each of them appears on every page. Its text
    `content` is the readable page; `structuredContent` holds the same data without
    repeating it, with excerpts in `evidence` and location per cluster in `clusters`.
 

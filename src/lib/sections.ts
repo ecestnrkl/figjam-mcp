@@ -125,6 +125,28 @@ export class SectionIndex {
       ["Read one with nodeIds: [\"<ID>\"]."], budget, 1);
   }
 
+  /** First page of a request whose IDs share every page: each requested ID with its excerpts on all pages. */
+  requestedOutline(counts: Array<{ id: string; count: number }>, budget: number): string {
+    const lines = counts.map(({ id, count }) => {
+      const node = this.nodesById.get(id);
+      return `- ${id}${node ? ` ${this.name(node)}` : ""} — ${count} excerpt${plural(count)}`;
+    });
+    const render = (shown: number) => {
+      const omitted = lines.length - shown;
+      return ["## Requested IDs, which share every page (ID, name, excerpts on all pages)", ...lines.slice(0, shown),
+        ...(omitted > 0 ? [`${omitted} more requested ID${plural(omitted)} not listed.`] : [])].join("\n");
+    };
+    const fits = (text: string) => JSON.stringify(text).length - 2 <= budget;
+    let low = 0;
+    let high = lines.length;
+    while (low < high) {
+      const middle = (low + high + 1) >>> 1;
+      if (fits(render(middle))) low = middle;
+      else high = middle - 1;
+    }
+    return fits(render(low)) ? render(low) : "";
+  }
+
   private excerptCount(id: string): string {
     const count = this.excerpts.get(id) ?? 0;
     return `${count} excerpt${plural(count)}`;

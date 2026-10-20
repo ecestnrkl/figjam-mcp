@@ -29,7 +29,7 @@ export const getBoardContextInputShape = {
   boardId: figmaFileKeySchema.describe("The Figma file key returned by ingest_board"),
   topic: topicSchema.optional().describe("Optional topic to focus the context on"),
   nodeIds: z.array(z.string().trim().min(1).max(200)).min(1).max(50).optional()
-    .describe("Read exact source nodes, all rows of a table or the row of a table cell, or every excerpt inside a page, section, frame or group by its ID (nested sections included, in reading order); cannot be combined with topic"),
+    .describe("Read exact source nodes, all rows of a table or the row of a table cell, or every excerpt inside a page, section, frame or group by its ID (nested sections included, in reading order); several IDs in one call share every page in request order; cannot be combined with topic"),
   snapshotId: z.string().min(1).max(128).regex(/^[A-Za-z0-9_-]+$/).optional()
     .describe("Read a specific retained snapshot instead of the latest board"),
   limit: z.number().int().min(1).max(100).default(20)

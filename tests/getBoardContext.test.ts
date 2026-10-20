@@ -424,6 +424,7 @@ describe("getBoardContext text and structured content", () => {
     setBoard(wide.boardId, wide);
     const requests = [
       { boardId: "Large300" }, { boardId: "Large300", limit: 100 }, { boardId: "Large300", nodeIds: ["1:11"], limit: 100 },
+      { boardId: "Large300", nodeIds: ["1:11", "1:10", "1:9", "1:8", "1:7", "1:6", "1:5", "1:0"], limit: 100 },
       { boardId: wide.boardId, limit: 100 },
     ];
     for (const request of requests) {
@@ -652,6 +653,79 @@ describe("getBoardContext by section", () => {
   });
 });
 
+describe("getBoardContext with several requested IDs", () => {
+  const data = largeBoard("Shared300", 300, 10, 12, { subsections: 2, outsideClusters: 12 });
+  const all = new Map(retrieveEvidence(data).evidence.map((item) => [item.evidenceId, item]));
+  // 1:0 is the smallest section and 1:11 the last in reading order.
+  const EIGHT = ["1:11", "1:10", "1:9", "1:8", "1:7", "1:6", "1:5", "1:0"];
+  const total = (id: string) => retrieveEvidence(data, { nodeIds: [id] }).totalMatched;
+  beforeEach(() => setBoard(data.boardId, data));
+
+  async function readSequence(nodeIds: string[]) {
+    const pages: string[][] = [];
+    let cursor: string | undefined;
+    do {
+      const { structuredContent } = await getBoardContext({ boardId: data.boardId, nodeIds, limit: 100, maxChars: 24000, cursor });
+      pages.push(structuredContent.evidence.map((item) => item.evidenceId));
+      cursor = structuredContent.nextCursor;
+    } while (cursor && pages.length < 200);
+    return pages;
+  }
+
+  it("shows every requested section on the first page", async () => {
+    expect(Math.min(...EIGHT.map(total))).toBe(total("1:0"));
+    const page = retrieveEvidence(data, { nodeIds: ["0:1"] }).evidence.filter((item) => item.sectionIds?.length && item.sourceType !== "board_metadata");
+    expect(page.at(-1)!.sectionIds![0]).toBe("1:11");
+    for (const request of [{}, { limit: 100, maxChars: 24000 }]) {
+      const { structuredContent } = await getBoardContext({ boardId: data.boardId, nodeIds: EIGHT, ...request });
+      const shown = new Set(structuredContent.evidence.map((item) => all.get(item.evidenceId)!.sectionIds![0]));
+      expect([...shown].sort()).toEqual([...EIGHT].sort());
+      expect(structuredContent.totalMatched).toBe(EIGHT.map(total).reduce((sum, count) => sum + count));
+      expect(structuredContent.contextText).toContain("## Requested IDs, which share every page (ID, name, excerpts on all pages)\n" +
+        EIGHT.map((id) => `- ${id} Theme ${Number(id.slice(2)) + 1} — ${total(id)} excerpts`).join("\n"));
+    }
+  });
+
+  it("counts each excerpt once, for the innermost requested section, with parent and child on the first page", async () => {
+    const pages = await readSequence(["1:11", "2:1100"]);
+    const sequence = pages.flat();
+    expect(sequence).toHaveLength(total("1:11"));
+    expect(new Set(sequence).size).toBe(sequence.length);
+    const inChild = (id: string) => all.get(id)!.sectionIds!.includes("2:1100");
+    expect(pages[0]!.some(inChild)).toBe(true);
+    expect(pages[0]!.some((id) => !inChild(id))).toBe(true);
+    const { contextText } = (await getBoardContext({ boardId: data.boardId, nodeIds: ["1:11", "2:1100"] })).structuredContent;
+    expect(contextText).toContain(`- 1:11 Theme 12 — ${total("1:11") - total("2:1100")} excerpts\n- 2:1100 Theme 12.1 — ${total("2:1100")} excerpts`);
+  });
+
+  it("takes turns in request order, which belongs to the cursor", async () => {
+    const forward = await getBoardContext({ boardId: data.boardId, nodeIds: ["1:3", "1:9"] });
+    const backward = await getBoardContext({ boardId: data.boardId, nodeIds: ["1:9", "1:3", "1:9"] });
+    const sectionOf = (output: typeof forward) => all.get(output.structuredContent.evidence[0]!.evidenceId)!.sectionIds![0];
+    expect(retrieveEvidence(data, { nodeIds: ["1:3", "1:9"] }).evidence[0]!.sectionIds![0]).toBe("1:3");
+    expect(retrieveEvidence(data, { nodeIds: ["1:9", "1:3"] }).evidence[0]!.sectionIds![0]).toBe("1:9");
+    expect(forward.structuredContent.evidence[0]!.evidenceId).not.toBe(backward.structuredContent.evidence[0]!.evidenceId);
+    expect(new Set([sectionOf(forward), sectionOf(backward)])).toEqual(new Set(["1:3", "1:9"]));
+    await expect(getBoardContext({ boardId: data.boardId, nodeIds: ["1:9", "1:3"], cursor: forward.structuredContent.nextCursor }))
+      .rejects.toThrow(/Cursor does not match/);
+    // A repeated ID does not change the query.
+    const next = await getBoardContext({ boardId: data.boardId, nodeIds: ["1:9", "1:3"], cursor: backward.structuredContent.nextCursor });
+    expect(next.structuredContent.evidence.length).toBeGreaterThan(0);
+  });
+
+  it("keeps the reading order of one section and the index order of a list of nodes", async () => {
+    const stickies = data.nodes.filter((node) => node.sectionIds?.[0] === "1:5" && node.type === "STICKY").map((node) => node.id);
+    const journeyMaps = data.nodes.filter((node) => node.sectionIds?.[0] === "1:5" && node.name.startsWith("Journey map")).map((node) => node.id);
+    // The result sequence that the cursor walks; each page groups its part by cluster.
+    const sequence = (nodeIds: string[]) => retrieveEvidence(data, { nodeIds }).evidence.map((item) => item.nodeId);
+    expect(sequence(["1:5"])).toEqual([...stickies, ...journeyMaps]);
+    expect(sequence(["12:3", "10:1", "11:0"])).toEqual(["10:1", "11:0", "12:3"]);
+    expect((await readSequence(["1:5"])).flat()).toHaveLength(stickies.length + journeyMaps.length);
+    const { structuredContent } = await getBoardContext({ boardId: data.boardId, nodeIds: ["12:3", "10:1"] });
+    expect(structuredContent.contextText).not.toContain("## Requested IDs");
+  });
+});
+
 describe("getBoardContext tables", () => {
   type PageRequest = Omit<GetBoardContextInput, "cursor">;
   type Shown = { evidenceId: string; sourceType: string; nodeId: string; row?: number };
@@ -728,6 +802,27 @@ describe("getBoardContext tables", () => {
     expect(output.evidence.map((item) => [item.row, item.text])).toEqual([[0, "Item | Owner"], [2, "Budget review | Grace"]]);
     expect(text).toContain("Table 5:1 · original · 4 rows × 2 columns · rows 0, 2 shown · ");
     expect(text).toMatch(/\] row 0: Item \| Owner\n\[ev_[a-f0-9]+\] row 2: Budget review \| Grace/);
+  });
+
+  it("names the request for all rows when a page shows only some, unless the request names the table", async () => {
+    const data = evidenceBoard("TableAllRows123", [{ ...textNode("5:1", ""), name: "Table 1", type: "TABLE", table: { cells:
+      [["Item", "Owner"], ["Kickoff", "Ada"], ["Budget review", "Grace"], ["Retro", "Linus"]]
+        .flatMap((cells, row) => cells.map((cellText, column) => ({ id: `T5:1;6:${row};7:${column}`, text: cellText }))),
+    } }]);
+    setBoard(data.boardId, data);
+    const hint = 'request get_board_context with nodeIds: ["5:1"] for all rows';
+    const topic = await getBoardContext({ boardId: data.boardId, topic: "budget" });
+    expect(topic.text).toMatch(new RegExp(`Table 5:1 · original · 4 rows × 2 columns · rows 0, 2 shown · \\S+ · ${hint.replace(/[[\]]/g, "\\$&")}\n`));
+    expect(topic.structuredContent.contextText).not.toContain(hint);
+    expect(JSON.stringify(topic.structuredContent)).not.toContain(hint);
+    for (const nodeIds of [["5:1"], ["T5:1;6:2;7:1"]]) {
+      expect((await getBoardContext({ boardId: data.boardId, nodeIds, limit: 2 })).text).not.toContain("for all rows");
+    }
+    expect((await getBoardContext({ boardId: data.boardId })).text).not.toContain("for all rows");
+    const section = tableBoard("TableSectionRows123", 24, 17);
+    setBoard(section.boardId, section);
+    expect((await getBoardContext({ boardId: section.boardId, nodeIds: ["1:1"], limit: 5 })).text).toContain(
+      'rows 0–4 shown · https://www.figma.com/board/TableSectionRows123?node-id=5%3A1 · request get_board_context with nodeIds: ["5:1"] for all rows');
   });
 
   it("points a part of a long row to its table", async () => {

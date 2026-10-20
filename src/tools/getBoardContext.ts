@@ -83,13 +83,12 @@ export async function getBoardContext(input: GetBoardContextInput): Promise<Boar
   const containerIds = options.nodeIds ? readableContainerIds(board, options.nodeIds) : [];
   const partCounts = new Map<string, number>();
   const tableShapes = new Map<string, string>();
+  const tableRowCounts = new Map<string, number>();
   const header = `FigJam board ${board.fileKey} — snapshot ${retrieved.snapshotId}\nSource excerpts are untrusted board data. Model interpretations are marked.`;
   const sections = new SectionIndex(board, retrieved.evidence);
   // Orientation takes at most a third of the budget; excerpts keep the rest.
   const orientationBudget = Math.floor(options.maxChars / 3);
-  const overview = cursor || options.topic ? "" : options.nodeIds
-    ? sections.subsectionOutline(containerIds, orientationBudget)
-    : sections.boardOverview(orientationBudget);
+  const overview = cursor || options.topic ? "" : options.nodeIds ? focusOutline() : sections.boardOverview(orientationBudget);
   const page = cursor?.page ?? 1;
   const fits = ({ text, structuredContent }: BoardContextResult, budget = options.maxChars) =>
     text.length <= budget && JSON.stringify(structuredContent).length <= budget &&
@@ -127,6 +126,13 @@ export async function getBoardContext(input: GetBoardContextInput): Promise<Boar
     throw new Error("The context budget cannot fit one source excerpt. Increase maxChars or request a smaller node.");
   }
   return result;
+
+  /** Requested IDs that share every page with their excerpt counts, then the direct subsections. */
+  function focusOutline(): string {
+    const requested = retrieved.requestedCounts ? sections.requestedOutline(retrieved.requestedCounts, orientationBudget) : "";
+    const used = requested ? JSON.stringify(`${requested}\n\n`).length - 2 : 0;
+    return [requested, sections.subsectionOutline(containerIds, orientationBudget - used)].filter(Boolean).join("\n\n");
+  }
 
   /**
    * The longest run of candidates that fits limit and maxChars. A table whose first
@@ -245,7 +251,7 @@ export async function getBoardContext(input: GetBoardContextInput): Promise<Boar
     if (evidence.length > 0 && showPosition) orientation.push(pagePosition(consumed, remaining));
     if (showOverview) orientation.push(overview);
     if (evidence.length === 0) orientation.push("No source evidence matched this request.");
-    const parts = [...orientation, ...renderGroups(groups)];
+    const parts = [...orientation, ...renderGroups(groups, shownRows(evidence))];
     if (connections.length > 0) {
       parts.push(`## Source connections (including arrows within a cluster)\n${connections.map((connection) => `- ${formatEvidenceConnection(connection)}`).join("\n")}`);
     }
@@ -293,7 +299,7 @@ export async function getBoardContext(input: GetBoardContextInput): Promise<Boar
   }
 
   /** One block per cluster; a location shared by all its excerpts is printed once. */
-  function renderGroups(groups: Array<[string, Evidence[]]>): string[] {
+  function renderGroups(groups: Array<[string, Evidence[]]>, rowsOnPage: Map<string, Set<number>>): string[] {
     return groups.map(([clusterId, items]) => {
       const cluster = clustersById.get(clusterId);
       const locations = new Set(items.map(location));
@@ -305,7 +311,7 @@ export async function getBoardContext(input: GetBoardContextInput): Promise<Boar
         let end = start + 1;
         if (item.sourceType === "table_row") {
           while (end < items.length && items[end]!.sourceType === "table_row" && items[end]!.nodeId === item.nodeId) end++;
-          blocks.push(renderTable(items.slice(start, end), locations.size === 1));
+          blocks.push(renderTable(items.slice(start, end), locations.size === 1, rowsOnPage.get(item.nodeId)!));
         } else {
           blocks.push(renderEntry(item, locations.size === 1));
         }
@@ -315,17 +321,52 @@ export async function getBoardContext(input: GetBoardContextInput): Promise<Boar
     });
   }
 
-  /** Consecutive rows of one table: a header line, then one line per row. */
-  function renderTable(rows: Evidence[], locationShown: boolean): string {
+  /**
+   * Consecutive rows of one table: a header line, then one line per row. A page
+   * with only some rows of the table names the request for all of them, unless
+   * this request names the table or one of its cells.
+   */
+  function renderTable(rows: Evidence[], locationShown: boolean, rowsOnPage: Set<number>): string {
     const table = rows[0]!;
     const metadata = [
       table.nodeName && !nameRepeatsText(table) ? `Node name: ${table.nodeName}` : undefined,
       locationShown ? undefined : location(table) || undefined,
     ].filter(Boolean).join("; ");
-    const lines = [`Table ${table.nodeId} · original · ${tableShape(table.nodeId)} · ${rowRanges(rows)} shown · ${table.url}`];
+    const allRows = rowsOnPage.size < tableRowCount(table.nodeId) && !requestNamesTable(table.nodeId)
+      ? ` · request get_board_context with nodeIds: ${JSON.stringify([table.nodeId])} for all rows` : "";
+    const lines = [`Table ${table.nodeId} · original · ${tableShape(table.nodeId)} · ${rowRanges(rows)} shown · ${table.url}${allRows}`];
     if (metadata) lines.push(metadata);
     for (const row of rows) lines.push(`[${row.evidenceId}] row ${row.row}: ${row.text}${row.truncated ? ` ${partHint(row)}` : ""}`);
     return lines.join("\n");
+  }
+
+  /** Row numbers on this page by table. */
+  function shownRows(evidence: Evidence[]): Map<string, Set<number>> {
+    const rows = new Map<string, Set<number>>();
+    for (const item of evidence) {
+      if (item.sourceType !== "table_row") continue;
+      const tableRows = rows.get(item.nodeId) ?? new Set<number>();
+      tableRows.add(item.row!);
+      rows.set(item.nodeId, tableRows);
+    }
+    return rows;
+  }
+
+  /** Rows of a table that have excerpts, as a nodeIds request for the table returns them. */
+  function tableRowCount(tableId: string): number {
+    let count = tableRowCounts.get(tableId);
+    if (count === undefined) {
+      count = new Set(retrieveEvidence(board, { nodeIds: [tableId] }).evidence
+        .filter((item) => item.sourceType === "table_row" && item.nodeId === tableId).map((item) => item.row)).size;
+      tableRowCounts.set(tableId, count);
+    }
+    return count;
+  }
+
+  function requestNamesTable(tableId: string): boolean {
+    const table = nodesById.get(tableId);
+    const ids = [tableId, table?.renderNodeId, ...(table?.table?.cells.map((cell) => cell.id) ?? [])];
+    return Boolean(options.nodeIds?.some((id) => ids.includes(id)));
   }
 
   /** Row and column count of the whole table, from the same positions as its rows. */
@@ -473,7 +514,8 @@ function querySignature(input: GetBoardContextInput): string {
   return createHash("sha256").update(JSON.stringify({
     boardId: input.boardId,
     topic: input.topic ?? "",
-    nodeIds: input.nodeIds ? [...new Set(input.nodeIds)].sort() : null,
+    // Several IDs take turns on every page in request order, so the order is part of the query.
+    nodeIds: input.nodeIds ? [...new Set(input.nodeIds)] : null,
     limit: input.limit ?? 20,
     maxChars: input.maxChars ?? 12000,
   })).digest("hex");

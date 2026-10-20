@@ -64,6 +64,11 @@ export interface EvidenceResult {
   primaryEvidenceIds: string[];
   connections: EvidenceConnection[];
   totalMatched: number;
+  /**
+   * Excerpts per requested ID in request order, when several IDs including a
+   * readable container share every page; each excerpt counts for one ID.
+   */
+  requestedCounts?: Array<{ id: string; count: number }>;
 }
 
 const FIELD_WEIGHTS = { text: 1, node: 0.35, section: 0.20, page: 0.10, cluster: 0.05 } as const;
@@ -151,6 +156,7 @@ export function nodeLink(board: BoardData, nodeId: string): string {
 export function retrieveEvidence(board: BoardData, options: EvidenceQuery = {}): EvidenceResult {
   const index = getIndex(board);
   let matches: IndexedEvidence[];
+  let requestedCounts: EvidenceResult["requestedCounts"];
   if (options.nodeIds) {
     const requested = new Set(options.nodeIds);
     const containers = new Set(readableContainerIds(board, options.nodeIds));
@@ -160,7 +166,13 @@ export function retrieveEvidence(board: BoardData, options: EvidenceQuery = {}):
       Boolean(cellIds?.some((id) => requested.has(id))) ||
       Boolean(enclosing && [...enclosing(evidence.renderNodeId ?? evidence.nodeId)].some((id) => containers.has(id))),
     );
-    if (containers.size) matches = contentFirst(readingOrder(board, matches), (entry) => entry.evidence);
+    if (enclosing && requested.size > 1) {
+      const shared = shareRequestedIds(board, matches, [...requested], containers, enclosing);
+      matches = contentFirst(shared.entries, (entry) => entry.evidence);
+      requestedCounts = shared.counts;
+    } else if (containers.size) {
+      matches = contentFirst(readingOrder(board, matches), (entry) => entry.evidence);
+    }
   } else if (options.query?.trim()) {
     const queryTerms = [...new Set(evidenceTokens(options.query))];
     const scores = new Map<number, number>();
@@ -190,6 +202,7 @@ export function retrieveEvidence(board: BoardData, options: EvidenceQuery = {}):
     primaryEvidenceIds: primary.map((item) => item.evidenceId),
     connections: connectionsForEvidence(board, selected),
     totalMatched,
+    ...(requestedCounts ? { requestedCounts } : {}),
   };
 }
 
@@ -249,6 +262,53 @@ export function enclosingIdsLookup(board: BoardData): (nodeId: string) => Set<st
   };
 }
 
+/**
+ * Each excerpt belongs to one requested ID: its own cell, node or render ID if
+ * requested, else the innermost requested container around it. Within an ID the
+ * reading order stays; the IDs take turns in request order, one excerpt per ID
+ * and round, consecutive rows of a table counting as one, so every requested ID
+ * reaches every page.
+ */
+function shareRequestedIds(
+  board: BoardData, entries: IndexedEvidence[], requested: string[], containers: ReadonlySet<string>,
+  enclosing: (nodeId: string) => Set<string>,
+): { entries: IndexedEvidence[]; counts: Array<{ id: string; count: number }> } {
+  const requestedSet = new Set(requested);
+  const ordered = requested.filter((id) => containers.has(id));
+  // A container inside another one in this request is the inner one.
+  const depth = new Map(ordered.map((id) => [id, ordered.filter((other) => enclosing(id).has(other)).length]));
+  const owned = new Map<string, IndexedEvidence[]>(requested.map((id) => [id, []]));
+  for (const entry of entries) {
+    const { evidence, cellIds } = entry;
+    const own = [...(cellIds ?? []), evidence.nodeId, evidence.renderNodeId].find((id) => id !== undefined && requestedSet.has(id));
+    const around = enclosing(evidence.renderNodeId ?? evidence.nodeId);
+    const owner = own ?? ordered.filter((id) => around.has(id))
+      .reduce((inner, id) => depth.get(id)! > depth.get(inner)! ? id : inner);
+    owned.get(owner)!.push(entry);
+  }
+  let active = [...owned.values()].map((group) => tableUnits(readingOrder(board, group))).filter((units) => units.length);
+  const shared: IndexedEvidence[] = [];
+  for (let round = 0; active.length; round++) {
+    for (const units of active) shared.push(...units[round]!);
+    active = active.filter((units) => units.length > round + 1);
+  }
+  return { entries: shared, counts: [...owned].map(([id, group]) => ({ id, count: group.length })) };
+}
+
+/** Single excerpts, except that consecutive rows of one table form one unit. */
+function tableUnits(entries: IndexedEvidence[]): IndexedEvidence[][] {
+  const units: IndexedEvidence[][] = [];
+  for (const entry of entries) {
+    const last = units.at(-1)?.[0]?.evidence;
+    if (entry.evidence.sourceType === "table_row" && last?.sourceType === "table_row" && last.nodeId === entry.evidence.nodeId) {
+      units.at(-1)!.push(entry);
+    } else {
+      units.push([entry]);
+    }
+  }
+  return units;
+}
+
 /** Cluster by cluster: page, then bounding box top to bottom, left to right. Order within a cluster is kept. */
 function readingOrder(board: BoardData, entries: IndexedEvidence[]): IndexedEvidence[] {
   const clustersById = new Map(board.clusters.map((cluster) => [cluster.id, cluster]));
@@ -284,20 +344,15 @@ function contentFirst<T>(items: T[], evidenceOf: (item: T) => Evidence): T[] {
 
 /** One excerpt per cluster and round; consecutive rows of one table count as one excerpt. */
 function interleaveClusters(entries: IndexedEvidence[]): IndexedEvidence[] {
-  const groups = new Map<string, IndexedEvidence[][]>();
+  const groups = new Map<string, IndexedEvidence[]>();
   for (const entry of entries) {
     const key = entry.evidence.clusterId ?? entry.evidence.nodeId;
-    const group = groups.get(key) ?? [];
-    const last = group.at(-1)?.[0]?.evidence;
-    if (entry.evidence.sourceType === "table_row" && last?.sourceType === "table_row" && last.nodeId === entry.evidence.nodeId) {
-      group.at(-1)!.push(entry);
-    } else {
-      group.push([entry]);
-    }
-    groups.set(key, group);
+    const group = groups.get(key);
+    if (group) group.push(entry);
+    else groups.set(key, [entry]);
   }
   const ordered: IndexedEvidence[] = [];
-  let active = [...groups.values()];
+  let active = [...groups.values()].map(tableUnits);
   for (let offset = 0; active.length; offset++) {
     const next: IndexedEvidence[][][] = [];
     for (const group of active) {
