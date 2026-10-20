@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.9.1 — Unreleased
+## 0.9.1 — 2026-10-20
 
 - `ingest_board` sends every image to the vision model with at most 1,024 px on the longest side. Larger PNG and JPEG
   originals, now downloaded up to 8 MiB, and larger renders are scaled down on a worker thread and sent as JPEG; GIF
