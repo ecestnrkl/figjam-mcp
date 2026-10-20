@@ -192,6 +192,34 @@ describe("LLM requests through real local HTTP and the OpenAI SDK", () => {
     expect(requests.map(request => request.model)).toEqual(["longer/vision", "ordinary/text"]);
   });
 
+  it("names the provider's message in diagnose_llm_config only, without metadata.raw", async () => {
+    const raw = "raw provider body that must stay hidden";
+    for (const [name, value] of [["LLM_TEXT_MODELS", "text/first,text/second"], ["LLM_FAST_TEXT_MODELS", "text/first,text/second"],
+      ["LLM_VISION_MODELS", "vision/only"], ["LLM_TEXT_MODEL", ""], ["LLM_VISION_MODEL", ""]]) vi.stubEnv(name!, value!);
+    await localClient((_request, response) => json(response, 404, { error: { code: 404,
+      message: `Provider returned error: ${"synthetic detail ".repeat(20)}`, metadata: { provider_name: "SyntheticProvider", raw } } }));
+    const { diagnoseLlmConfig } = await import("../src/tools/diagnoseLlmConfig.js");
+    const { answerFromBoard } = await import("../src/tools/answerFromBoard.js");
+    const { setBoard } = await import("../src/lib/cache.js");
+    const { evidenceBoard } = await import("./fixtures/retrieval.js");
+    const diagnosis = await diagnoseLlmConfig();
+    expect(diagnosis.checks.map(check => check.ok)).toEqual([false, false, false]);
+    for (const check of diagnosis.checks) {
+      const [generic, provider] = check.error!.split(" Provider message: ");
+      expect(generic).toBe("LLM request failed (HTTP 404). Check provider availability and configuration.");
+      expect(provider).toMatch(/^Provider returned error: (synthetic detail )+/);
+      expect(provider!.length).toBeLessThanOrEqual(200);
+      expect(check.error).not.toContain(raw);
+    }
+    // Both text checks moved to the second candidate after the 404.
+    expect(requests.map(request => request.model).sort()).toEqual(["text/first", "text/first", "text/second", "text/second", "vision/only"]);
+    const board = evidenceBoard("ProviderError123");
+    setBoard(board.boardId, board);
+    const answer = answerFromBoard({ boardId: board.boardId, question: "What is required for payment retries?" });
+    await expect(answer).rejects.toThrow("LLM request failed (HTTP 404). Check provider availability and configuration.");
+    await expect(answer).rejects.not.toThrow(/Provider returned error|SyntheticProvider|synthetic detail|raw provider body/);
+  });
+
   it("cancels a stalled response body and preserves the caller reason without trying another model", async () => {
     const ready = deferred();
     const closed = deferred();

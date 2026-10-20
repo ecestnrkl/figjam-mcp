@@ -6,6 +6,10 @@
   originals, now downloaded up to 8 MiB, and larger renders are scaled down on a worker thread and sent as JPEG; GIF
   and WebP above 1,024 px, originals above 40 megapixels and malformed ones are rendered instead. In 0.9.0, full-size
   originals pushed image requests past the 40-second vision budget.
+- Text, answer and image requests move to the next configured model after HTTP 404 or 410 or OpenRouter's "Provider
+  returned error"; 400, 401, 402, 403 and 422 without these signs still stop. A failed `diagnose_llm_config` check
+  names the provider's message (message, code and provider name, at most 200 characters); other tools still leave
+  provider details out.
 
 ## 0.9.0 — 2026-10-20
 
