@@ -699,6 +699,33 @@ describe("getBoardContext with several requested IDs", () => {
     }
   });
 
+  it("takes turns with content only, so a section that opens with named frames still shows content on the first page", async () => {
+    const framed = largeBoard("Framed300", 300, 10, 12, { subsections: 2, outsideClusters: 12 });
+    const node = (id: string, name: string, type: string, text?: string) => ({
+      id, name, type, ...(text ? { text } : {}), x: -2000, y: 0, width: 100, height: 100, rotation: 0, pageId: "0:1", sectionIds: ["1:5"],
+    });
+    // Named frames first in tree order, then the stickies on them, in a cluster that opens section 1:5.
+    const members = [...Array.from({ length: 25 }, (_, k) => node(`6:${k}`, `Persona board ${k}`, "FRAME")),
+      ...Array.from({ length: 3 }, (_, k) => node(`6:${100 + k}`, `Persona note ${k}`, "STICKY", `Persona note ${k} about trust.`))];
+    framed.nodes.push(...members);
+    framed.clusters.unshift({ id: "cluster_frames", label: "Persona boards", nodeIds: members.map((member) => member.id),
+      confirmedNodeIds: members.map((member) => member.id), boundingBox: { x: -2000, y: 0, width: 1000, height: 1000 },
+      summarySource: "deterministic", summary: "" });
+    setBoard(framed.boardId, framed);
+    const sectionOf = new Map(retrieveEvidence(framed).evidence.map((item) => [item.evidenceId, item.sectionIds?.[0]]));
+    expect(retrieveEvidence(framed, { nodeIds: ["1:5"] }).evidence.slice(0, 3).map((item) => item.nodeId)).toEqual(["6:100", "6:101", "6:102"]);
+    const { structuredContent } = await getBoardContext({ boardId: framed.boardId, nodeIds: EIGHT });
+    for (const id of EIGHT) {
+      expect(structuredContent.evidence.some((item) => sectionOf.get(item.evidenceId) === id && item.sourceType !== "board_metadata")).toBe(true);
+    }
+    // Name-only excerpts still follow all content, by requested ID.
+    const sequence = retrieveEvidence(framed, { nodeIds: EIGHT }).evidence;
+    const firstName = sequence.findIndex((item) => item.sourceType === "board_metadata");
+    expect(sequence.slice(firstName).every((item) => item.sourceType === "board_metadata")).toBe(true);
+    const owners = sequence.slice(firstName).map((item) => EIGHT.indexOf(sectionOf.get(item.evidenceId)!));
+    expect(owners).toEqual([...owners].sort((a, b) => a - b));
+  });
+
   it("counts each excerpt once, for the innermost requested section, with parent and child on the first page", async () => {
     const pages = await readSequence(["1:11", "2:1100"]);
     const sequence = pages.flat();

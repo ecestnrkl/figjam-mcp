@@ -170,7 +170,7 @@ export function retrieveEvidence(board: BoardData, options: EvidenceQuery = {}):
     );
     if (enclosing && requested.size > 1) {
       const shared = shareRequestedIds(board, matches, [...requested], containers, enclosing);
-      matches = contentFirst(shared.entries, (entry) => entry.evidence);
+      matches = shared.entries;
       requestedCounts = shared.counts;
     } else if (containers.size) {
       matches = contentFirst(readingOrder(board, matches), (entry) => entry.evidence);
@@ -277,9 +277,9 @@ export function inSectionLookup(board: BoardData): (item: Evidence) => boolean {
 /**
  * Each excerpt belongs to one requested ID: its own cell, node or render ID if
  * requested, else the innermost requested container around it. Within an ID the
- * reading order stays; the IDs take turns in request order, one excerpt per ID
- * and round, consecutive rows of a table counting as one, so every requested ID
- * reaches every page.
+ * reading order stays; the IDs take turns with content in request order, one
+ * excerpt per ID and round, consecutive rows of a table counting as one, so every
+ * requested ID reaches every page. Name-only excerpts follow, ID by ID.
  */
 function shareRequestedIds(
   board: BoardData, entries: IndexedEvidence[], requested: string[], containers: ReadonlySet<string>,
@@ -298,12 +298,15 @@ function shareRequestedIds(
       .reduce((inner, id) => depth.get(id)! > depth.get(inner)! ? id : inner);
     owned.get(owner)!.push(entry);
   }
-  let active = [...owned.values()].map((group) => tableUnits(readingOrder(board, group))).filter((units) => units.length);
+  const read = [...owned.values()].map((group) => readingOrder(board, group));
+  const isName = (entry: IndexedEvidence) => entry.evidence.sourceType === "board_metadata";
+  let active = read.map((group) => tableUnits(group.filter((entry) => !isName(entry)))).filter((units) => units.length);
   const shared: IndexedEvidence[] = [];
   for (let round = 0; active.length; round++) {
     for (const units of active) shared.push(...units[round]!);
     active = active.filter((units) => units.length > round + 1);
   }
+  shared.push(...read.flatMap((group) => group.filter(isName)));
   return { entries: shared, counts: [...owned].map(([id, group]) => ({ id, count: group.length })) };
 }
 
