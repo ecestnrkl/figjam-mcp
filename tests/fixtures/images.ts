@@ -47,12 +47,22 @@ function pixels(width: number, height: number, alpha: boolean): Buffer {
   return data;
 }
 
+// Encoding takes CPU time that parallel test files share, so each image is made once.
+const made = new Map<string, Buffer>();
+function once(key: string, make: () => Buffer): Buffer {
+  let image = made.get(key);
+  if (!image) made.set(key, image = make());
+  return image;
+}
+
 export function syntheticPng(width: number, height: number, alpha = false): Buffer {
-  const png = new PNG({ width, height });
-  pixels(width, height, alpha).copy(png.data);
-  return PNG.sync.write(png);
+  return once(`png ${width} ${height} ${alpha}`, () => {
+    const png = new PNG({ width, height });
+    pixels(width, height, alpha).copy(png.data);
+    return PNG.sync.write(png);
+  });
 }
 
 export function syntheticJpeg(width: number, height: number): Buffer {
-  return encodeJpeg({ data: pixels(width, height, false), width, height }, 90).data;
+  return once(`jpeg ${width} ${height}`, () => encodeJpeg({ data: pixels(width, height, false), width, height }, 90).data);
 }

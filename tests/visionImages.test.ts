@@ -53,28 +53,28 @@ describe("image headers", () => {
 
 describe("resizeToJpeg", () => {
   it("scales PNG and JPEG to 1,024 px on the longest side and puts transparency on white", () => {
-    const fromPng = resizeToJpeg(syntheticPng(2400, 1800, true), "image/png");
+    const fromPng = resizeToJpeg(syntheticPng(1280, 960, true), "image/png");
     expect(imageMimeType(fromPng)).toBe("image/jpeg");
     expect(jpegSize(fromPng)).toEqual({ width: 1024, height: 768 });
     const decoded = decodeJpeg(fromPng, { useTArray: true });
     const at = (x: number, y: number) => Array.from(decoded.data.subarray((y * 1024 + x) * 4, (y * 1024 + x) * 4 + 3));
     for (const channel of at(200, 300)) expect(channel).toBeGreaterThan(245);
-    expect(at(800, 300)[2]).toBeGreaterThan(150);
-    expect(jpegSize(resizeToJpeg(syntheticJpeg(2400, 1800), "image/jpeg"))).toEqual({ width: 1024, height: 768 });
-    expect(jpegSize(resizeToJpeg(syntheticPng(1800, 2400), "image/png"))).toEqual({ width: 768, height: 1024 });
+    expect(at(850, 330)[2]).toBeGreaterThan(150);
+    expect(jpegSize(resizeToJpeg(syntheticJpeg(1280, 960), "image/jpeg"))).toEqual({ width: 1024, height: 768 });
+    expect(jpegSize(resizeToJpeg(syntheticPng(960, 1280), "image/png"))).toEqual({ width: 768, height: 1024 });
   });
 
   it("averages the covered area instead of picking the nearest pixel", () => {
     // A one-pixel checkerboard halved in size: every target pixel covers two black and two white pixels.
-    const png = new PNG({ width: 2048, height: 2048 });
-    for (let i = 0; i < 2048 * 2048; i++) {
+    const png = new PNG({ width: 2048, height: 64 });
+    for (let i = 0; i < 2048 * 64; i++) {
       const value = ((i % 2048) + Math.floor(i / 2048)) % 2 ? 255 : 0;
       png.data.fill(value, i * 4, i * 4 + 3);
       png.data[i * 4 + 3] = 255;
     }
     const decoded = decodeJpeg(resizeToJpeg(PNG.sync.write(png), "image/png"), { useTArray: true });
-    expect(decoded.width).toBe(1024);
-    for (const offset of [0, 4 * 1000, 4 * 500_000, decoded.data.length - 4]) {
+    expect([decoded.width, decoded.height]).toEqual([1024, 32]);
+    for (const offset of [0, 4 * 1000, 4 * 20_000, decoded.data.length - 4]) {
       expect(decoded.data[offset]).toBeGreaterThan(118);
       expect(decoded.data[offset]).toBeLessThan(138);
     }
@@ -97,7 +97,7 @@ describe("prepareVisionImage", () => {
   });
 
   it("scales larger PNG and JPEG originals down on the image worker", async () => {
-    for (const [original, format] of [[syntheticJpeg(2400, 1800), "image/jpeg"], [syntheticPng(2400, 1800), "image/png"]] as const) {
+    for (const [original, format] of [[syntheticJpeg(1280, 960), "image/jpeg"], [syntheticPng(1280, 960), "image/png"]] as const) {
       const prepared = await prepareVisionImage(original);
       expect("data" in prepared && jpegSize(prepared.data)).toEqual({ width: 1024, height: 768 });
       expect(resizeInWorkerMock).toHaveBeenLastCalledWith(original, format, undefined);
@@ -124,14 +124,14 @@ describe("prepareVisionImage", () => {
     const reason = new Error("Ingest cancelled");
     resizeInWorkerMock.mockImplementationOnce((_data: Uint8Array, _format: string, signal: AbortSignal) =>
       new Promise((_resolve, reject) => signal.addEventListener("abort", () => reject(signal.reason), { once: true })));
-    const pending = prepareVisionImage(syntheticPng(2400, 1800), controller.signal);
+    const pending = prepareVisionImage(pngHeader(2400, 1800), controller.signal);
     controller.abort(reason);
     await expect(pending).rejects.toBe(reason);
   });
 
   it("bounds renders like originals and leaves out the ones it cannot bound", async () => {
     const small = pngHeader(600, 400, "render");
-    const prepared = await prepareRenders([small, syntheticPng(2400, 1800), pngHeader(10_000, 6_000), Buffer.from("not an image")]);
+    const prepared = await prepareRenders([small, syntheticPng(1280, 960), pngHeader(10_000, 6_000), Buffer.from("not an image")]);
     expect(prepared[0]).toBe(small);
     expect(jpegSize(prepared[1]!)).toEqual({ width: 1024, height: 768 });
     expect(prepared.slice(2)).toEqual([undefined, undefined]);

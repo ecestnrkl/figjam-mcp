@@ -665,7 +665,7 @@ describe("ingestBoard", () => {
     it("scales renders above 1,024 px down and fails a cluster whose images cannot be bounded like a failed render", async () => {
       fetchFileTreeMock.mockResolvedValueOnce(drawingClusterTree(2));
       downloadRendersMock.mockImplementation(async (ids: string[]) =>
-        ids.map(id => id === "drawing:0" ? syntheticPng(2400, 1800) : Buffer.from("not an image")));
+        ids.map(id => id === "drawing:0" ? syntheticPng(1280, 960) : Buffer.from("not an image")));
       const output = await ingestBoard(balanced);
       expect(refineClusterWithVisionMock).toHaveBeenCalledTimes(1);
       const [cluster, images] = refineClusterWithVisionMock.mock.calls[0] as [Cluster, Buffer[]];
