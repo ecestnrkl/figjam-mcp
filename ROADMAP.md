@@ -37,7 +37,7 @@ installable in two minutes, documented, and used on real boards.
 
 - [x] Every requested ID on every page; content outside sections with `outsideSections`
 - [x] Image fills (Tier 2) instead of renders (Tier 1)
-- [ ] `focusNodeIds` lets the host choose which images to interpret first
+- [x] `focusNodeIds` lets the host choose which images to interpret first
 
 ## 1.0.0 — proven in real use
 

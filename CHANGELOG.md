@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.9.0 — Unreleased
+## 0.9.0 — 2026-10-20
 
 - `get_board_context` with several `nodeIds`, at least one of them a page, section, frame or group, shows
   every requested ID on every page: the IDs take turns in request order, each excerpt counts for its own or
