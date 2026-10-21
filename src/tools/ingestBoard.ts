@@ -186,9 +186,8 @@ async function performIngest(input: IngestBoardInput, options: OperationOptions)
     const members = clusterNodesByIndex[index]!;
     const contentHash = contentHashes.get(cluster.id)!;
     const previous = reuseIndex.get(contentHash);
-    // A forced ingest redoes the vision of its mode and keeps interpretations it would not redo.
-    const redo = input.forceFullIngest && shouldUseVision(members, ingestMode);
-    if (previous && !redo && canReusePrevious(previous, members, ingestMode)) {
+    // forceFullIngest re-reads the board only; interpretations of unchanged clusters are kept in every mode.
+    if (previous && canReusePrevious(previous, members, ingestMode)) {
       refined[index] = { ...reuseCluster(cluster, previous, contentHash), cacheHit: true };
       reusedCount++;
     } else if (shouldUseVision(members, ingestMode)) visionQueue.push(index);
@@ -916,8 +915,8 @@ function describeNextSteps(report: IngestQualityReport): string {
   if (reasons.auth) instructions.push("Check Figma and model-provider access permissions; diagnose_llm_config can test the configured model provider.");
   if (report.nextRetryAt) instructions.push(`Retry after ${new Date(report.nextRetryAt).toISOString()} for the pending provider cooldown.`);
   instructions.push(reasons.time_budget || reasons.vision_budget
-    ? "Run ingest_board again without forceFullIngest to continue the remaining visual interpretation; finished clusters are reused."
-    : "Re-ingest without forceFullIngest to retain successful interpretations and retry pending work.");
+    ? "Run ingest_board again to continue the remaining visual interpretation; finished clusters are reused."
+    : "Run ingest_board again to retry pending work; successful interpretations are kept.");
   if (!report.focus) instructions.push("To interpret the images of particular sections first, pass their section IDs as focusNodeIds.");
   return ` ${instructions.join(" ")}`;
 }

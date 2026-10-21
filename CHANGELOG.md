@@ -11,6 +11,9 @@
   on the page, never an arrow to a page, and names an end that is no excerpt of the page with its short text (a section
   with its name) in the new optional `fromText` or `toText`. `answer_from_board` keeps only arrows between its
   excerpts.
+- `forceFullIngest` downloads and extracts the board again but keeps the image interpretations of unchanged clusters
+  in every mode; pending clusters continue as on any ingest, with provider cooldowns. Model and prompt changes are
+  detected without it. Before, a forced `balanced` or `max_quality` ingest discarded them and started over.
 
 ## 0.9.1 — 2026-10-20
 

@@ -163,7 +163,7 @@ describe("offline ingest pipeline with actual persistent cache", () => {
     expect(metadataMock).toHaveBeenCalledTimes(1);
   });
 
-  it("keeps interpretations a forced ingest does not redo", async () => {
+  it("keeps interpretations through a forced ingest in every mode", async () => {
     activeTree = boardTree([imageNode("photo-a", 0), imageNode("photo-b", 1000), sticky("note", "Workshop note", 2000)]);
     const balanced = { ...input, ingestMode: "balanced" } as const;
     const first = await ingestBoard(balanced);
@@ -172,17 +172,38 @@ describe("offline ingest pipeline with actual persistent cache", () => {
     expect(fileTreeMock).toHaveBeenCalledTimes(2);
     expect(forcedSpeed.qualityReport).toMatchObject({ visionClusters: 2, reusedClusters: 3, incompleteClusters: 0 });
     visionMock.mockClear();
-    const again = await ingestBoard(balanced);
-    expect(visionMock).not.toHaveBeenCalled();
-    expect(again.qualityReport).toMatchObject({ visionClusters: 2, deterministicClusters: 1, incompleteClusters: 0 });
-
-    // A forced balanced ingest interprets image clusters again and keeps the text cluster.
     const forcedBalanced = await ingestBoard({ ...balanced, forceFullIngest: true });
-    expect((visionMock.mock.calls as Array<[Cluster]>).map(([cluster]) => cluster.nodeIds).sort()).toEqual([["photo-a"], ["photo-b"]]);
-    expect(forcedBalanced.qualityReport).toMatchObject({ visionClusters: 2, reusedClusters: 1, figmaRequests: { imageFills: 1, renders: 0 } });
+    expect(fileTreeMock).toHaveBeenCalledTimes(3);
+    expect(visionMock).not.toHaveBeenCalled();
+    expect(forcedBalanced.qualityReport).toMatchObject({ visionClusters: 2, deterministicClusters: 1, reusedClusters: 3,
+      incompleteClusters: 0, figmaRequests: { imageFills: 0, renders: 0 } });
+    expect(forcedBalanced.summary).not.toContain("forceFullIngest");
     // An unchanged board keeps its snapshot, so diff_board sees no new state.
     expect(forcedBalanced.snapshotId).toBe(first.snapshotId);
     expect(await persistence.readBoardHistory(fileKey)).toHaveLength(1);
+  });
+
+  it.each(["balanced", "max_quality"] as const)("a forced %s ingest interprets only the pending cluster", async (ingestMode) => {
+    activeTree = boardTree([imageNode("photo-a", 0), imageNode("photo-b", 1000), imageNode("photo-c", 2000)]);
+    let fail = true;
+    visionMock.mockImplementation((cluster: Cluster, images: Buffer[], nodes: NormalizedNode[]) => {
+      // No retryAfter: the cluster is pending without a cooldown.
+      if (fail && cluster.nodeIds.includes("photo-c")) throw new Error("Temporary offline provider failure");
+      return refine(cluster, images, nodes);
+    });
+    const first = await ingestBoard({ ...input, ingestMode: "balanced" });
+    expect(first.qualityReport).toMatchObject({ visionClusters: 2, incompleteClusters: 1 });
+    fail = false;
+    visionMock.mockClear();
+    const forced = await ingestBoard({ ...input, ingestMode, forceFullIngest: true });
+    expect(fileTreeMock).toHaveBeenCalledTimes(2);
+    expect(metadataMock).not.toHaveBeenCalled();
+    expect((visionMock.mock.calls as Array<[Cluster]>).map(([cluster]) => cluster.nodeIds)).toEqual([["photo-c"]]);
+    expect(forced.qualityReport).toMatchObject({ visionClusters: 3, reusedClusters: 2, incompleteClusters: 0 });
+    const saved = await persistence.readLatestBoard(fileKey);
+    for (const id of ["photo-a", "photo-b"]) {
+      expect(saved?.clusters.find(cluster => cluster.nodeIds.includes(id))).toMatchObject({ summarySource: "vision_llm", label: `Evidence ${id}` });
+    }
   });
 
   it("reuses the interpretations of a focused ingest under the same cache key", async () => {
@@ -213,8 +234,8 @@ describe("offline ingest pipeline with actual persistent cache", () => {
     expect(visionMock).toHaveBeenCalledTimes(2);
     visionMock.mockClear();
     const forced = await ingestBoard({ ...input, ingestMode: "balanced", forceFullIngest: true });
-    expect((visionMock.mock.calls as Array<[Cluster]>).map(([cluster]) => cluster.nodeIds)).toEqual([["photo"]]);
-    expect(forced.qualityReport).toMatchObject({ visionClusters: 2, reusedClusters: 1 });
+    expect(visionMock).not.toHaveBeenCalled();
+    expect(forced.qualityReport).toMatchObject({ visionClusters: 2, reusedClusters: 2 });
     const note = (await persistence.readLatestBoard(fileKey))?.clusters.find(cluster => cluster.nodeIds.includes("note"));
     expect(note).toMatchObject({ summarySource: "vision_llm", summary: "Workshop note" });
   });
@@ -293,7 +314,7 @@ describe("offline ingest pipeline with actual persistent cache", () => {
 
     expect(visionMock).toHaveBeenCalledTimes(1);
     expect(first.qualityReport).toMatchObject({ visionClusters: 1, incompleteClusters: 1, fallbackReasons: { time_budget: 1 } });
-    expect(first.summary).toContain("Run ingest_board again without forceFullIngest to continue the remaining visual interpretation");
+    expect(first.summary).toContain("Run ingest_board again to continue the remaining visual interpretation");
     const saved = await persistence.readLatestBoard(fileKey);
     expect(saved?.snapshotId).toBe(first.snapshotId);
     const savedCluster = (nodeId: string) => saved?.clusters.find(cluster => cluster.nodeIds.includes(nodeId));

@@ -85,11 +85,11 @@ Invalid numbers fail with an error that names the variable and its minimum.
 | `max_quality` | Every cluster | Yes |
 
 Clusters without vision keep a summary built from their extracted text.
-`forceFullIngest: true` downloads and extracts the board again and redoes the
-vision of the chosen mode; interpretations that mode does not redo are kept for
-unchanged clusters. The vision budget still applies, so `balanced` and
-`max_quality` may need several ingests until every image is interpreted again.
-An unchanged board gives no new snapshot for `diff_board`.
+`forceFullIngest: true` downloads and extracts the board again, for example after
+turning redaction off. It does not interpret images again: interpretations of
+unchanged clusters are kept, and pending clusters continue as on any ingest. The
+server detects model and prompt changes itself. An unchanged board gives no new
+snapshot for `diff_board`.
 
 `focusNodeIds` (up to 50 IDs of pages, sections, frames, groups or nodes) changes
 only the order of image interpretation: clusters inside them come first, in list

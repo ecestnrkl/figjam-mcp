@@ -20,8 +20,8 @@ still times out:
    download of a large board takes long.
 
 Clusters that ran out of time keep their extracted text. Run `ingest_board`
-again without `forceFullIngest` to continue the image interpretation; finished
-clusters are reused. If a call timed out but was not cancelled, reconnect the
+again to continue the image interpretation; finished clusters are reused, also
+with `forceFullIngest`. If a call timed out but was not cancelled, reconnect the
 server before retrying: ingests of the same board run one after another.
 
 ## Incomplete image interpretation

@@ -1198,17 +1198,17 @@ describe("ingestBoard", () => {
     expect(output.qualityReport?.reusedClusters).toBe(0);
   });
 
-  it("forceFullIngest in max_quality interprets every cluster again", async () => {
+  it("forceFullIngest in max_quality downloads the board again and keeps every interpretation", async () => {
     readLatestBoardMock.mockResolvedValueOnce(cachedBoard());
     const output = await ingestBoard({ figmaFileUrl: "https://www.figma.com/board/AbC123/Test",
       docStructureHint: "freeform", ingestMode: "max_quality", forceFullIngest: true });
     expect(fetchFileMetadataMock).not.toHaveBeenCalled();
     expect(fetchFileTreeMock).toHaveBeenCalledTimes(1);
-    expect(refineClusterWithVisionMock).toHaveBeenCalledTimes(2);
-    expect(output.qualityReport).toMatchObject({ reusedClusters: 0, visionClusters: 2 });
+    expect(refineClusterWithVisionMock).not.toHaveBeenCalled();
+    expect(output.qualityReport).toMatchObject({ reusedClusters: 2, visionClusters: 2 });
   });
 
-  it("forceFullIngest bypasses cache and incremental reuse", async () => {
+  it("forceFullIngest bypasses the cache", async () => {
     const output = await ingestBoard({
       figmaFileUrl: "https://www.figma.com/board/AbC123/Test",
       docStructureHint: "freeform",
@@ -1217,7 +1217,7 @@ describe("ingestBoard", () => {
     });
 
     expect(readCachedBoardMock).not.toHaveBeenCalled();
-    // Latest source may be read to preserve snapshot time, but neither metadata nor refinements are reused.
+    // Without a previous board there is nothing to reuse; neither metadata nor the cache is read.
     expect(fetchFileMetadataMock).not.toHaveBeenCalled();
     expect(refineClusterWithVisionMock).toHaveBeenCalledTimes(2);
     expect(output.qualityReport?.reusedClusters).toBe(0);
