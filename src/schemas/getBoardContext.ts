@@ -37,7 +37,7 @@ export const getBoardContextInputShape = {
   limit: z.number().int().min(1).max(100).default(20)
     .describe("Maximum evidence excerpts per page (default 20)"),
   cursor: z.string().min(1).max(2048).optional()
-    .describe("Continue a page using the same query, snapshot, limit and maxChars"),
+    .describe("nextCursor of the previous page, unchanged; send it with the same topic, nodeIds, outsideSections, limit and maxChars"),
   maxChars: z.number().int().min(512).max(24000).default(12000)
     .describe("Character budget for each representation: the readable text content and the JSON of structuredContent (default 12000)"),
 };

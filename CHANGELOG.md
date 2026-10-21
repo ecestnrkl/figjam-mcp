@@ -21,6 +21,9 @@
   hours with HTTP 404 from its only provider, which cost every text request an extra request. Image interpretations
   now depend only on the vision models, `LLM_BASE_URL`, `LLM_PROVIDER_REQUIRE_PARAMETERS` and the extraction and prompt
   versions, so changing text models keeps them. After this update, the next ingest interprets images once again.
+- `get_board_context` returns `nextCursor` as `<page>.<offset>.<snapshot prefix>.<checksum>`, about 35 characters of
+  digits, a–f and dots instead of over 300. A changed character or a cursor sent with other settings gives an error that
+  names what to send; the cursor still reads its snapshot after later ingests, and older cursors are accepted.
 
 ## 0.9.1 — 2026-10-20
 

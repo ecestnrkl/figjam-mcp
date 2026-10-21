@@ -512,6 +512,24 @@ describe("offline ingest pipeline with actual persistent cache", () => {
     expect(visionChanged.qualityReport).toMatchObject({ visionClusters: 2, reusedClusters: 0 });
   });
 
+  it("continues a short cursor on its snapshot after the changed board is ingested", async () => {
+    const notes = (suffix: string) => Array.from({ length: 4 }, (_, index) => sticky(`n${index}`, `Finding ${index} ${suffix}`, index * 1000));
+    activeTree = boardTree(notes("before"));
+    const before = await ingestBoard({ ...input, ingestMode: "max_speed" });
+    const { structuredContent: first } = await getBoardContext({ boardId: fileKey, limit: 1 });
+    expect(first.nextCursor).toMatch(/^2\.1\.[0-9a-f]{12}\.[0-9a-f]{12}$/);
+    activeTree = boardTree(notes("after"), "v2");
+    const after = await ingestBoard({ ...input, ingestMode: "max_speed" });
+    expect(after.snapshotId).not.toBe(before.snapshotId);
+    // A fresh process finds the old snapshot in the board's history.
+    vi.resetModules();
+    const { getBoardContext: restartedContext } = await import("../src/tools/getBoardContext.js");
+    const { structuredContent: second } = await restartedContext({ boardId: fileKey, limit: 1, cursor: first.nextCursor });
+    expect(second.snapshotId).toBe(before.snapshotId);
+    expect(second.evidence[0]?.text).toContain("before");
+    expect(second.evidence.map(item => item.evidenceId)).not.toEqual(first.evidence.map(item => item.evidenceId));
+  });
+
   it("retains late source facts and internal connector evidence through ingestion", async () => {
     activeTree = boardTree([
       ...Array.from({ length: 6 }, (_, index) => sticky(`note-${index}`, index === 5 ? "Launch code: ORCHID-742" : `Research finding ${index} with sufficient original planning details.`, index * 110)),

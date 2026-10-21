@@ -96,7 +96,8 @@ configuration, then restart the server in the client.
 | `Board "…" not found — run ingest_board first.` | Ingest the board; the `boardId` is the file key from its URL. |
 | `This board uses cache v3. Run ingest_board again …` | Re-ingest once after upgrading; old files are kept. |
 | Result contains `persistenceWarning` | The snapshot was not saved and lives only in this process. Another server held the cache lock for over 10 seconds, or the cache directory is not writable. Ingest again; after a crash, stop all servers and delete `v4/.write-lock` (see [configuration](configuration.md#cache-migration-and-lock)). |
-| `Cursor does not match this query, snapshot, or page settings. …` | Send the same query, `limit` and `maxChars` with the cursor, or start without a cursor. |
+| `Cursor does not match this request or was changed. …` | Send `nextCursor` unchanged (it looks like `2.20.1a2b3c4d5e6f.0123456789ab`) with the same `topic`, `nodeIds`, `outsideSections`, `limit` and `maxChars`, or start without a cursor. An ingest that refined the board since also needs a new start. |
+| `The snapshot of this cursor is no longer available. …` | A cursor keeps reading its snapshot after later ingests while the board's history retains it. Start without a cursor. |
 
 Run `diagnose_llm_config` after changing model settings. Each check lists the
 models it tried in `attempts`, in order, with the provider's message (at most 200
