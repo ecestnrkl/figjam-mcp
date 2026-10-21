@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.10.0 — Unreleased
+## 0.10.0 — 2026-10-21
 
 - Clusters without a model label that hold at least two texts in one section are named after it: the section name if
   it holds no other cluster, else "<section>: <first text>". Other clusters take their first text in reading order
@@ -11,6 +11,21 @@
   on the page, never an arrow to a page, and names an end that is no excerpt of the page with its short text (a section
   with its name) in the new optional `fromText` or `toText`. `answer_from_board` keeps only arrows between its
   excerpts.
+- `forceFullIngest` downloads and extracts the board again but keeps the image interpretations of unchanged clusters
+  in every mode; pending clusters continue as on any ingest, with provider cooldowns. Model and prompt changes are
+  detected without it. Before, a forced `balanced` or `max_quality` ingest discarded them and started over.
+- `diagnose_llm_config` lists the models each check tried in the new optional `attempts` (model, ok and the provider's
+  message or error). A failed check names every model with its error, and the summary names checks that passed only
+  with a later candidate, with the model that failed.
+- The `student-free` preset sends text to `openrouter/free` only, like images: the free Nemotron 3 Super answered for
+  hours with HTTP 404 from its only provider, which cost every text request an extra request. Image interpretations
+  now depend only on the vision models, `LLM_BASE_URL`, `LLM_PROVIDER_REQUIRE_PARAMETERS` and the extraction and prompt
+  versions, so changing text models keeps them. After this update, the next ingest interprets images once again.
+- `get_board_context` returns `nextCursor` as `<page>.<offset>.<snapshot prefix>.<checksum>`, about 35 characters of
+  digits, a–f and dots instead of over 300. A changed character or a cursor sent with other settings gives an error that
+  names what to send; the cursor still reads its snapshot after later ingests, and older cursors are accepted.
+- The `ingest_board` summary says whether the board content changed since the previous ingest of the same extraction
+  version and, if so, names `diff_board` with the board's ID as the next step.
 
 ## 0.9.1 — 2026-10-20
 

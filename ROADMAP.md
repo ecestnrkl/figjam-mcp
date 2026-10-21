@@ -39,6 +39,12 @@ installable in two minutes, documented, and used on real boards.
 - [x] Image fills (Tier 2) instead of renders (Tier 1)
 - [x] `focusNodeIds` lets the host choose which images to interpret first
 
+## 0.10.0 — the board's structure
+
+- [x] Clusters named after their sections; arrows from either end and between sections
+- [x] `forceFullIngest` and text model changes keep image interpretations; `student-free` text uses `openrouter/free` only
+- [x] `diagnose_llm_config` names every model it tried; short cursors; the ingest summary says whether the board changed
+
 ## 1.0.0 — proven in real use
 
 - [ ] Public demo board and a screen recording

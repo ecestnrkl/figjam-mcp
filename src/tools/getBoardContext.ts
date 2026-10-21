@@ -5,24 +5,38 @@ import {
   type GetBoardContextOutput,
 } from "../schemas/getBoardContext.js";
 import { getBoardOrRestore } from "../lib/cache.js";
+import { readBoardHistory } from "../lib/persistentCache.js";
 import { redactBoard } from "../lib/redact.js";
 import {
   boundedText, connectionsForEvidence, countConnectionsForEvidence,
   formatEvidenceConnection, MAX_CONTEXT_RESPONSE_BYTES, readableContainerIds,
-  firstTableRow, retrieveEvidence, tableCellPositions, type Evidence,
+  firstTableRow, retrieveEvidence, snapshotIdForBoard, tableCellPositions, type Evidence,
 } from "../lib/evidence.js";
 import { SectionIndex } from "../lib/sections.js";
-import type { RefinedCluster } from "../types.js";
+import type { BoardData, RefinedCluster } from "../types.js";
 
+/**
+ * nextCursor is "<page>.<offset>.<snapshot prefix>.<checksum>": short enough to copy by hand. The checksum covers
+ * the snapshot, query, result sequence, offset and page, so any changed character is detected. Base64url JSON
+ * cursors of 0.9.x and older carry the full snapshot ID and the query and result fingerprints instead.
+ */
 interface Cursor {
-  v: 1;
-  snapshot: string;
-  query: string;
+  /** 1-based number of the page this cursor opens. */
+  page: number;
   offset: number;
-  result: string;
-  /** 1-based number of the page this cursor opens; absent in 0.5.x cursors. */
-  page?: number;
+  /** The first SNAPSHOT_PREFIX_LENGTH characters of the snapshot ID; the full ID in an older cursor. */
+  snapshot: string;
+  check?: string;
+  query?: string;
+  result?: string;
 }
+
+const SNAPSHOT_PREFIX_LENGTH = 12;
+const CHECKSUM_LENGTH = 12;
+const SHORT_CURSOR = /^([1-9]\d{0,8})\.(0|[1-9]\d{0,8})\.([0-9a-f]{12})\.([0-9a-f]{12})$/;
+const CURSOR_MISMATCH = "Cursor does not match this request or was changed. Send nextCursor unchanged with the same topic, " +
+  "nodeIds, outsideSections, limit and maxChars, or start again without a cursor (also after an ingest refined the board).";
+const CURSOR_SNAPSHOT_GONE = "The snapshot of this cursor is no longer available. Start again without a cursor.";
 
 /** Excerpts shown on a page and how many of them advance the cursor through the result sequence. */
 interface Page {
@@ -55,10 +69,12 @@ export async function getBoardContext(input: GetBoardContextInput): Promise<Boar
   const options = getBoardContextInputSchema.parse(input);
   const cursor = options.cursor ? decodeCursor(options.cursor) : undefined;
   const query = querySignature(options);
-  if (cursor && (cursor.query !== query || (options.snapshotId && cursor.snapshot !== options.snapshotId))) {
-    throw new Error("Cursor does not match this query, snapshot, or page settings. Start a new context request.");
+  if (cursor && ((cursor.query !== undefined && cursor.query !== query) ||
+    (options.snapshotId && !(cursor.check ? options.snapshotId.startsWith(cursor.snapshot) : options.snapshotId === cursor.snapshot)))) {
+    throw new Error(CURSOR_MISMATCH);
   }
-  const stored = await getBoardOrRestore(options.boardId, options.snapshotId ?? cursor?.snapshot);
+  const stored = cursor && !options.snapshotId ? await cursorBoard(options.boardId, cursor)
+    : await getBoardOrRestore(options.boardId, options.snapshotId);
   if (!stored) throw new Error(`Board "${options.boardId}" not found — run ingest_board first.`);
   // Snapshots cached before redaction existed are redacted here too.
   const board = redactBoard(stored);
@@ -68,14 +84,11 @@ export async function getBoardContext(input: GetBoardContextInput): Promise<Boar
   });
   const resultFingerprint = createHash("sha256")
     .update(retrieved.evidence.map((item) => item.evidenceId).join("\0")).digest("hex");
-  if (cursor && cursor.snapshot !== retrieved.snapshotId) {
-    throw new Error("Cursor snapshot is no longer available. Start a new context request.");
-  }
-  if (cursor && cursor.result !== resultFingerprint) {
-    throw new Error("Cursor results changed after this snapshot was refined. Start a new context request.");
-  }
+  if (cursor && !cursor.check && cursor.snapshot !== retrieved.snapshotId) throw new Error(CURSOR_SNAPSHOT_GONE);
+  if (cursor && (cursor.check ? cursor.check !== cursorChecksum(retrieved.snapshotId, query, resultFingerprint, cursor.offset, cursor.page)
+    : cursor.result !== resultFingerprint)) throw new Error(CURSOR_MISMATCH);
   const offset = cursor?.offset ?? 0;
-  if (offset > retrieved.evidence.length) throw new Error("Cursor is outside this result set. Start a new context request.");
+  if (offset > retrieved.evidence.length) throw new Error(CURSOR_MISMATCH);
 
   const nodesById = new Map(board.nodes.map((node) => [node.id, node]));
   const clustersById = new Map(board.clusters.map((cluster) => [cluster.id, cluster]));
@@ -285,7 +298,7 @@ export async function getBoardContext(input: GetBoardContextInput): Promise<Boar
         truncated: Object.values(truncation).some((count) => count > 0) || evidence.some((item) => item.truncated),
         truncation,
         nextCursor: remaining > 0 && consumed > 0
-          ? encodeCursor({ v: 1, snapshot: retrieved.snapshotId, query, result: resultFingerprint, offset: nextOffset, page: page + 1 })
+          ? encodeCursor(retrieved.snapshotId, query, resultFingerprint, nextOffset, page + 1)
           : undefined,
       },
     };
@@ -524,23 +537,41 @@ function querySignature(input: GetBoardContextInput): string {
   })).digest("hex");
 }
 
-function encodeCursor(cursor: Cursor): string {
-  return Buffer.from(JSON.stringify(cursor)).toString("base64url");
+function encodeCursor(snapshotId: string, query: string, result: string, offset: number, page: number): string {
+  return `${page}.${offset}.${snapshotId.slice(0, SNAPSHOT_PREFIX_LENGTH)}.${cursorChecksum(snapshotId, query, result, offset, page)}`;
+}
+
+function cursorChecksum(snapshotId: string, query: string, result: string, offset: number, page: number): string {
+  return createHash("sha256").update(JSON.stringify([snapshotId, query, result, offset, page])).digest("hex").slice(0, CHECKSUM_LENGTH);
 }
 
 function decodeCursor(value: string): Cursor {
+  const short = SHORT_CURSOR.exec(value);
+  if (short) return { page: Number(short[1]), offset: Number(short[2]), snapshot: short[3]!, check: short[4]! };
   try {
     if (!/^[A-Za-z0-9_-]+$/.test(value)) throw new Error("invalid encoding");
-    const parsed = JSON.parse(Buffer.from(value, "base64url").toString("utf8")) as Partial<Cursor>;
+    const parsed = JSON.parse(Buffer.from(value, "base64url").toString("utf8")) as Record<string, unknown>;
     if (parsed.v !== 1 || typeof parsed.snapshot !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(parsed.snapshot) ||
       typeof parsed.query !== "string" || !/^[a-f0-9]{64}$/.test(parsed.query) ||
       typeof parsed.result !== "string" || !/^[a-f0-9]{64}$/.test(parsed.result) ||
-      !Number.isSafeInteger(parsed.offset) || parsed.offset! < 0 ||
-      (parsed.page !== undefined && (!Number.isSafeInteger(parsed.page) || parsed.page < 1))) throw new Error("invalid fields");
-    return parsed as Cursor;
+      !Number.isSafeInteger(parsed.offset) || (parsed.offset as number) < 0 ||
+      (parsed.page !== undefined && (!Number.isSafeInteger(parsed.page) || (parsed.page as number) < 1))) throw new Error("invalid fields");
+    // Cursors of 0.5.x carry no page.
+    return { page: (parsed.page as number | undefined) ?? 1, offset: parsed.offset as number, snapshot: parsed.snapshot,
+      query: parsed.query, result: parsed.result };
   } catch {
-    throw new Error("Invalid context cursor. Start a new context request.");
+    throw new Error(CURSOR_MISMATCH);
   }
+}
+
+/** The cursor's snapshot: the latest board if it matches, else the newest matching snapshot in the board's history. */
+async function cursorBoard(boardId: string, cursor: Cursor): Promise<BoardData | undefined> {
+  if (!cursor.check) return getBoardOrRestore(boardId, cursor.snapshot);
+  const latest = await getBoardOrRestore(boardId);
+  if (!latest || snapshotIdForBoard(latest).startsWith(cursor.snapshot)) return latest;
+  const snapshotId = (await readBoardHistory(boardId)).findLast((entry) => entry.snapshotId?.startsWith(cursor.snapshot))?.snapshotId;
+  if (!snapshotId) throw new Error(CURSOR_SNAPSHOT_GONE);
+  return getBoardOrRestore(boardId, snapshotId);
 }
 
 function responseBytes(text: string, structuredContent: GetBoardContextOutput): number {

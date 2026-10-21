@@ -155,6 +155,61 @@ describe("diagnoseLlmConfig", () => {
     expect(result.summary).toContain("failing");
   });
 
+  it("names every tried candidate and reports a fallback that answers", async () => {
+    const providerMessage = "Provider returned error, code 404, provider Nvidia";
+    chatJsonMock.mockImplementation(async (models: string[], _messages, options) => {
+      if (models[0] === "text-model") {
+        options.onRequest?.("text-model");
+        options.onModelFailed?.("text-model", providerMessage);
+        options.onRequest?.("router/free");
+        options.onModelUsed?.("router/free");
+        return { result: 42 };
+      }
+      options.onRequest?.(models[0]);
+      options.onModelUsed?.(models[0]);
+      return models[0] === "fast-model" ? { result: 63 } : { dominantColor: "blue" };
+    });
+
+    const result = await diagnoseLlmConfig();
+
+    expect(result.ok).toBe(true);
+    expect(result.checks[0]).toEqual({ name: "text_json", ok: true, modelUsed: "router/free", attempts: [
+      { model: "text-model", ok: false, error: providerMessage }, { model: "router/free", ok: true }] });
+    expect(result.checks[1]?.attempts).toEqual([{ model: "fast-model", ok: true }]);
+    expect(result.summary).toBe("LLM configuration OK (student-free). Fallback: text_json used router/free after text-model failed.");
+  });
+
+  it("names each failed candidate with its error", async () => {
+    chatJsonMock.mockImplementation(async (models: string[], _messages, options) => {
+      if (models[0] === "text-model") {
+        options.onRequest?.("text-model");
+        options.onModelFailed?.("text-model", "Provider returned error, code 404, provider Nvidia");
+        options.onRequest?.("router/free");
+        options.onModelFailed?.("router/free", "Provider returned error, code 404, provider Nvidia");
+        throw new Error("LLM request failed (HTTP 404). Check provider availability and configuration.");
+      }
+      if (models[0] === "fast-model") {
+        // The check deadline or a cancellation ends a request without a reported failure.
+        options.onRequest?.("fast-model");
+        throw new Error("Check did not finish within 45 s.");
+      }
+      options.onModelUsed?.(models[0]);
+      return { dominantColor: "red" };
+    });
+
+    const result = await diagnoseLlmConfig();
+
+    expect(result.ok).toBe(false);
+    expect(result.checks[0]).toMatchObject({ ok: false, error: "text-model: Provider returned error, code 404, provider Nvidia; "
+      + "router/free: Provider returned error, code 404, provider Nvidia" });
+    expect(result.checks[0]?.attempts?.map((attempt) => attempt.model)).toEqual(["text-model", "router/free"]);
+    expect(result.checks[1]).toMatchObject({ ok: false, error: "fast-model: Check did not finish within 45 s.",
+      attempts: [{ model: "fast-model", ok: false, error: "Check did not finish within 45 s." }] });
+    expect(result.checks[2]).toMatchObject({ ok: false, modelUsed: "vision-model",
+      error: expect.stringMatching(/^vision-model: Vision diagnostic failed: expected dominant color blue/) });
+    expect(result.summary).toBe("LLM configuration has 3 failing check(s).");
+  });
+
   it.each([{}, { ok: false }])(
     "rejects parseable JSON that does not answer the diagnostic challenges: %j",
     async (reply) => {

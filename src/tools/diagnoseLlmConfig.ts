@@ -90,6 +90,9 @@ export async function diagnoseLlmConfig(options: { signal?: AbortSignal } = {}):
   ]);
 
   const ok = checks.every((check) => check.ok);
+  const fallbacks = checks.filter((check) => check.ok && (check.attempts?.length ?? 0) > 1).map((check) =>
+    `${check.name} used ${check.modelUsed} after ${check.attempts!.filter((attempt) => !attempt.ok).map((attempt) => attempt.model).join(", ")} failed`);
+  const fallbackNote = fallbacks.length ? ` Fallback: ${fallbacks.join("; ")}.` : "";
   return {
     ok,
     preset: config.preset,
@@ -98,9 +101,9 @@ export async function diagnoseLlmConfig(options: { signal?: AbortSignal } = {}):
     fastTextModels: config.fastTextModels,
     providerRequireParameters: config.providerRequireParameters,
     checks,
-    summary: ok
+    summary: (ok
       ? `LLM configuration OK (${config.preset}).`
-      : `LLM configuration has ${checks.filter((check) => !check.ok).length} failing check(s).`,
+      : `LLM configuration has ${checks.filter((check) => !check.ok).length} failing check(s).`) + fallbackNote,
   };
 }
 
@@ -116,7 +119,9 @@ async function runCheck(
   signal?.throwIfAborted();
   let modelUsed: string | undefined;
   // The checks send only synthetic data, so the provider's own message may be shown here, unlike in other tools.
-  let providerMessage: string | undefined;
+  const attempts: Attempt[] = [];
+  // The candidate whose request is running; a check deadline ends it without a reported failure.
+  let pending: string | undefined;
   // One signal cancels the provider request and ends the race, even for a
   // request that ignores the abort.
   const deadline = new AbortController();
@@ -128,6 +133,8 @@ async function runCheck(
     () => deadline.abort(new Error(`Check did not finish within ${CHECK_DEADLINE_MS / 1000} s.`)),
     CHECK_DEADLINE_MS,
   );
+  const failed = (error: string): CheckResult => ({ name, ok: false, modelUsed, error: describeAttempts(attempts) ?? error,
+    ...(attempts.length ? { attempts } : {}) });
   try {
     const reply = await Promise.race([
       chatJson(models, messages, {
@@ -137,33 +144,41 @@ async function runCheck(
         maxOutputTokens: limits.maxOutputTokens,
         schemaName: `diagnose_${name}`,
         jsonSchema,
+        onRequest: (model) => {
+          pending = model;
+        },
         onModelUsed: (model) => {
           modelUsed = model;
+          pending = undefined;
         },
-        onProviderError: (message) => {
-          providerMessage = message;
+        onModelFailed: (model, error) => {
+          attempts.push({ model, ok: false, error });
+          pending = undefined;
         },
       }),
       aborted,
     ]);
 
     const semanticError = validateReply(reply);
-    if (semanticError) {
-      return { name, ok: false, modelUsed, error: semanticError };
-    }
-    return { name, ok: true, modelUsed };
+    if (modelUsed) attempts.push({ model: modelUsed, ok: !semanticError, ...(semanticError ? { error: semanticError } : {}) });
+    if (semanticError) return failed(semanticError);
+    return { name, ok: true, modelUsed, ...(attempts.length ? { attempts } : {}) };
   } catch (error) {
     signal?.throwIfAborted();
     const message = error instanceof Error ? error.message : String(error);
-    return {
-      name,
-      ok: false,
-      modelUsed,
-      error: providerMessage ? `${message} Provider message: ${providerMessage}` : message,
-    };
+    if (pending) attempts.push({ model: pending, ok: false, error: message });
+    return failed(message);
   } finally {
     clearTimeout(timer);
   }
+}
+
+type Attempt = NonNullable<CheckResult["attempts"]>[number];
+
+/** Names every model of a failed check with its error. */
+function describeAttempts(attempts: Attempt[]): string | undefined {
+  const failures = attempts.filter((attempt) => !attempt.ok);
+  return failures.length ? failures.map((attempt) => `${attempt.model}: ${attempt.error}`).join("; ") : undefined;
 }
 
 function expectNumericResult(expected: number): ReplyValidator {

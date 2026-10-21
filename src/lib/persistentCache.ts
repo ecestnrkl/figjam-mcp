@@ -5,7 +5,7 @@ import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { z } from "zod";
 import type { BoardData, DocStructureHint, IngestMode, NormalizedNode } from "../types.js";
-import { getModelConfigSignature } from "./modelRegistry.js";
+import { getVisionConfigSignature } from "./modelRegistry.js";
 import { MAX_BOARD_NODES } from "./nodeTree.js";
 
 export const CACHE_SCHEMA_VERSION = 4;
@@ -80,7 +80,7 @@ export function buildSnapshotId(fileKey: string, nodeHash: string, extractionVer
   return hash(JSON.stringify([fileKey, extractionVersion, nodeHash]));
 }
 export function getRefinementSignature(): string {
-  return hash(JSON.stringify([getModelConfigSignature(), process.env.LLM_BASE_URL ?? "", EXTRACTION_VERSION, PROMPT_VERSION]));
+  return hash(JSON.stringify([getVisionConfigSignature(), process.env.LLM_BASE_URL ?? "", EXTRACTION_VERSION, PROMPT_VERSION]));
 }
 export function buildBoardCacheKey(identity: BoardCacheIdentity): string {
   return hash(JSON.stringify({ ...identity, figmaLastModified: undefined, schemaVersion: CACHE_SCHEMA_VERSION,

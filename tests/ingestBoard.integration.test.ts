@@ -108,6 +108,8 @@ describe("offline ingest pipeline with actual persistent cache", () => {
     expect(fileTreeMock).toHaveBeenCalledTimes(1);
     expect(visionMock).toHaveBeenCalledTimes(2);
     expect(result.snapshotId).not.toBe(snapshotId);
+    // A snapshot of an older extraction version is not compared.
+    expect(result.summary).not.toContain("since the previous ingest");
     expect(result.relationCount).toBe(1);
     const { structuredContent: context } = await getBoardContext({ boardId: fileKey, nodeIds: ["idea", "test", "page"] });
     expect(context.connections).toEqual([expect.objectContaining({ connectorId: "arrow", fromNodeId: "idea", toNodeId: "test", direction: "forward", url: "https://www.figma.com/board/OfflineBoard?node-id=arrow" })]);
@@ -163,7 +165,7 @@ describe("offline ingest pipeline with actual persistent cache", () => {
     expect(metadataMock).toHaveBeenCalledTimes(1);
   });
 
-  it("keeps interpretations a forced ingest does not redo", async () => {
+  it("keeps interpretations through a forced ingest in every mode", async () => {
     activeTree = boardTree([imageNode("photo-a", 0), imageNode("photo-b", 1000), sticky("note", "Workshop note", 2000)]);
     const balanced = { ...input, ingestMode: "balanced" } as const;
     const first = await ingestBoard(balanced);
@@ -172,17 +174,38 @@ describe("offline ingest pipeline with actual persistent cache", () => {
     expect(fileTreeMock).toHaveBeenCalledTimes(2);
     expect(forcedSpeed.qualityReport).toMatchObject({ visionClusters: 2, reusedClusters: 3, incompleteClusters: 0 });
     visionMock.mockClear();
-    const again = await ingestBoard(balanced);
-    expect(visionMock).not.toHaveBeenCalled();
-    expect(again.qualityReport).toMatchObject({ visionClusters: 2, deterministicClusters: 1, incompleteClusters: 0 });
-
-    // A forced balanced ingest interprets image clusters again and keeps the text cluster.
     const forcedBalanced = await ingestBoard({ ...balanced, forceFullIngest: true });
-    expect((visionMock.mock.calls as Array<[Cluster]>).map(([cluster]) => cluster.nodeIds).sort()).toEqual([["photo-a"], ["photo-b"]]);
-    expect(forcedBalanced.qualityReport).toMatchObject({ visionClusters: 2, reusedClusters: 1, figmaRequests: { imageFills: 1, renders: 0 } });
+    expect(fileTreeMock).toHaveBeenCalledTimes(3);
+    expect(visionMock).not.toHaveBeenCalled();
+    expect(forcedBalanced.qualityReport).toMatchObject({ visionClusters: 2, deterministicClusters: 1, reusedClusters: 3,
+      incompleteClusters: 0, figmaRequests: { imageFills: 0, renders: 0 } });
+    expect(forcedBalanced.summary).not.toContain("forceFullIngest");
     // An unchanged board keeps its snapshot, so diff_board sees no new state.
     expect(forcedBalanced.snapshotId).toBe(first.snapshotId);
     expect(await persistence.readBoardHistory(fileKey)).toHaveLength(1);
+  });
+
+  it.each(["balanced", "max_quality"] as const)("a forced %s ingest interprets only the pending cluster", async (ingestMode) => {
+    activeTree = boardTree([imageNode("photo-a", 0), imageNode("photo-b", 1000), imageNode("photo-c", 2000)]);
+    let fail = true;
+    visionMock.mockImplementation((cluster: Cluster, images: Buffer[], nodes: NormalizedNode[]) => {
+      // No retryAfter: the cluster is pending without a cooldown.
+      if (fail && cluster.nodeIds.includes("photo-c")) throw new Error("Temporary offline provider failure");
+      return refine(cluster, images, nodes);
+    });
+    const first = await ingestBoard({ ...input, ingestMode: "balanced" });
+    expect(first.qualityReport).toMatchObject({ visionClusters: 2, incompleteClusters: 1 });
+    fail = false;
+    visionMock.mockClear();
+    const forced = await ingestBoard({ ...input, ingestMode, forceFullIngest: true });
+    expect(fileTreeMock).toHaveBeenCalledTimes(2);
+    expect(metadataMock).not.toHaveBeenCalled();
+    expect((visionMock.mock.calls as Array<[Cluster]>).map(([cluster]) => cluster.nodeIds)).toEqual([["photo-c"]]);
+    expect(forced.qualityReport).toMatchObject({ visionClusters: 3, reusedClusters: 2, incompleteClusters: 0 });
+    const saved = await persistence.readLatestBoard(fileKey);
+    for (const id of ["photo-a", "photo-b"]) {
+      expect(saved?.clusters.find(cluster => cluster.nodeIds.includes(id))).toMatchObject({ summarySource: "vision_llm", label: `Evidence ${id}` });
+    }
   });
 
   it("reuses the interpretations of a focused ingest under the same cache key", async () => {
@@ -213,8 +236,8 @@ describe("offline ingest pipeline with actual persistent cache", () => {
     expect(visionMock).toHaveBeenCalledTimes(2);
     visionMock.mockClear();
     const forced = await ingestBoard({ ...input, ingestMode: "balanced", forceFullIngest: true });
-    expect((visionMock.mock.calls as Array<[Cluster]>).map(([cluster]) => cluster.nodeIds)).toEqual([["photo"]]);
-    expect(forced.qualityReport).toMatchObject({ visionClusters: 2, reusedClusters: 1 });
+    expect(visionMock).not.toHaveBeenCalled();
+    expect(forced.qualityReport).toMatchObject({ visionClusters: 2, reusedClusters: 2 });
     const note = (await persistence.readLatestBoard(fileKey))?.clusters.find(cluster => cluster.nodeIds.includes("note"));
     expect(note).toMatchObject({ summarySource: "vision_llm", summary: "Workshop note" });
   });
@@ -293,7 +316,7 @@ describe("offline ingest pipeline with actual persistent cache", () => {
 
     expect(visionMock).toHaveBeenCalledTimes(1);
     expect(first.qualityReport).toMatchObject({ visionClusters: 1, incompleteClusters: 1, fallbackReasons: { time_budget: 1 } });
-    expect(first.summary).toContain("Run ingest_board again without forceFullIngest to continue the remaining visual interpretation");
+    expect(first.summary).toContain("Run ingest_board again to continue the remaining visual interpretation");
     const saved = await persistence.readLatestBoard(fileKey);
     expect(saved?.snapshotId).toBe(first.snapshotId);
     const savedCluster = (nodeId: string) => saved?.clusters.find(cluster => cluster.nodeIds.includes(nodeId));
@@ -472,6 +495,55 @@ describe("offline ingest pipeline with actual persistent cache", () => {
     expect(after?.clusters[0]?.summary).toBe("Budget 100");
     expect(after?.refinementSignature).toBe(persistence.getRefinementSignature());
     expect(await persistence.readBoardHistory(fileKey)).toHaveLength(1);
+  });
+
+  it("keeps interpretations after a text model change and interprets again after a vision model change", async () => {
+    activeTree = boardTree([imageNode("photo-a", 0), imageNode("photo-b", 1000), sticky("note", "Workshop note", 2000)]);
+    const balanced = { ...input, ingestMode: "balanced" } as const;
+    await ingestBoard(balanced);
+    expect(visionMock).toHaveBeenCalledTimes(2);
+    visionMock.mockClear();
+    vi.stubEnv("LLM_TEXT_MODELS", "other/text-model");
+    vi.stubEnv("LLM_FAST_TEXT_MODELS", "other/fast-model");
+    const textChanged = await ingestBoard(balanced);
+    expect(visionMock).not.toHaveBeenCalled();
+    expect(textChanged.qualityReport).toMatchObject({ visionClusters: 2, incompleteClusters: 0 });
+    vi.stubEnv("LLM_VISION_MODELS", "other/vision-model");
+    const visionChanged = await ingestBoard(balanced);
+    expect((visionMock.mock.calls as Array<[Cluster]>).map(([cluster]) => cluster.nodeIds).sort()).toEqual([["photo-a"], ["photo-b"]]);
+    expect(visionChanged.qualityReport).toMatchObject({ visionClusters: 2, reusedClusters: 0 });
+  });
+
+  it("says in the summary whether the board changed since the previous ingest", async () => {
+    activeTree = boardTree([sticky("note", "First idea")]);
+    const first = await ingestBoard(input);
+    expect(first.summary).not.toContain("since the previous ingest");
+    const unchanged = await ingestBoard(input);
+    expect(unchanged.summary).toContain(" The board content is unchanged since the previous ingest.");
+    expect(unchanged.summary).not.toContain("diff_board");
+    activeTree = boardTree([sticky("note", "Second idea")], "v2");
+    const changed = await ingestBoard(input);
+    expect(changed.summary).toContain(` The board content changed since the previous ingest; call diff_board with boardId ${fileKey} to see what changed.`);
+    const diff = await diffBoard({ boardId: fileKey, compareTo: 1 });
+    expect([diff.baselineSnapshotId, diff.currentSnapshotId]).toEqual([first.snapshotId, changed.snapshotId]);
+  });
+
+  it("continues a short cursor on its snapshot after the changed board is ingested", async () => {
+    const notes = (suffix: string) => Array.from({ length: 4 }, (_, index) => sticky(`n${index}`, `Finding ${index} ${suffix}`, index * 1000));
+    activeTree = boardTree(notes("before"));
+    const before = await ingestBoard({ ...input, ingestMode: "max_speed" });
+    const { structuredContent: first } = await getBoardContext({ boardId: fileKey, limit: 1 });
+    expect(first.nextCursor).toMatch(/^2\.1\.[0-9a-f]{12}\.[0-9a-f]{12}$/);
+    activeTree = boardTree(notes("after"), "v2");
+    const after = await ingestBoard({ ...input, ingestMode: "max_speed" });
+    expect(after.snapshotId).not.toBe(before.snapshotId);
+    // A fresh process finds the old snapshot in the board's history.
+    vi.resetModules();
+    const { getBoardContext: restartedContext } = await import("../src/tools/getBoardContext.js");
+    const { structuredContent: second } = await restartedContext({ boardId: fileKey, limit: 1, cursor: first.nextCursor });
+    expect(second.snapshotId).toBe(before.snapshotId);
+    expect(second.evidence[0]?.text).toContain("before");
+    expect(second.evidence.map(item => item.evidenceId)).not.toEqual(first.evidence.map(item => item.evidenceId));
   });
 
   it("retains late source facts and internal connector evidence through ingestion", async () => {

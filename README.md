@@ -99,10 +99,9 @@ Problems: [troubleshooting](https://github.com/ecestnrkl/figjam-mcp/blob/main/do
 
 ## Models and cost
 
-The default preset `student-free` uses free OpenRouter models: text goes to
-`nvidia/nemotron-3-super-120b-a12b:free` and then `openrouter/free`; images go to
-`openrouter/free`, which picks a free model that accepts images and structured
-outputs. The free default is best effort: free models change, hit rate limits
+The default preset `student-free` uses free OpenRouter models: text and images go
+to `openrouter/free`, which picks a free model that supports structured outputs
+(and images, for images). The free default is best effort: free models change, hit rate limits
 and time out. Images go to the model with at most 1,024 px on the longest side;
 larger ones are scaled down locally.
 

@@ -197,7 +197,38 @@ describe("getBoardContext", () => {
     for (const extra of [{ topic: "calendar" }, { maxChars: 14000 }, { snapshotId: "b".repeat(64) }, { limit: 2 }]) {
       await expect(getBoardContext({ boardId: "Cursor123", limit: 1, cursor: first.nextCursor, ...extra })).rejects.toThrow(/Cursor does not match/);
     }
-    await expect(getBoardContext({ boardId: "Cursor123", cursor: "%%%" })).rejects.toThrow(/Invalid context cursor/);
+    await expect(getBoardContext({ boardId: "Cursor123", cursor: "%%%" })).rejects.toThrow(/Cursor does not match/);
+  });
+
+  it("issues short cursors of digits, a-f and dots that detect every changed character", async () => {
+    setBoard("Large300", largeBoard("Large300"));
+    const { structuredContent: first } = await getBoardContext({ boardId: "Large300", limit: 5 });
+    const cursor = first.nextCursor!;
+    expect(cursor).toMatch(/^2\.5\.cccccccccccc\.[0-9a-f]{12}$/);
+    expect(cursor.length).toBeLessThanOrEqual(40);
+    const hint = "Send nextCursor unchanged with the same topic, nodeIds, outsideSections, limit and maxChars, or start again without a cursor";
+    const [page, offset, snapshot, check] = cursor.split(".") as [string, string, string, string];
+    const swapped = `${page}.${offset}.${snapshot}.${check[1]}${check[0]}${check.slice(2)}`;
+    expect(swapped).not.toBe(cursor);
+    for (const changed of [swapped, `${page}.6.${snapshot}.${check}`, `3.${offset}.${snapshot}.${check}`]) {
+      await expect(getBoardContext({ boardId: "Large300", limit: 5, cursor: changed })).rejects.toThrow(hint);
+    }
+    await expect(getBoardContext({ boardId: "Large300", limit: 5, cursor: `${page}.${offset}.${"0".repeat(12)}.${check}` }))
+      .rejects.toThrow("The snapshot of this cursor is no longer available. Start again without a cursor.");
+  });
+
+  it("accepts a base64url cursor of 0.9.x and continues on the same page", async () => {
+    setBoard("Legacy300", largeBoard("Legacy300"));
+    // Issued by 0.9.x for { boardId: "Legacy300", limit: 5 }.
+    const legacy = "eyJ2IjoxLCJzbmFwc2hvdCI6ImNjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2NjY2MiLCJxdWVyeSI6ImI5ZGI0NjE5YjM0ZTViZDBkOWU1NTg0YmJiOTcxNTMyZTUyMWJlMTg1YzkzNmZkODQwNzM2M2ZhNTczZTI5NWUiLCJyZXN1bHQiOiI0YmMzZTkwYzUwYzk2YzkxMDczNDJjOGRhYWYxYjNkZTBiNzY4MzIyMzc4OTVjMzI3ZWM3NzMwYjI5NDVjODY0Iiwib2Zmc2V0Ijo1LCJwYWdlIjoyfQ";
+    const { structuredContent: first } = await getBoardContext({ boardId: "Legacy300", limit: 5 });
+    const fromShort = await getBoardContext({ boardId: "Legacy300", limit: 5, cursor: first.nextCursor });
+    const fromLegacy = await getBoardContext({ boardId: "Legacy300", limit: 5, cursor: legacy });
+    expect(fromLegacy.structuredContent.evidence.map((item) => item.evidenceId)).toEqual(["ev_c9ae0389569ceffa8c030e703a863f1d",
+      "ev_08f4ebee1b7852b9189df4e225812ced", "ev_109c6384b93ae735cdd9b2099c44c45a", "ev_682030caa78cf7ada4e39537dedf2eac", "ev_59bd2c1ab0f6b069809d5bb6a4081135"]);
+    expect(fromLegacy.text).toBe(fromShort.text);
+    expect(fromLegacy.structuredContent.nextCursor).toBe(fromShort.structuredContent.nextCursor);
+    await expect(getBoardContext({ boardId: "Legacy300", limit: 6, cursor: legacy })).rejects.toThrow(/Cursor does not match/);
   });
 
   it("rejects a cursor if refinement changes the results under the same source snapshot", async () => {
@@ -209,7 +240,7 @@ describe("getBoardContext", () => {
     const refined = structuredClone(data);
     refined.clusters[0]!.summary = "The visual interpretation contains a green button.";
     setBoard(data.boardId, refined);
-    await expect(getBoardContext({ boardId: data.boardId, limit: 1, cursor: first.nextCursor })).rejects.toThrow(/results changed/);
+    await expect(getBoardContext({ boardId: data.boardId, limit: 1, cursor: first.nextCursor })).rejects.toThrow(/after an ingest refined the board/);
   });
 
   it("bounds the complete MCP response, including UTF-8 bytes and duplicated readable content", async () => {

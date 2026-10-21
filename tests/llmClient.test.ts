@@ -343,23 +343,31 @@ describe("chatJson", () => {
     expect(createMock).toHaveBeenCalledTimes(3);
   });
 
-  it("reports the provider's message only to an explicit callback, bounded and without metadata.raw", async () => {
+  it("reports each failed candidate only to an explicit callback, bounded and without metadata.raw", async () => {
     const message = `Provider returned error ${"x".repeat(300)}`;
     const failure = () => providerError(404, message, { code: 404, metadata: { provider_name: "Synthetic", raw: "private provider body" } });
     createMock.mockRejectedValueOnce(failure()).mockRejectedValueOnce(failure());
-    const onProviderError = vi.fn();
-    const pending = chatJson(["first-model", "second-model"], MESSAGES, { ...SCHEMA_OPTIONS, onProviderError });
+    const onModelFailed = vi.fn();
+    const pending = chatJson(["first-model", "second-model"], MESSAGES, { ...SCHEMA_OPTIONS, onModelFailed });
     await expect(pending).rejects.toThrow("LLM request failed (HTTP 404). Check provider availability and configuration.");
     await expect(pending).rejects.not.toThrow(/Provider returned error|private provider body|Synthetic/);
-    expect(onProviderError).toHaveBeenCalledOnce();
-    const [reported] = onProviderError.mock.calls[0] as [string];
-    expect(reported).toHaveLength(200);
-    expect(reported).toMatch(/^Provider returned error x+$/);
-    expect(reported).not.toContain("private provider body");
-    // Short messages carry the code and the provider name.
-    createMock.mockRejectedValueOnce(providerError(404, "Provider returned error", { code: 404, metadata: { provider_name: "Synthetic", raw: "private provider body" } }));
-    await expect(chatJson("only-model", MESSAGES, { ...SCHEMA_OPTIONS, onProviderError })).rejects.toMatchObject({ status: 404 });
-    expect(onProviderError).toHaveBeenLastCalledWith("Provider returned error, code 404, provider Synthetic");
+    expect(onModelFailed.mock.calls.map(([model]) => model)).toEqual(["first-model", "second-model"]);
+    for (const [, reported] of onModelFailed.mock.calls as Array<[string, string]>) {
+      expect(reported).toHaveLength(200);
+      expect(reported).toMatch(/^Provider returned error x+$/);
+      expect(reported).not.toContain("private provider body");
+    }
+    // Short messages carry the code and the provider name; a candidate that answers is not reported.
+    onModelFailed.mockClear();
+    createMock.mockRejectedValueOnce(providerError(404, "Provider returned error", { code: 404, metadata: { provider_name: "Synthetic", raw: "private provider body" } }))
+      .mockResolvedValueOnce(okCompletion('{"ok":true}'));
+    await expect(chatJson(["first-model", "second-model"], MESSAGES, { ...SCHEMA_OPTIONS, onModelFailed })).resolves.toEqual({ ok: true });
+    expect(onModelFailed.mock.calls).toEqual([["first-model", "Provider returned error, code 404, provider Synthetic"]]);
+    // Without a provider body, the error message is reported.
+    onModelFailed.mockClear();
+    createMock.mockResolvedValueOnce(okCompletion("not json"));
+    await expect(chatJson("only-model", MESSAGES, { ...SCHEMA_OPTIONS, onModelFailed })).rejects.toThrow("did not return valid JSON");
+    expect(onModelFailed).toHaveBeenCalledExactlyOnceWith("only-model", "LLM (only-model) did not return valid JSON.");
   });
 
   it("falls back to the next model when the first model returns invalid JSON", async () => {

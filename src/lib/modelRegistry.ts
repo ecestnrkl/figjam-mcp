@@ -18,19 +18,19 @@ interface RoleModelDefaults {
 
 /**
  * Free OpenRouter models (checked against /api/v1/models in October 2026).
- * Text starts with Nemotron 3 Super, a free model with structured outputs, and
- * falls back to the openrouter/free router. Vision uses only the router: it
- * picks a free model that accepts images and structured outputs, so the preset
- * does not depend on one free vision model staying available. fastText is only
- * used by diagnose_llm_config and mirrors text.
+ * Every role uses only the openrouter/free router: it picks a free model that
+ * supports structured outputs (and images for vision), so the preset does not
+ * depend on one free model staying available. A single free model with one
+ * provider endpoint, such as Nemotron 3 Super, failed for hours and cost every
+ * text request an extra request. fastText is only used by diagnose_llm_config.
  */
-const STUDENT_FREE_TEXT_MODELS = ["nvidia/nemotron-3-super-120b-a12b:free", "openrouter/free"];
+const STUDENT_FREE_MODELS = ["openrouter/free"];
 
 const MODEL_PRESETS: Record<string, RoleModelDefaults> = {
   "student-free": {
-    visionModels: ["openrouter/free"],
-    textModels: STUDENT_FREE_TEXT_MODELS,
-    fastTextModels: STUDENT_FREE_TEXT_MODELS,
+    visionModels: STUDENT_FREE_MODELS,
+    textModels: STUDENT_FREE_MODELS,
+    fastTextModels: STUDENT_FREE_MODELS,
   },
 };
 
@@ -81,13 +81,11 @@ export function getModelsForRole(role: LlmRole): string[] {
   return config.textModels;
 }
 
-export function getModelConfigSignature(): string {
+/** What decides image interpretations; text models are used only by answer_from_board and diagnose_llm_config. */
+export function getVisionConfigSignature(): string {
   const config = getModelConfig();
   return [
-    config.preset,
     `vision=${config.visionModels.join(",")}`,
-    `text=${config.textModels.join(",")}`,
-    `fast=${config.fastTextModels.join(",")}`,
     `require=${config.providerRequireParameters}`,
   ].join("|");
 }

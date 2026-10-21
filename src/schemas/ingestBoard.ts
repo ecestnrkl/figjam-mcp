@@ -60,7 +60,7 @@ export const ingestBoardInputShape = {
     .boolean()
     .optional()
     .describe(
-      "Download and extract the board again, skipping the unchanged-board check and cache, and redo the image interpretation of the chosen ingestMode. Interpretations this mode does not redo (all in max_speed; in balanced those of clusters without image or drawing) are kept while a cluster's content is unchanged. The vision time budget still applies, so balanced and max_quality may need several ingests until every image is interpreted again. An unchanged board gives no new snapshot for diff_board, even with forceFullIngest. Model/configuration changes are detected automatically. Default: false",
+      "Download and extract the board again, skipping the unchanged-board check and cache, e.g. after turning credential redaction off. Image interpretations of unchanged clusters are kept, as without forceFullIngest; clusters still pending are interpreted as on any ingest. Model and prompt changes are detected automatically, so forceFullIngest is not needed for them. An unchanged board gives no new snapshot for diff_board. Default: false",
     ),
   focusNodeIds: z
     .array(z.string().trim().min(1).max(200))

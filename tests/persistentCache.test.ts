@@ -140,6 +140,12 @@ describe("v4 persistence", () => {
     expect(c.hashClusterNodes([{ ...node, table: { cells: [{ id: "cell", text: "100" }] } }])).not.toBe(c.hashClusterNodes([{ ...node, table: { cells: [{ id: "cell", text: "999" }] } }]));
     const signature = c.getRefinementSignature(); process.env.LLM_BASE_URL = "https://new-provider.example";
     expect(c.getRefinementSignature()).not.toBe(signature);
+    // Only what decides image interpretations counts; text models do not.
+    const vision = c.getRefinementSignature();
+    process.env.LLM_TEXT_MODELS = "other/text"; process.env.LLM_FAST_TEXT_MODELS = "other/fast";
+    expect(c.getRefinementSignature()).toBe(vision);
+    process.env.LLM_PROVIDER_REQUIRE_PARAMETERS = "false";
+    expect(c.getRefinementSignature()).not.toBe(vision);
   });
   it("respects another process's cache lock and supports cancellation while waiting", async () => {
     await mkdir(path.join(root, "v4", ".write-lock"), { recursive: true });

@@ -205,12 +205,16 @@ describe("LLM requests through real local HTTP and the OpenAI SDK", () => {
     const diagnosis = await diagnoseLlmConfig();
     expect(diagnosis.checks.map(check => check.ok)).toEqual([false, false, false]);
     for (const check of diagnosis.checks) {
-      const [generic, provider] = check.error!.split(" Provider message: ");
-      expect(generic).toBe("LLM request failed (HTTP 404). Check provider availability and configuration.");
-      expect(provider).toMatch(/^Provider returned error: (synthetic detail )+/);
-      expect(provider!.length).toBeLessThanOrEqual(200);
+      expect(check.attempts!.map(attempt => attempt.ok)).toEqual(check.attempts!.map(() => false));
+      for (const attempt of check.attempts!) {
+        expect(attempt.error).toMatch(/^Provider returned error: (synthetic detail )+/);
+        expect(attempt.error!.length).toBeLessThanOrEqual(200);
+        expect(check.error).toContain(`${attempt.model}: ${attempt.error}`);
+      }
       expect(check.error).not.toContain(raw);
     }
+    expect(diagnosis.checks.map(check => check.attempts!.map(attempt => attempt.model))).toEqual([
+      ["text/first", "text/second"], ["text/first", "text/second"], ["vision/only"]]);
     // Both text checks moved to the second candidate after the 404.
     expect(requests.map(request => request.model).sort()).toEqual(["text/first", "text/first", "text/second", "text/second", "vision/only"]);
     const board = evidenceBoard("ProviderError123");

@@ -141,6 +141,8 @@ async function performIngest(input: IngestBoardInput, options: OperationOptions)
   const connectorEdges = extractConnectorEdges(nodes);
   const nodeHash = hashNormalizedNodes(nodes);
   const snapshotId = buildSnapshotId(fileKey, nodeHash);
+  // Only a previous snapshot of the same extraction version can be compared.
+  const contentChanged = previousBoard?.extractionVersion === EXTRACTION_VERSION ? previousBoard.snapshotId !== snapshotId : undefined;
   const refinementSignature = getRefinementSignature();
   const cacheKey = buildBoardCacheKey({ fileKey, nodeHash, docStructureHint: input.docStructureHint,
     customPhases: input.customPhases, ingestMode });
@@ -160,7 +162,7 @@ async function performIngest(input: IngestBoardInput, options: OperationOptions)
     await progress("persist", 4);
     await publishBoard(board, signal);
     await complete();
-    return ingestResult(board);
+    return ingestResult(board, contentChanged);
   }
   await progress("cluster", 2);
   const reuseBoard = cached ?? previousBoard;
@@ -186,9 +188,8 @@ async function performIngest(input: IngestBoardInput, options: OperationOptions)
     const members = clusterNodesByIndex[index]!;
     const contentHash = contentHashes.get(cluster.id)!;
     const previous = reuseIndex.get(contentHash);
-    // A forced ingest redoes the vision of its mode and keeps interpretations it would not redo.
-    const redo = input.forceFullIngest && shouldUseVision(members, ingestMode);
-    if (previous && !redo && canReusePrevious(previous, members, ingestMode)) {
+    // forceFullIngest re-reads the board only; interpretations of unchanged clusters are kept in every mode.
+    if (previous && canReusePrevious(previous, members, ingestMode)) {
       refined[index] = { ...reuseCluster(cluster, previous, contentHash), cacheHit: true };
       reusedCount++;
     } else if (shouldUseVision(members, ingestMode)) visionQueue.push(index);
@@ -349,7 +350,7 @@ async function performIngest(input: IngestBoardInput, options: OperationOptions)
   await progress("persist", 4);
   await publishBoard(board, signal);
   await complete();
-  return ingestResult(board);
+  return ingestResult(board, contentChanged);
 }
 async function publishBoard(board: BoardData, signal?: AbortSignal): Promise<void> {
   signal?.throwIfAborted();
@@ -361,14 +362,14 @@ async function publishBoard(board: BoardData, signal?: AbortSignal): Promise<voi
   }
   setBoard(board.boardId, board);
 }
-function ingestResult(board: BoardData): IngestBoardOutput {
+function ingestResult(board: BoardData, contentChanged?: boolean): IngestBoardOutput {
   const qualityReport = board.qualityReport ?? buildQualityReport(board.clusters, 0);
   return { boardId: board.boardId, ingestMode: board.ingestMode, clusterCount: board.clusters.length,
     relationCount: board.clusterRelations?.length ?? 0, qualityReport,
     snapshotId: board.snapshotId, figmaVersion: board.figmaVersion,
     freshnessCheckedAt: board.freshnessCheckedAt === undefined ? undefined : new Date(board.freshnessCheckedAt).toISOString(),
     persistenceWarning: board.persistenceWarning,
-    summary: buildSummary(board, qualityReport) };
+    summary: buildSummary(board, qualityReport, contentChanged) };
 }
 
 type VisionStage = "render" | "model";
@@ -843,7 +844,7 @@ function buildQualityReport(
 /** Boards with sections are summarized by their largest sections, the way to read them next. */
 const LARGEST_SECTIONS_IN_SUMMARY = 8;
 
-function buildSummary(board: BoardData, qualityReport: IngestQualityReport): string {
+function buildSummary(board: BoardData, qualityReport: IngestQualityReport, contentChanged?: boolean): string {
   const { fileKey, clusters, docStructureHint, ingestMode } = board;
   // get_board_context reads redactBoard(board); counting on that object builds its search index once.
   const { largestLine: largestSections, outsideSections } = sectionGuide(redactBoard(board), LARGEST_SECTIONS_IN_SUMMARY);
@@ -862,6 +863,9 @@ function buildSummary(board: BoardData, qualityReport: IngestQualityReport): str
         + ` Original extracted texts, tables and node references remain available for search.`
         + describeNextSteps(qualityReport)
       : "";
+  const changeNote = contentChanged === undefined ? ""
+    : contentChanged ? ` The board content changed since the previous ingest; call diff_board with boardId ${fileKey} to see what changed.`
+      : " The board content is unchanged since the previous ingest.";
   const cacheNote =
     qualityReport.cachedClusters > 0 ? ` Loaded ${qualityReport.cachedClusters} clusters from cache.` : "";
   const reuseNote =
@@ -874,7 +878,7 @@ function buildSummary(board: BoardData, qualityReport: IngestQualityReport): str
       + ` ${requests.renders} render request${requests.renders === 1 ? "" : "s"} (Tier 1).` : "";
   const focusNote = qualityReport.focus ? describeFocus(qualityReport.focus, ingestMode) : "";
   return (
-    `Ingested board ${fileKey}: ${overview}${cacheNote}${reuseNote}`
+    `Ingested board ${fileKey}: ${overview}${changeNote}${cacheNote}${reuseNote}`
     + ` ${qualityReport.visionClusters} visually interpreted; ${qualityReport.deterministicClusters} use extracted text.${requestNote}${focusNote}${fallbackNote}`
   );
 }
@@ -916,8 +920,8 @@ function describeNextSteps(report: IngestQualityReport): string {
   if (reasons.auth) instructions.push("Check Figma and model-provider access permissions; diagnose_llm_config can test the configured model provider.");
   if (report.nextRetryAt) instructions.push(`Retry after ${new Date(report.nextRetryAt).toISOString()} for the pending provider cooldown.`);
   instructions.push(reasons.time_budget || reasons.vision_budget
-    ? "Run ingest_board again without forceFullIngest to continue the remaining visual interpretation; finished clusters are reused."
-    : "Re-ingest without forceFullIngest to retain successful interpretations and retry pending work.");
+    ? "Run ingest_board again to continue the remaining visual interpretation; finished clusters are reused."
+    : "Run ingest_board again to retry pending work; successful interpretations are kept.");
   if (!report.focus) instructions.push("To interpret the images of particular sections first, pass their section IDs as focusNodeIds.");
   return ` ${instructions.join(" ")}`;
 }
