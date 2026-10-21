@@ -59,5 +59,7 @@ export async function diffBoard(input: DiffBoardInput): Promise<DiffBoardOutput>
     addedConnections: diff.addedConnections,
     removedConnections: diff.removedConnections,
     tableCellChanges: diff.tableCellChanges,
+    nodeChanges: diff.nodeChanges,
+    ...(diff.nodeChangesOmitted === undefined ? {} : { nodeChangesOmitted: diff.nodeChangesOmitted }),
   };
 }

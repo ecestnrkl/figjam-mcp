@@ -13,6 +13,7 @@ CI runs it on every push (Linux, Node 24).
 | Expected source ranked first | 18/18 |
 | Correct empty result for an unrelated topic | 2/2 |
 | Expected board changes found by `diff_board` | 20/20 |
+| Changes named in the text output | 20/20 |
 
 The corpus is small and synthetic. It measures ranking, source traceability and
 diffs, not answers on real boards.

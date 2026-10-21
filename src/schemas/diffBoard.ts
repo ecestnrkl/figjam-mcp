@@ -4,7 +4,8 @@ import { figmaFileKeySchema } from "./common.js";
 /**
  * diff_board — compares the two most recent ingest snapshots of a board
  * (or further back via compareTo) and reports what changed: new/removed/
- * modified clusters, node counts, and connector changes.
+ * modified clusters, changed nodes with their old and new text, table cells
+ * and connector changes.
  */
 
 export const diffBoardInputShape = {
@@ -64,7 +65,24 @@ export const diffBoardOutputShape = {
     previousColumn: z.number().int().nonnegative().optional(),
     currentRow: z.number().int().nonnegative().optional(),
     currentColumn: z.number().int().nonnegative().optional(),
+    tableName: z.string().optional(),
+    rowLabel: z.string().optional().describe("Text of the first cell in the row"),
+    columnLabel: z.string().optional().describe("Text of the cell in the first row of the column"),
   })).optional(),
+  nodeChanges: z.array(z.object({
+    nodeId: z.string(),
+    changeType: z.enum(["added", "removed", "edited"]),
+    nodeType: z.string(),
+    name: z.string().optional(),
+    previousName: z.string().optional(),
+    sectionId: z.string().optional().describe("Innermost section; absent outside sections"),
+    section: z.string().optional(),
+    previousText: z.string().optional().describe("Whitespace-collapsed; only the changed part of a long text"),
+    currentText: z.string().optional().describe("Whitespace-collapsed; only the changed part of a long text"),
+    url: z.string(),
+    changes: z.array(z.enum(["text", "name", "image", "rotation", "type", "appearance"])).optional(),
+  })).optional().describe("Edited, added, then removed nodes in reading order; read whole texts with get_board_context and nodeIds"),
+  nodeChangesOmitted: z.number().int().positive().optional().describe("Changed nodes beyond the first 100"),
 };
 
 export const diffBoardOutputSchema = z.object(diffBoardOutputShape);

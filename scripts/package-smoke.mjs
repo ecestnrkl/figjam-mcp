@@ -381,6 +381,11 @@ try {
     const diff = await client.callTool({ name: "diff_board", arguments: { boardId: "SmokeBoard123" } });
     assert(!diff.isError, JSON.stringify(diff));
     assert.equal(diff.structuredContent.stats.editedNodes, 1);
+    assert.match(diff.content[0].text, /\nEdited nodes \(1\):\n- sticky 1:1 outside sections: "Workshop finding version 1" → "Workshop finding version 2"\n/);
+    assert.deepEqual(diff.structuredContent.nodeChanges, [{
+      nodeId: "1:1", changeType: "edited", nodeType: "STICKY", previousText: "Workshop finding version 1",
+      currentText: "Workshop finding version 2", url: "https://www.figma.com/board/SmokeBoard123?node-id=1%3A1", changes: ["text"],
+    }]);
 
     // Exercise table rows, local retrieval, immutable source snapshots and
     // the user-visible diff together through the installed stdio entry point.
@@ -423,8 +428,11 @@ try {
     assert.equal(tableDiff.structuredContent.currentSnapshotId, tableAfter.structuredContent.snapshotId);
     assert.deepEqual(tableDiff.structuredContent.tableCellChanges, [{
       tableNodeId: "2:1", cellId: "T2:1;0;1", changeType: "modified", previousText: "Budget 100", currentText: "Budget 999",
-      previousRow: 0, currentRow: 0, previousColumn: 1, currentColumn: 1,
+      previousRow: 0, currentRow: 0, previousColumn: 1, currentColumn: 1, tableName: "Budget table", rowLabel: "Simulator",
     }]);
+    assert.deepEqual(tableDiff.structuredContent.nodeChanges, [], "Changed cells explain the edited table");
+    assert.match(tableDiff.content[0].text,
+      /\nTable cells \(1\):\n- table "Budget table" 2:1 outside sections, row 1 "Simulator", column 2: "Budget 100" → "Budget 999"\n/);
     // An image node is read from GET image fills (Tier 2) and its original download, without a render request.
     // focusNodeIds puts the image first; an unknown ID is reported, not rejected.
     const imageIngest = await ingestWithProgress(client, { figmaFileUrl: "https://www.figma.com/board/ImageBoard123/Smoke", ingestMode: "balanced",

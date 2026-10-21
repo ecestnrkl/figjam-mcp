@@ -13,6 +13,7 @@ vi.mock("../src/lib/persistentCache.js", async (importOriginal) => ({
 }));
 
 const { diffBoard } = await import("../src/tools/diffBoard.js");
+const { diffBoardOutputSchema } = await import("../src/schemas/diffBoard.js");
 
 function snapshot(createdAt: number, text: string): BoardData {
   return {
@@ -106,5 +107,27 @@ describe("diffBoard", () => {
     await expect(diffBoard({ boardId: "AbC123", compareTo: 1 })).rejects.toThrow(
       /no longer cached/,
     );
+  });
+
+  it("names edited nodes with redacted text and passes the output schema", async () => {
+    readBoardHistoryMock.mockResolvedValue([
+      { cacheKey: "k1", nodeHash: "h1", createdAt: 1000 },
+      { cacheKey: "k2", nodeHash: "h2", createdAt: 2000 },
+    ]);
+    // Snapshots cached before redaction existed still hold the raw values.
+    readCachedBoardMock.mockImplementation(async (cacheKey: string) => cacheKey === "k1"
+      ? snapshot(1000, "Café Wi-Fi\npassword: hunter2") : snapshot(2000, "Café Wi-Fi in the pilot room\npassword: hunter3"));
+
+    const output = await diffBoard({ boardId: "AbC123", compareTo: 1 });
+
+    expect(diffBoardOutputSchema.parse(output)).toEqual(output);
+    expect(output.nodeChanges).toEqual([{
+      nodeId: "1:1", changeType: "edited", nodeType: "STICKY",
+      previousText: "Café Wi-Fi password: [redacted]", currentText: "Café Wi-Fi in the pilot room password: [redacted]",
+      url: "https://www.figma.com/board/AbC123?node-id=1%3A1", changes: ["text"],
+    }]);
+    expect(output.summaryText).toContain('- sticky 1:1 outside sections: "Café Wi-Fi password: [redacted]" → ' +
+      '"Café Wi-Fi in the pilot room password: [redacted]"');
+    expect(JSON.stringify(output)).not.toMatch(/hunter/);
   });
 });

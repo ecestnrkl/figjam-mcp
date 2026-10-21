@@ -72,6 +72,7 @@ const changeCases = changeFixtures.map((fixture) => {
   return { name: fixture.name, kind: fixture.kind, changedNodeId: fixture.changedNodeId,
     ...(fixture.changedCellId ? { changedCellId: fixture.changedCellId } : {}),
     expected: fixture.expected, actual, passed: Object.entries(fixture.expected).every(([key, value]) => actual[key] === value),
+    namedInText: namedInText(fixture, diff.summaryText),
     elapsedMs: Number(elapsedMs.toFixed(3)),
   };
 });
@@ -110,14 +111,40 @@ const result = {
     cases: semanticCases,
   },
   cases,
-  revisions: { fixtures: changeCases.length, passed: changeCases.filter((item) => item.passed).length, diffMs: distribution(changeCases.map((item) => item.elapsedMs)), cases: changeCases },
+  revisions: { fixtures: changeCases.length, passed: changeCases.filter((item) => item.passed).length,
+    namedInText: changeCases.filter((item) => item.namedInText).length, diffMs: distribution(changeCases.map((item) => item.elapsedMs)), cases: changeCases },
   ...(withLlm && !groundingOnly ? { external: summarizeExternal(externalCases), externalCases } : {}),
 };
 console.log(JSON.stringify(result, null, 2));
-if (result.recallAt1 < 1 || result.correctAbstentionRate < 1 || result.fixtures !== 20 || changeCases.some((item) => !item.passed) ||
+if (result.recallAt1 < 1 || result.correctAbstentionRate < 1 || result.fixtures !== 20 ||
+    changeCases.some((item) => !item.passed || !item.namedInText) ||
     externalCases.some((item) => item.error || item.validCitationCount !== item.citationCount ||
       (item.expectedNodeId ? !item.citesExpectedNode : !item.abstained)) ||
     measuredCases.some((item) => item.error || item.validCitationCount !== item.citationCount)) process.exitCode = 1;
+
+/** Whether one line of diff_board's text output names the fixture's change. */
+function namedInText(fixture, summaryText) {
+  const lines = summaryText.split("\n");
+  const line = (...parts) => lines.some((text) => parts.every((part) => text.includes(part)));
+  // Texts up to 160 characters appear whole; of a longer one, its start or the changed words.
+  const shown = (text, longPart) => {
+    const collapsed = text.replace(/\s+/g, " ").trim();
+    return collapsed.length <= 160 ? collapsed : longPart(collapsed);
+  };
+  const nodeText = (board) => board.nodes.find((node) => node.id === fixture.changedNodeId).text;
+  if (fixture.kind === "text-edit") return line(` ${fixture.changedNodeId} `, shown(nodeText(fixture.after), () => "(revised)"));
+  if (fixture.kind === "node-added") return line(` ${fixture.changedNodeId} `, shown(nodeText(fixture.after), (text) => text.slice(0, 40)));
+  if (fixture.kind === "node-removed") return line(` ${fixture.changedNodeId} `, shown(nodeText(fixture.before), (text) => text.slice(0, 40)));
+  if (fixture.kind === "table-cell-edit") {
+    const cellOf = (board) => board.nodes.find((node) => node.id === fixture.changedNodeId).table.cells
+      .find((cell) => cell.id === fixture.changedCellId);
+    const before = cellOf(fixture.before);
+    const after = cellOf(fixture.after);
+    return line(` ${fixture.changedNodeId} `, `row ${after.row + 1}`, `column ${after.column + 1}`, `"${before.text}" → "${after.text}"`);
+  }
+  const label = fixture.after.connectorEdges[0].label;
+  return line("- new: ", `"${label}"`) && line("- removed: ", `"${label}"`);
+}
 
 /** Excerpts that contain the expected node: its own, or the table row that holds an expected cell. */
 function expectedEvidenceIds(board, nodeId) {

@@ -285,4 +285,195 @@ describe("diffBoards", () => {
     expect(diff.stats).toMatchObject({ newClusters: 0, removedClusters: 0, modifiedClusters: 0, unchangedClusters: 2,
       addedConnections: 0, removedConnections: 0 });
   });
+
+  describe("nodeChanges", () => {
+    const section = node("5:80", undefined, { type: "SECTION", name: "4 · Decisions & next steps" });
+    const sticky = (text: string, overrides: Partial<NormalizedNode> = {}) =>
+      node("5:87", text, { name: "Sticky", sectionIds: ["5:80"], contentFingerprint: text, ...overrides });
+    const pair = (before: NormalizedNode[], after: NormalizedNode[]) => diffBoards(
+      board([section, ...before], [cluster("decisions", "Decisions", before.map((item) => item.id))], 1),
+      board([section, ...after], [cluster("decisions", "Decisions", after.map((item) => item.id))], 2));
+
+    it("names an edited sticky with its section, both texts and a link", () => {
+      const diff = pair([sticky("Decision: The pilot starts on Monday, 2 Nov, in the main café.")],
+        [sticky("Decision: The pilot starts on Monday, 9 Nov, in the main café.")]);
+      expect(diff.nodeChanges).toEqual([{
+        nodeId: "5:87", changeType: "edited", nodeType: "STICKY", sectionId: "5:80", section: "4 · Decisions & next steps",
+        previousText: "Decision: The pilot starts on Monday, 2 Nov, in the main café.",
+        currentText: "Decision: The pilot starts on Monday, 9 Nov, in the main café.",
+        url: "https://www.figma.com/board/board?node-id=5%3A87", changes: ["text"],
+      }]);
+      expect(diff.nodeChangesOmitted).toBeUndefined();
+      expect(diff.summaryText).toContain("Edited nodes (1):\n" +
+        '- sticky 5:87 in "4 · Decisions & next steps": "Decision: The pilot starts on Monday, 2 Nov, in the main café." → ' +
+        '"Decision: The pilot starts on Monday, 9 Nov, in the main café."\nNodes: +0 added / -0 removed / 1 edited.');
+    });
+
+    it("shows only the changed words of a long text, with context", () => {
+      const filler = (word: string) => Array.from({ length: 50 }, (_, index) => `${word}${index}`).join(" ");
+      const text = (changed: string) => `${filler("alpha")} ${changed} ${filler("omega")}`;
+      const diff = pair([sticky(text("Monday"))], [sticky(text("Tuesday"))]);
+      const [change] = diff.nodeChanges;
+      expect(text("Monday").length).toBeGreaterThan(600);
+      expect(change?.previousText).toMatch(/^….* Monday .*…$/);
+      expect(change?.currentText).toMatch(/^….* Tuesday .*…$/);
+      expect(change?.currentText).toContain("alpha49 Tuesday omega0");
+      for (const excerpt of [change!.previousText!, change!.currentText!]) {
+        expect(excerpt.length).toBeLessThanOrEqual(300);
+        expect(excerpt).toMatch(/^…alpha\d+ .* omega\d+…$/); // cut at word boundaries
+      }
+      expect(diff.summaryText).toContain(`"${change!.previousText}" → "${change!.currentText}"`);
+
+      const rewritten = pair([sticky("x ".repeat(400))], [sticky("y ".repeat(400))]).nodeChanges[0]!;
+      expect(rewritten.previousText!.length).toBeLessThanOrEqual(300);
+      expect(rewritten.currentText).toMatch(/^y y .*…$/);
+    });
+
+    it("names added and removed nodes with their first 160 characters", () => {
+      const long = "Budget review ".repeat(20);
+      const diff = pair([sticky("Old idea"), node("5:90", long, { name: "Sticky", sectionIds: ["5:80"] })],
+        [sticky("Old idea"), node("5:91", "New idea", { type: "TEXT", name: "New idea" })]);
+      expect(diff.nodeChanges).toEqual([
+        expect.objectContaining({ nodeId: "5:91", changeType: "added", nodeType: "TEXT", currentText: "New idea" }),
+        expect.objectContaining({ nodeId: "5:90", changeType: "removed", sectionId: "5:80", previousText: `${long.slice(0, 160)}…` }),
+      ]);
+      expect(diff.nodeChanges[0]).not.toHaveProperty("name");
+      expect(diff.nodeChanges[0]).not.toHaveProperty("changes");
+      expect(diff.summaryText).toContain('Added nodes (1):\n- text 5:91 outside sections: "New idea"');
+      expect(diff.summaryText).toContain(`Removed nodes (1):\n- sticky 5:90 in "4 · Decisions & next steps": "${long.slice(0, 160)}…"`);
+    });
+
+    it("names a replaced image", () => {
+      const image = (imageRef: string) => node("5:95", undefined, { type: "RECTANGLE", name: "Café floor plan", imageRef, sectionIds: ["5:80"] });
+      const diff = pair([image("old-ref")], [image("new-ref")]);
+      expect(diff.nodeChanges).toEqual([expect.objectContaining({ nodeId: "5:95", name: "Café floor plan", changes: ["image"] })]);
+      expect(diff.summaryText).toContain('- image "Café floor plan" 5:95 in "4 · Decisions & next steps": image replaced');
+    });
+
+    it("calls a change of color or size an appearance change", () => {
+      const color = pair([sticky("Same", { contentFingerprint: "yellow" })], [sticky("Same", { contentFingerprint: "green" })]);
+      expect(color.nodeChanges).toEqual([expect.objectContaining({ previousText: "Same", currentText: "Same", changes: ["appearance"] })]);
+      expect(color.summaryText).toContain('- sticky 5:87 in "4 · Decisions & next steps": appearance changed (color, size or style)');
+      const size = pair([sticky("Same", { contentFingerprint: "100" })], [sticky("Same", { width: 200, contentFingerprint: "200" })]);
+      expect(size.nodeChanges[0]?.changes).toEqual(["appearance"]);
+    });
+
+    it("says when texts differ only in whitespace", () => {
+      const diff = pair([sticky("Pilot  starts\nMonday")], [sticky("Pilot starts Monday")]);
+      expect(diff.nodeChanges).toEqual([expect.objectContaining({
+        previousText: "Pilot starts Monday", currentText: "Pilot starts Monday", changes: ["text"],
+      })]);
+      expect(diff.summaryText).toContain('5:87 in "4 · Decisions & next steps": text changed only in whitespace: "Pilot starts Monday"');
+    });
+
+    it("shows the start of an unchanged long text", () => {
+      const long = Array.from({ length: 40 }, (_, index) => `word${index}`).join(" ");
+      const text = (fill: string) => node("5:88", long, { type: "TEXT", name: "Notes", contentFingerprint: fill });
+      const change = pair([text("yellow")], [text("green")]).nodeChanges[0]!;
+      expect(long.length).toBeGreaterThan(160);
+      expect(change.changes).toEqual(["appearance"]);
+      for (const excerpt of [change.previousText!, change.currentText!]) {
+        expect(excerpt).toBe(`${long.slice(0, 160)}…`);
+        expect(excerpt.length).toBeLessThanOrEqual(161);
+      }
+    });
+
+    it("shows the start of a long text that changed only in whitespace", () => {
+      const words = Array.from({ length: 40 }, (_, index) => `word${index}`);
+      const diff = pair([sticky(words.join("  "))], [sticky(words.join(" "))]);
+      const start = words.join(" ").slice(0, 160);
+      expect(diff.nodeChanges[0]).toMatchObject({ previousText: `${start}…`, currentText: `${start}…`, changes: ["text"] });
+      expect(diff.summaryText).toContain(`text changed only in whitespace: "${start}…"`);
+    });
+
+    it("lists at most 100 entries and 20 lines per block", () => {
+      const notes = (suffix: string) => Array.from({ length: 150 }, (_, index) => node(`9:${index}`, `Note ${index}${suffix}`, { y: index }));
+      const diff = pair(notes(""), notes(" (revised)"));
+      expect(diff.nodeChanges).toHaveLength(100);
+      expect(diff.nodeChangesOmitted).toBe(50);
+      expect(diff.nodeChanges.slice(0, 2).map((change) => change.nodeId)).toEqual(["9:0", "9:1"]);
+      const block = diff.summaryText.split("Edited nodes (150):\n")[1]!.split("\n");
+      expect(block.slice(0, 20).every((line) => line.startsWith("- sticky 9:"))).toBe(true);
+      expect(block[20]).toBe("- … and 130 more");
+    });
+  });
+
+  describe("table cells", () => {
+    const section = node("5:100", undefined, { type: "SECTION", name: "3 · Ideas" });
+    const rows = [["Feature", "Owner", "Effort", "Status"], ["Pre-orders", "Ana", "M", "Done"], ["Sold-out badges", "Cem", "S", "In scope"]];
+    const columnIds = ["5:5", "5:6", "5:7", "5:8"];
+    // Cells as the REST API returns them: no stored row or column.
+    const table = (grid: string[][], rowIds = grid.map((_, row) => `5:${row}`), name = "Feature priorities") => {
+      const cells = grid.flatMap((cells, row) => cells.map((text, column) => ({ id: `T5:119;${rowIds[row]};${columnIds[column]}`, text })));
+      return node("5:119", cells.map((cell) => cell.text).join("\n"), { type: "TABLE", name, sectionIds: ["5:100"], table: { cells } });
+    };
+    const edit = (row: number, column: number, text: string) =>
+      rows.map((cells, r) => cells.map((value, c) => r === row && c === column ? text : value));
+    const pair = (before: NormalizedNode[], after: NormalizedNode[]) => diffBoards(
+      board([section, ...before], [cluster("ideas", "Ideas", before.map((item) => item.id))], 1),
+      board([section, ...after], [cluster("ideas", "Ideas", after.map((item) => item.id))], 2));
+
+    it("names a changed cell with table, row and column from its ID", () => {
+      const diff = pair([table(rows)], [table(edit(2, 3, "In pilot"))]);
+      expect(diff.tableCellChanges).toEqual([{
+        tableNodeId: "5:119", cellId: "T5:119;5:2;5:8", changeType: "modified", previousText: "In scope", currentText: "In pilot",
+        previousRow: 2, previousColumn: 3, currentRow: 2, currentColumn: 3,
+        tableName: "Feature priorities", rowLabel: "Sold-out badges", columnLabel: "Status",
+      }]);
+      expect(diff.nodeChanges).toEqual([]);
+      expect(diff.summaryText).toContain("Table cells (1):\n" +
+        '- table "Feature priorities" 5:119 in "3 · Ideas", row 3 "Sold-out badges", column 4 "Status": "In scope" → "In pilot"\n' +
+        "Nodes: +0 added / -0 removed / 1 edited.");
+      expect(diff.summaryText).not.toContain("Edited nodes");
+    });
+
+    it("gives a header cell no label of its own", () => {
+      const status = pair([table(rows)], [table(edit(0, 3, "State"))]).tableCellChanges[0]!;
+      expect(status).toMatchObject({ currentRow: 0, currentColumn: 3, rowLabel: "Feature" });
+      expect(status).not.toHaveProperty("columnLabel");
+      const corner = pair([table(rows)], [table(edit(0, 0, "Item"))]).tableCellChanges[0]!;
+      expect(corner).not.toHaveProperty("rowLabel");
+      expect(corner).not.toHaveProperty("columnLabel");
+      const unnamed = pair([table(rows, undefined, "Table 3")], [table(edit(0, 0, "Item"), undefined, "Table 3")]);
+      expect(unnamed.tableCellChanges[0]).not.toHaveProperty("tableName");
+      expect(unnamed.summaryText).toContain('- table 5:119 in "3 · Ideas", row 1, column 1: "Feature" → "Item"');
+    });
+
+    it("shows the start of a long cell that changed only in whitespace", () => {
+      const words = Array.from({ length: 40 }, (_, index) => `word${index}`);
+      const diff = pair([table(edit(2, 3, words.join("  ")))], [table(edit(2, 3, words.join(" ")))]);
+      expect(diff.summaryText).toContain(
+        `column 4 "Status": text changed only in whitespace: "${words.join(" ").slice(0, 160)}…"`);
+    });
+
+    it("keeps a cell readable when the IDs form no complete rectangle", () => {
+      const ragged = (grid: string[][]) => {
+        const result = table(grid);
+        result.table!.cells.pop();
+        return result;
+      };
+      const diff = pair([ragged(rows)], [ragged(edit(1, 3, "Blocked"))]);
+      expect(diff.tableCellChanges).toEqual([expect.objectContaining({ cellId: "T5:119;5:1;5:8", currentText: "Blocked" })]);
+      expect(diff.tableCellChanges[0]?.currentRow).toBeUndefined();
+      expect(diff.tableCellChanges[0]).not.toHaveProperty("rowLabel");
+      expect(diff.summaryText).toContain('- table "Feature priorities" 5:119 in "3 · Ideas", cell T5:119;5:1;5:8: "Done" → "Blocked"');
+    });
+
+    it("reports only the new cells of an inserted row", () => {
+      const inserted = [rows[0]!, ["Group orders", "Dana", "L", "Idea"], ...rows.slice(1)];
+      const diff = pair([table(rows)], [table(inserted, ["5:0", "5:9", "5:1", "5:2"])]);
+      expect(diff.tableCellChanges.map((change) => [change.changeType, change.cellId, change.currentRow, change.currentColumn])).toEqual([
+        ["added", "T5:119;5:9;5:5", 1, 0], ["added", "T5:119;5:9;5:6", 1, 1],
+        ["added", "T5:119;5:9;5:7", 1, 2], ["added", "T5:119;5:9;5:8", 1, 3],
+      ]);
+      expect(diff.summaryText).toContain('- table "Feature priorities" 5:119 in "3 · Ideas", row 2 "Group orders", column 4 "Status": added "Idea"');
+    });
+
+    it("lists a new table once under added nodes", () => {
+      const diff = pair([], [table(rows)]);
+      expect(diff.tableCellChanges).toHaveLength(12);
+      expect(diff.summaryText).toContain('Added nodes (1):\n- table "Feature priorities" 5:119 in "3 · Ideas": "Feature Owner Effort Status');
+      expect(diff.summaryText).not.toContain("Table cells");
+    });
+  });
 });
