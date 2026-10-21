@@ -148,7 +148,9 @@ async function performIngest(input: IngestBoardInput, options: OperationOptions)
   const cached = cacheCandidate?.extractionVersion === EXTRACTION_VERSION ? cacheCandidate : undefined;
   if (cached && !cached.clusters.some(cluster => cluster.incomplete)) {
     const clusterNodes = clusterMembers(cached.clusters, nodes);
-    const clusters = labelDeterministicClusters(cached.clusters, clusterNodes, nodes).map(cluster => ({ ...cluster, cacheHit: true }));
+    // Phases follow the recomputed labels, as on a full ingest.
+    const clusters = mapClustersToPhases(labelDeterministicClusters(cached.clusters, clusterNodes, nodes),
+      input.docStructureHint, input.customPhases).map(cluster => ({ ...cluster, cacheHit: true }));
     const focus = resolveFocus(input.focusNodeIds, clusterNodes, nodes);
     // Cached labels and summaries may predate redaction being switched on.
     const board = redactBoard({ ...cached, clusters, freshnessCheckedAt, figmaVersion, figmaLastModified,

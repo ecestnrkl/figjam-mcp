@@ -4,10 +4,12 @@
 
 - Clusters without a model label that hold at least two texts in one section are named after it: the section name if
   it holds no other cluster, else "<section>: <first text>". Other clusters take their first text in reading order
-  instead of member order. Labels are recomputed on every ingest, so existing snapshots get them with the next one.
+  instead of member order. Labels are recomputed on every ingest, so existing snapshots get them with the next one;
+  phases from `docStructureHint` and `customPhases` follow the new labels.
 - An arrow's text is no longer a loose excerpt; it stays the arrow's label in `connections`, relations and
-  `diff_board`. `get_board_context` shows every arrow with at least one end on the page and names an end that is not
-  with its short text in the new optional `fromText` or `toText`. `answer_from_board` keeps only arrows between its
+  `diff_board`. `get_board_context` shows an arrow once one of its ends, or a section, frame or group around one, is
+  on the page, never an arrow to a page, and names an end that is no excerpt of the page with its short text (a section
+  with its name) in the new optional `fromText` or `toText`. `answer_from_board` keeps only arrows between its
   excerpts.
 
 ## 0.9.1 — 2026-10-20

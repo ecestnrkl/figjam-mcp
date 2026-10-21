@@ -50,8 +50,14 @@ export interface EvidenceConnection {
   url: string;
 }
 
-/** "both": arrows between displayed nodes; "either": also arrows with one displayed end. */
+/**
+ * "both": arrows between displayed nodes. "either": also arrows with one end displayed
+ * or a section, frame or group around a displayed node; never arrows to a page.
+ */
 export type ConnectionEnds = "both" | "either";
+/** An arrow end of these types is on the page when a displayed excerpt lies inside it. */
+const ENCLOSING_END_TYPES = new Set(["SECTION", "FRAME", "GROUP"]);
+const PAGE_END_TYPES = new Set(["DOCUMENT", "CANVAS", "PAGE"]);
 
 /** Length of the short text that names an end outside the displayed excerpts. */
 const END_TEXT_CHARS = 80;
@@ -227,11 +233,9 @@ export function retrieveEvidence(board: BoardData, options: EvidenceQuery = {}):
  */
 export function connectionsForEvidence(board: BoardData, evidence: Evidence[], ends: ConnectionEnds = "both"): EvidenceConnection[] {
   const selected = displayedNodeIds(evidence);
-  let nodesById: Map<string, NormalizedNode> | undefined;
   const endText = (nodeId: string) => {
     if (selected.has(nodeId)) return undefined;
-    nodesById ??= new Map(board.nodes.map((node) => [node.id, node]));
-    const node = nodesById.get(nodeId);
+    const node = boardLookups(board).nodesById.get(nodeId);
     const text = (node?.text?.trim() || node?.name.trim() || "").replace(/\s+/g, " ");
     return text ? boundedText(text, END_TEXT_CHARS) : undefined;
   };
@@ -268,9 +272,28 @@ function displayedNodeIds(evidence: Evidence[]): Set<string> {
 }
 
 function matchingConnections(board: BoardData, selected: ReadonlySet<string>, ends: ConnectionEnds): ConnectorEdge[] {
-  return (board.connectorEdges ?? []).filter((edge) => ends === "both"
-    ? selected.has(edge.fromNodeId) && selected.has(edge.toNodeId)
-    : selected.has(edge.fromNodeId) || selected.has(edge.toNodeId));
+  const edges = board.connectorEdges ?? [];
+  if (ends === "both") return edges.filter((edge) => selected.has(edge.fromNodeId) && selected.has(edge.toNodeId));
+  if (!edges.length) return [];
+  const { nodesById, enclosing } = boardLookups(board);
+  const type = (id: string) => nodesById.get(id)?.type ?? "";
+  const around = new Set<string>();
+  for (const id of selected) for (const container of enclosing(id)) if (ENCLOSING_END_TYPES.has(type(container))) around.add(container);
+  const onPage = (id: string) => selected.has(id) || around.has(id);
+  return edges.filter((edge) => !PAGE_END_TYPES.has(type(edge.fromNodeId)) && !PAGE_END_TYPES.has(type(edge.toNodeId)) &&
+    (onPage(edge.fromNodeId) || onPage(edge.toNodeId)));
+}
+
+// One lookup per published snapshot; a page is fitted to its budget with many calls.
+const lookups = new WeakMap<BoardData, { nodesById: Map<string, NormalizedNode>; enclosing: (nodeId: string) => Set<string> }>();
+
+function boardLookups(board: BoardData): { nodesById: Map<string, NormalizedNode>; enclosing: (nodeId: string) => Set<string> } {
+  let found = lookups.get(board);
+  if (!found) {
+    found = { nodesById: new Map(board.nodes.map((node) => [node.id, node])), enclosing: enclosingIdsLookup(board) };
+    lookups.set(board, found);
+  }
+  return found;
 }
 
 /** Requested IDs of pages, sections, frames and groups, in request order. */

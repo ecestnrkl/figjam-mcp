@@ -93,7 +93,7 @@ export const getBoardContextOutputShape = {
   snapshotId: z.string(),
   evidence: z.array(evidenceSchema),
   connections: z.array(evidenceConnectionSchema)
-    .describe("Arrows with at least one end among this page's excerpts; the label is the text on the arrow"),
+    .describe("Arrows with at least one end, or a section, frame or group around one, among this page's excerpts; never arrows to a page. The label is the text on the arrow"),
   totalMatched: z.number().int().nonnegative(),
   truncated: z.boolean(),
   nextCursor: z.string().optional(),

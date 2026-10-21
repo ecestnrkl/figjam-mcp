@@ -459,6 +459,32 @@ describe("getBoardContext text and structured content", () => {
     }
   });
 
+  it("shows an arrow between sections once an excerpt inside one is on the page, never one to a page", async () => {
+    const container = (id: string, name: string, type = "SECTION") =>
+      ({ id, name, type, x: 0, y: 0, width: 1, height: 1, rotation: 0, pageId: "0:1", ...(type === "SECTION" ? { sectionIds: [id] } : {}) });
+    const data = evidenceBoard("Sections123", [
+      { ...textNode("1:1", "Interview notes"), sectionIds: ["S:R"] },
+      { ...textNode("1:2", "Affinity map"), sectionIds: ["S:S"] },
+      { ...textNode("1:3", "Parking"), sectionIds: ["S:O"] },
+    ]);
+    data.nodes.push(container("0:1", "Page 1", "CANVAS"), container("S:R", "Research"), container("S:S", "Synthesis"), container("S:O", "Other"));
+    // Snapshots from before 0.10.0 can still hold an arrow to the canvas.
+    data.connectorEdges = [
+      { connectorId: "2:1", fromNodeId: "S:R", toNodeId: "S:S", direction: "forward", label: "feeds" },
+      { connectorId: "2:2", fromNodeId: "S:R", toNodeId: "0:1", direction: "forward", label: "anchored" },
+    ];
+    setBoard(data.boardId, data);
+    const between = { connectorId: "2:1", fromNodeId: "S:R", fromText: "Research", toNodeId: "S:S", toText: "Synthesis", label: "feeds" };
+    const research = await getBoardContext({ boardId: data.boardId, nodeIds: ["S:R"] });
+    expect(research.structuredContent.connections).toEqual([expect.objectContaining(between)]);
+    expect(research.text).toContain("- S:R «Research» → S:S «Synthesis» (feeds)");
+    expect((await getBoardContext({ boardId: data.boardId, nodeIds: ["S:O"] })).structuredContent.connections).toEqual([]);
+    const first = await getBoardContext({ boardId: data.boardId });
+    expect(first.structuredContent.evidence.map((item) => item.nodeId)).toContain("1:1");
+    expect(first.structuredContent.connections).toEqual([expect.objectContaining(between)]);
+    expect(first.text).not.toContain("anchored");
+  });
+
   it("fits arrows with one end on the page into maxChars and counts the omitted ones", async () => {
     const section = (id: string) => ({ id, name: `Section ${id}`, type: "SECTION", x: 0, y: 0, width: 1, height: 1, rotation: 0, pageId: "0:1", sectionIds: [id] });
     const inSection = (id: string, text: string, sectionId: string) => ({ ...textNode(id, text), sectionIds: [sectionId] });

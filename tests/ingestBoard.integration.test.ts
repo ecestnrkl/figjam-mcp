@@ -554,12 +554,12 @@ describe("deterministic cluster labels", () => {
   const expectLabels = async (labels: Record<string, string>) => {
     for (const [nodeId, label] of Object.entries(labels)) expect(await labelOf(nodeId), nodeId).toBe(label);
   };
-  /** Gives every persisted cluster the label an older version would have stored. */
-  async function ageLabels(): Promise<void> {
+  /** Gives every persisted cluster the label, and optionally the phase, an older version would have stored. */
+  async function ageLabels(phase?: string): Promise<void> {
     for (const file of await readdir(cacheDirectory, { recursive: true })) {
       if (!/refinement-[^/\\]+\.json$/.test(file)) continue;
       const envelope = JSON.parse(await readFile(path.join(cacheDirectory, file), "utf8"));
-      for (const cluster of envelope.derived.clusters) cluster.label = "Old label";
+      for (const cluster of envelope.derived.clusters) Object.assign(cluster, { label: "Old label" }, phase ? { phase } : {});
       await writeFile(path.join(cacheDirectory, file), JSON.stringify(envelope));
     }
   }
@@ -585,6 +585,22 @@ describe("deterministic cluster labels", () => {
     const reused = await ingestBoard(speed);
     expect(reused.qualityReport).toMatchObject({ reusedClusters: 5 });
     await expectLabels(expected);
+  });
+
+  it("maps the phases of an unchanged board from the cache after relabeling, as a full ingest does", async () => {
+    const diamond = { ...speed, docStructureHint: "double_diamond" } as const;
+    activeTree = boardTree([
+      section("research", "Research", [note("r-1", "Note A", 0, 0), note("r-2", "Note B", 0, 150)]),
+      section("synthesis", "Synthesis", [note("s-1", "Note C", 0, 0), note("s-2", "Note D", 0, 150)]),
+    ]);
+    await ingestBoard(diamond);
+    const phases = async () => Object.fromEntries((await persistence.readLatestBoard(fileKey))!.clusters.map(cluster => [cluster.label, cluster.phase]));
+    const full = await phases();
+    expect(full).toEqual({ Research: "discover", Synthesis: "define" });
+    await ageLabels("deliver");
+    expect((await ingestBoard(diamond)).qualityReport).toMatchObject({ cachedClusters: 2 });
+    expect(fileTreeMock).toHaveBeenCalledTimes(1);
+    expect(await phases()).toEqual(full);
   });
 
   it("keeps model labels on cached and reused clusters", async () => {

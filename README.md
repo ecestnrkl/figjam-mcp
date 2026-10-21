@@ -81,8 +81,8 @@ Problems: [troubleshooting](https://github.com/ecestnrkl/figjam-mcp/blob/main/do
    from the cell IDs, and each row becomes one excerpt.
 3. **Cluster.** Nearby nodes are grouped by rotation-aware distance. Arrows
    between groups become directed relations. Clusters without a model label
-   are named after their section, and an arrow appears in the context as soon
-   as one of its ends is on the page.
+   are named after their section, and an arrow appears in the context once one
+   of its ends, or a section, frame or group around one, is on the page.
 4. **Interpret.** In `balanced` mode, clusters with an image, or drawings without
    any text, get a vision-model summary within a 40-second budget; text clusters,
    however short, keep their extracted text. A cluster starts only when the time
