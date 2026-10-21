@@ -128,16 +128,16 @@ describe("bounded Figma requests", () => {
       expect(fetchMock.mock.calls.at(-1)?.[1].signal.aborted).toBe(true);
     }
   });
-  it("cancels a stalled screenshot body and pins renders to the captured version", async () => {
+  it("cancels a stalled screenshot body and renders the current file", async () => {
     let canceled = false;
     const fetchMock = vi.fn().mockResolvedValueOnce(json({ images: { a: "https://cdn.example/a" } })).mockResolvedValueOnce(new Response(new ReadableStream({ cancel() { canceled = true; } })));
     vi.stubGlobal("fetch", fetchMock);
     const { fetchRenderUrls, downloadRenders } = await import("../src/lib/figmaApi.js");
     const controller = new AbortController();
-    const urls = await fetchRenderUrls("AbC123", ["a"], "secret", controller.signal, "version-1");
+    const urls = await fetchRenderUrls("AbC123", ["a"], "secret", controller.signal);
     const pending = downloadRenders(["a"], urls, controller.signal);
     await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2)); controller.abort();
     await expect(pending).rejects.toMatchObject({ name: "AbortError" });
-    expect(canceled).toBe(true); expect(fetchMock.mock.calls[0]?.[0]).toContain("version=version-1");
+    expect(canceled).toBe(true); expect(fetchMock.mock.calls[0]?.[0]).not.toContain("version=");
   });
 });

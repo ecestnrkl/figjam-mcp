@@ -209,7 +209,7 @@ async function performIngest(input: IngestBoardInput, options: OperationOptions)
     let request = renderRequests[batch];
     if (!request) {
       figmaRequests.renders++;
-      request = fetchRenderUrls(fileKey, renderBatches[batch]!.flatMap(index => screenshotNodes.get(index)!), token!, renderSignal, figmaVersion);
+      request = fetchRenderUrls(fileKey, renderBatches[batch]!.flatMap(index => screenshotNodes.get(index)!), token!, renderSignal);
       // Workers observe the outcome; a prefetch may end unobserved.
       request.catch(() => undefined);
       renderRequests[batch] = request;
@@ -257,7 +257,7 @@ async function performIngest(input: IngestBoardInput, options: OperationOptions)
     const renders = new Map<string, Buffer | undefined>();
     if (renderIds.length) {
       figmaRequests.renders++;
-      const renderUrls = await fetchRenderUrls(fileKey, renderIds, token!, requestSignal, figmaVersion);
+      const renderUrls = await fetchRenderUrls(fileKey, renderIds, token!, requestSignal);
       (await prepareRenders(await downloadRenders(renderIds, renderUrls, requestSignal, imageBudget), requestSignal))
         .forEach((image, position) => renders.set(renderIds[position]!, image));
     }

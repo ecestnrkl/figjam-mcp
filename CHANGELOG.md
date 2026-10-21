@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.10.1 — Unreleased
+
+- Renders for image interpretation show the current board. They were requested for the file's `version`, so Figma
+  rendered its last autosave: edited drawings looked outdated and nodes added since were missing.
+
 ## 0.10.0 — 2026-10-21
 
 - Clusters without a model label that hold at least two texts in one section are named after it: the section name if

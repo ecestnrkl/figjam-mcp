@@ -269,14 +269,14 @@ try {
         if (url.pathname === '/v1/images/LongBoard123') {
           assert.equal(process.env.SMOKE_LONG_CHECK, '1');
           record('long_render');
-          assert.equal(url.searchParams.get('version'), '1');
+          assert.equal(url.searchParams.get('version'), null, 'Renders show the current file');
           assert.equal(url.searchParams.get('ids'), '3:1');
           longRenderPending = true;
           return json({ images: { '3:1': 'https://offline-images.invalid/long.png' } });
         }
         if (url.pathname === '/v1/images/SmokeBoard123') {
           record('figma_render');
-          assert.equal(url.searchParams.get('version'), '2');
+          assert.equal(url.searchParams.get('version'), null, 'Renders show the current file');
           assert.equal(url.searchParams.get('ids'), '1:1');
           return json({ images: { '1:1': 'https://offline-images.invalid/evidence.png' } });
         }

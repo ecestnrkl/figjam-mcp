@@ -277,6 +277,20 @@ describe("offline ingest pipeline with actual persistent cache", () => {
     expect(await persistence.readBoardHistory(fileKey)).toHaveLength(1);
   });
 
+  it("renders the current file instead of the last autosaved version", async () => {
+    const actual = await vi.importActual<typeof import("../src/lib/figmaApi.js")>("../src/lib/figmaApi.js");
+    const requested: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      requested.push(String(url));
+      return Response.json({ images: { table: "https://offline-images.invalid/table" } });
+    }));
+    screenshotMock.mockImplementation((...args: Parameters<typeof actual.fetchRenderUrls>) => actual.fetchRenderUrls(...args));
+    await ingestBoard(input);
+    expect(requested).toEqual([expect.stringContaining(`https://api.figma.com/v1/images/${fileKey}?`)]);
+    expect(new URL(requested[0]!).searchParams.get("ids")).toBe("table");
+    expect(new URL(requested[0]!).searchParams.has("version")).toBe(false);
+  });
+
   it("honors an explicit phase deadline and starts no queued request after it expires", async () => {
     vi.stubEnv("INGEST_BOARD_VISION_BUDGET_MS", "25");
     vi.stubEnv("INGEST_BOARD_MIN_VISION_SLOT_MS", "0");

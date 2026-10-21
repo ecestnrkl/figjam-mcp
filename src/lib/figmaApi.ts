@@ -161,11 +161,13 @@ export async function downloadOriginals(urls: Array<string | undefined>, imageMa
   } catch (error) { controller.abort(error); throw error; }
 }
 export type RenderUrls = Record<string, string | null | undefined>;
-/** One GET /v1/images request (Tier 1) for all given nodes; images are downloaded separately. */
-export async function fetchRenderUrls(fileKey: string, nodeIds: string[], token: string, signal?: AbortSignal, version?: string): Promise<RenderUrls> {
+/**
+ * One GET /v1/images request (Tier 1) for all given nodes; images are downloaded separately. Without a version, Figma
+ * renders the current file; a version renders its last autosave, without later nodes and edits.
+ */
+export async function fetchRenderUrls(fileKey: string, nodeIds: string[], token: string, signal?: AbortSignal): Promise<RenderUrls> {
   if (!nodeIds.length) throw new Error("fetchRenderUrls: nodeIds must not be empty");
   const params = new URLSearchParams({ ids: nodeIds.join(","), format: "png", scale: "1" });
-  if (version) params.set("version", version);
   const apiPath = `/images/${fileKey}?${params}`;
   const data = await readJson<{ images?: RenderUrls; err?: string }>(await figmaFetch(apiPath, token, FIGMA_REQUEST_TIMEOUT_MS, signal), apiPath, FIGMA_REQUEST_TIMEOUT_MS, signal);
   if (data.err) throw new Error("Figma could not render the requested nodes");
