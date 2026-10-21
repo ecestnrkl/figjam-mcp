@@ -257,9 +257,45 @@ describe("getBoardContext", () => {
     expect(output.nextCursor).toBeDefined();
   });
 
-  it("refuses too-small pages instead of silently dropping the rest of a source chunk", async () => {
+  it("rejects a maxChars below 2000", async () => {
     setBoard("Tiny123", evidenceBoard("Tiny123", [textNode("1:1", "evidence ".repeat(140))]));
-    await expect(getBoardContext({ boardId: "Tiny123", maxChars: 512 })).rejects.toThrow(/cannot fit one source excerpt/);
+    expect(getBoardContextInputSchema.safeParse({ boardId: "Tiny123", maxChars: 1999 }).success).toBe(false);
+    await expect(getBoardContext({ boardId: "Tiny123", maxChars: 1999 })).rejects.toThrow(/2000/);
+    expect((await getBoardContext({ boardId: "Tiny123", maxChars: 2000 })).structuredContent.evidence).toHaveLength(1);
+  });
+
+  it("returns a page at the minimum maxChars for a long label, a model summary, three nested sections and a table row", async () => {
+    const page: BoardData["nodes"][number] = { id: "0:1", name: "Workshop", type: "CANVAS", x: 0, y: 0, width: 0, height: 0, rotation: 0 };
+    const sectionIds = ["1:1", "1:2", "1:3"];
+    const worstCase = (boardId: string, inSections: boolean): BoardData => {
+      const sections = sectionIds.map((id, level) => ({ id, name: `Section level ${level + 1} `.padEnd(80, "x"), type: "SECTION",
+        x: 0, y: 0, width: 4000, height: 2000, rotation: 0, pageId: page.id, sectionIds: sectionIds.slice(0, level + 1) }));
+      const cells = Array.from({ length: 36 }, (_, index) => ({ id: `T5:1;6:${Math.floor(index / 6)};7:${index % 6}`,
+        row: Math.floor(index / 6), column: index % 6, text: `Row ${Math.floor(index / 6)} column ${index % 6} with a long cell text`.padEnd(60, ".") }));
+      const placed = inSections ? { sectionIds } : {};
+      const table = { id: "5:1", name: "Table 1", type: "TABLE", text: cells.map((cell) => cell.text).join("\n"), x: 0, y: 0, width: 3400,
+        height: 1200, rotation: 0, pageId: page.id, renderNodeId: "5:1", table: { cells }, ...placed };
+      const stickies = Array.from({ length: 6 }, (_, index) => ({ ...textNode(`6:${index}`, `Sticky ${index} `.padEnd(300, "y")), y: 2000 + index, ...placed }));
+      return { boardId, fileKey: boardId, docStructureHint: "freeform", createdAt: 1, snapshotId: "e".repeat(64),
+        nodes: [page, ...sections, table, ...stickies],
+        clusters: [{ id: "cluster_w", label: "L".repeat(160), nodeIds: [table.id, ...stickies.map((node) => node.id)], confirmedNodeIds: [table.id],
+          boundingBox: { x: 0, y: 0, width: 1, height: 1 }, summarySource: "vision_llm", modelId: "model", summary: "S".repeat(600) }] };
+    };
+    setBoard("WorstIn123", worstCase("WorstIn123", true));
+    setBoard("WorstOut123", worstCase("WorstOut123", false));
+    const requests: GetBoardContextInput[] = [
+      { boardId: "WorstIn123" }, { boardId: "WorstIn123", nodeIds: ["1:3"] }, { boardId: "WorstIn123", nodeIds: ["1:1"] },
+      { boardId: "WorstIn123", topic: "Row" }, { boardId: "WorstOut123" }, { boardId: "WorstOut123", outsideSections: true },
+    ];
+    for (const request of requests) {
+      const { text, structuredContent } = await getBoardContext({ ...request, maxChars: 2000 });
+      expect(structuredContent.evidence[0]?.sourceType).toBe("table_row");
+      expect(text.length).toBeLessThanOrEqual(2000);
+      expect(JSON.stringify(structuredContent).length).toBeLessThanOrEqual(2000);
+      // The model summary yields to source text; with room it stays.
+      expect(structuredContent.clusters[0]).toMatchObject({ summary: "", summarySource: "vision_llm", modelDerived: true });
+      expect((await getBoardContext({ ...request, maxChars: 24000 })).structuredContent.clusters[0]?.summary).toBe("S".repeat(600));
+    }
   });
 
   it("validates hard page and node-count limits", () => {
@@ -333,9 +369,9 @@ describe("getBoardContext response size", () => {
   it("shortens a first excerpt that alone exceeds the budget instead of failing", async () => {
     const data = evidenceBoard("Shorten123", [textNode("9:2", "evidence ".repeat(140))]);
     setBoard(data.boardId, data);
-    const { text, structuredContent: output } = await getBoardContext({ boardId: data.boardId, maxChars: 1500 });
-    expect(JSON.stringify(output).length).toBeLessThanOrEqual(1500);
-    expect(text.length).toBeLessThanOrEqual(1500);
+    const { text, structuredContent: output } = await getBoardContext({ boardId: data.boardId, maxChars: 2000 });
+    expect(JSON.stringify(output).length).toBeLessThanOrEqual(2000);
+    expect(text.length).toBeLessThanOrEqual(2000);
     expect(output.evidence).toHaveLength(1);
     expect(output.evidence[0]!.text.length).toBeLessThan(1200);
     expect(output.truncated).toBe(true);
@@ -473,15 +509,8 @@ describe("getBoardContext text and structured content", () => {
       { boardId: wide.boardId, limit: 100 }, { boardId: outside.boardId, outsideSections: true }, { boardId: outside.boardId, outsideSections: true, limit: 100 },
     ];
     for (const request of requests) {
-      for (const maxChars of [512, 2000, 12000, 24000]) {
-        const result = await getBoardContext({ ...request, maxChars }).catch((error: unknown) => error);
-        if (result instanceof Error) {
-          // A budget too small for one excerpt is refused, never exceeded.
-          expect(maxChars).toBe(512);
-          expect(result.message).toMatch(/cannot fit one source excerpt/);
-          continue;
-        }
-        const { text, structuredContent } = result as Awaited<ReturnType<typeof getBoardContext>>;
+      for (const maxChars of [2000, 12000, 24000]) {
+        const { text, structuredContent } = await getBoardContext({ ...request, maxChars });
         expect(structuredContent.evidence.length).toBeGreaterThan(0);
         expect(text.length).toBeLessThanOrEqual(maxChars);
         expect(JSON.stringify(structuredContent).length).toBeLessThanOrEqual(maxChars);

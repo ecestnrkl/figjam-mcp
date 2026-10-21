@@ -14,7 +14,7 @@ export const clusterContextShape = {
   sectionNames: z.array(z.string().max(80)).max(16).optional()
     .describe("Enclosing sections, outermost first, of this cluster's excerpts; excerpts repeat them only where they differ"),
   summary: z.string()
-    .describe("Model summary of the cluster; empty for deterministic clusters, whose excerpts carry the text"),
+    .describe("Model summary of the cluster; empty for deterministic clusters, whose excerpts carry the text, and where maxChars leaves no room for it"),
   summarySource: z.enum(["vision_llm", "text_llm", "deterministic", "cache", "unknown"])
     .describe("Origin of the derived cluster summary; the summary is not verbatim source evidence"),
   modelDerived: z.boolean()
@@ -38,8 +38,8 @@ export const getBoardContextInputShape = {
     .describe("Maximum evidence excerpts per page (default 20)"),
   cursor: z.string().min(1).max(2048).optional()
     .describe("nextCursor of the previous page, unchanged; send it with the same topic, nodeIds, outsideSections, limit and maxChars"),
-  maxChars: z.number().int().min(512).max(24000).default(12000)
-    .describe("Character budget for each representation: the readable text content and the JSON of structuredContent (default 12000)"),
+  maxChars: z.number().int().min(2000).max(24000).default(12000)
+    .describe("Character budget for each representation: the readable text content and the JSON of structuredContent (default 12000, minimum 2000)"),
 };
 
 export const getBoardContextInputSchema = z.object(getBoardContextInputShape).refine(

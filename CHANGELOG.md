@@ -5,6 +5,10 @@
 - `answer_from_board` lists its citations in the text content after the answer, under "Sources (untrusted board data):",
   one line each with node ID, innermost section (else cluster label), quote (at most 200 characters) and link. Clients
   that pass only the text to the model got the answer without sources; `structuredContent` is unchanged.
+- `get_board_context` accepts `maxChars` from 2,000 (was 512) and returns a page for every request at that size. Under a
+  small budget the model summaries of the clusters on the page now yield too (`summary` is empty), after the overview
+  and the page position, before the first excerpt is shortened; 512 to about 1,300 always failed with "The context
+  budget cannot fit one source excerpt".
 
 ## 0.10.2 — 2026-10-21
 

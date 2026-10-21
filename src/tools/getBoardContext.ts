@@ -115,14 +115,20 @@ export async function getBoardContext(input: GetBoardContextInput): Promise<Boar
   const candidates = retrieved.evidence.slice(offset, offset + options.limit);
   let showOverview = Boolean(overview);
   let showPosition = true;
+  let showSummaries = true;
   let selected = selectPage();
-  // Orientation yields to source text under a small budget: overview first, then the page position.
+  // Orientation yields to source text under a small budget: overview first, then the page
+  // position, then the model summaries of the clusters on the page.
   if (candidates.length > 0 && selected.consumed === 0 && showOverview) {
     showOverview = false;
     selected = selectPage();
   }
   if (candidates.length > 0 && selected.consumed === 0) {
     showPosition = false;
+    selected = selectPage();
+  }
+  if (candidates.length > 0 && selected.consumed === 0) {
+    showSummaries = false;
     selected = selectPage();
   }
   if (candidates.length > 0 && selected.consumed === 0) {
@@ -243,7 +249,7 @@ export async function getBoardContext(input: GetBoardContextInput): Promise<Boar
         phase: cluster.phase ? boundedText(cluster.phase, 80) : undefined,
         ...(pageName ? { pageName } : {}),
         ...(sectionNames?.length ? { sectionNames } : {}),
-        summary: compactSummary(cluster),
+        summary: showSummaries ? compactSummary(cluster) : "",
         summarySource: cluster.summarySource ?? "unknown" as const,
         modelDerived: cluster.summarySource !== "deterministic" || Boolean(cluster.modelId),
         sourceNodeIds: [...new Set(items.map((item) => item.nodeId))],
