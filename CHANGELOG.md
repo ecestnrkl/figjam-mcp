@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.10.0 — Unreleased
+## 0.10.0 — 2026-10-21
 
 - Clusters without a model label that hold at least two texts in one section are named after it: the section name if
   it holds no other cluster, else "<section>: <first text>". Other clusters take their first text in reading order
