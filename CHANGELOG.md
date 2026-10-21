@@ -1,7 +1,10 @@
 # Changelog
 
-## 0.10.1 — Unreleased
+## 0.10.1 — 2026-10-21
 
+- `ingest_board` downloads the board on every call. A re-ingest skipped the download while `/meta` reported the same
+  `version`, but `version` and `last_touched_at` there follow an edit only minutes later, with Figma's next autosave,
+  so re-ingests could return an outdated board. `file_metadata:read` is no longer needed.
 - Renders for image interpretation show the current board. They were requested for the file's `version`, so Figma
   rendered its last autosave: edited drawings looked outdated and nodes added since were missing.
 - A request to `openrouter/free` or `openrouter/auto` that fails with an error that moves on to the next model (not a
