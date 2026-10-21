@@ -147,8 +147,8 @@ async function performIngest(input: IngestBoardInput, options: OperationOptions)
   const cacheCandidate = input.forceFullIngest ? undefined : await readCachedBoard(cacheKey, fileKey);
   const cached = cacheCandidate?.extractionVersion === EXTRACTION_VERSION ? cacheCandidate : undefined;
   if (cached && !cached.clusters.some(cluster => cluster.incomplete)) {
-    const clusters = cached.clusters.map(cluster => ({ ...cluster, cacheHit: true }));
-    const clusterNodes = clusterMembers(clusters, nodes);
+    const clusterNodes = clusterMembers(cached.clusters, nodes);
+    const clusters = labelDeterministicClusters(cached.clusters, clusterNodes, nodes).map(cluster => ({ ...cluster, cacheHit: true }));
     const focus = resolveFocus(input.focusNodeIds, clusterNodes, nodes);
     // Cached labels and summaries may predate redaction being switched on.
     const board = redactBoard({ ...cached, clusters, freshnessCheckedAt, figmaVersion, figmaLastModified,
@@ -331,7 +331,8 @@ async function performIngest(input: IngestBoardInput, options: OperationOptions)
   try { await Promise.all(Array.from({ length: Math.min(VISION_CONCURRENCY, visionQueue.length) }, worker)); }
   finally { clearTimeout(renderPhaseTimer); renderPhase.abort(); }
   signal?.throwIfAborted();
-  const finalClusters = mapClustersToPhases(refined, input.docStructureHint, input.customPhases);
+  const finalClusters = mapClustersToPhases(labelDeterministicClusters(refined, clusterNodesByIndex, nodes),
+    input.docStructureHint, input.customPhases);
   const qualityReport = { ...buildQualityReport(finalClusters, reusedCount), reusedClusters: reusedCount, figmaRequests,
     ...(focus ? { focus: focusReport(focus, refined, clusterNodesByIndex, ingestMode) } : {}) };
   // Reused labels and summaries may predate redaction being switched on.
@@ -700,31 +701,69 @@ function reuseCluster(
 }
 
 function refineClusterFromText(cluster: Cluster, clusterNodes: NormalizedNode[]): RefinedCluster {
-  const textSnippets = clusterNodes
-    .map((node) => node.text?.trim())
-    .filter((text): text is string => Boolean(text));
   const imageCount = clusterNodes.filter((node) => node.imageRef).length;
 
   return {
     ...cluster,
-    label: fallbackLabel(cluster.id, textSnippets, clusterNodes),
-    summary: fallbackSummary(clusterNodes.length, textSnippets, imageCount),
+    label: fallbackLabel(cluster.id, clusterNodes),
+    summary: fallbackSummary(clusterNodes.length, textSnippets(clusterNodes), imageCount),
     confirmedNodeIds: [...cluster.nodeIds],
     summarySource: "deterministic",
   };
 }
 
-function fallbackLabel(
-  clusterId: string,
-  textSnippets: string[],
-  clusterNodes: NormalizedNode[],
-): string {
-  const fromText = textSnippets.find((text) => text.length > 0);
+/**
+ * Names deterministic clusters (no model label) on every ingest, including reused
+ * and cached ones. A cluster with at least two text nodes in one named innermost
+ * section is named after it: the section name if it is the section's only cluster,
+ * else "<section>: <first text>". Other clusters take their first text or name.
+ */
+function labelDeterministicClusters(clusters: RefinedCluster[], clusterNodes: NormalizedNode[][],
+  nodes: NormalizedNode[]): RefinedCluster[] {
+  const sectionNames = new Map(nodes.filter((node) => node.type === "SECTION")
+    .map((node) => [node.id, node.name.replace(/\s+/g, " ").trim()]));
+  const sections = clusterNodes.map((members) => innermostSection(members, sectionNames));
+  const clustersPerSection = new Map<string, number>();
+  for (const id of sections) if (id) clustersPerSection.set(id, (clustersPerSection.get(id) ?? 0) + 1);
+  return clusters.map((cluster, index) => {
+    if (cluster.summarySource !== "deterministic" || cluster.modelId) return cluster;
+    const members = clusterNodes[index]!;
+    const texts = textSnippets(inReadingOrder(members));
+    const sectionId = sections[index];
+    if (!sectionId || texts.length < 2) return { ...cluster, label: fallbackLabel(cluster.id, members) };
+    const section = sectionNames.get(sectionId)!;
+    const label = clustersPerSection.get(sectionId) === 1 ? section : `${truncate(section, 40)}: ${compactLabel(texts[0]!)}`;
+    return { ...cluster, label: truncate(label, 80) };
+  });
+}
+
+/** The innermost section shared by all members; an unnamed section counts as none. */
+function innermostSection(members: NormalizedNode[], sectionNames: Map<string, string>): string | undefined {
+  const ids = new Set(members.map((node) => node.sectionIds?.at(-1)));
+  const [id] = ids;
+  return ids.size === 1 && id && sectionNames.get(id) ? id : undefined;
+}
+
+/** Top to bottom, then left to right; member order breaks ties. */
+function inReadingOrder(nodes: NormalizedNode[]): NormalizedNode[] {
+  return nodes.map((node, position) => ({ node, position }))
+    .sort((a, b) => a.node.y - b.node.y || a.node.x - b.node.x || a.position - b.position)
+    .map(({ node }) => node);
+}
+
+function textSnippets(nodes: NormalizedNode[]): string[] {
+  return nodes.map((node) => node.text?.trim()).filter((text): text is string => Boolean(text));
+}
+
+/** The first text in reading order, else the first specific node name. */
+function fallbackLabel(clusterId: string, clusterNodes: NormalizedNode[]): string {
+  const ordered = inReadingOrder(clusterNodes);
+  const fromText = textSnippets(ordered)[0];
   if (fromText) {
     return compactLabel(fromText);
   }
 
-  const fromName = clusterNodes
+  const fromName = ordered
     .map((node) => node.name.trim())
     .find((name) => name && !isGenericNodeName(name));
   return fromName ? compactLabel(fromName) : `Cluster ${clusterId.replace(/^cluster_/, "")}`;

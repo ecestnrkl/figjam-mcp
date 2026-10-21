@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { BoardData, Cluster, NormalizedNode, RefinedCluster } from "../src/types.js";
@@ -523,5 +523,77 @@ describe("offline ingest pipeline with actual persistent cache", () => {
     expect((await persistence.readLatestBoard(fileKey))?.snapshotId).toBe(initial.snapshotId);
     expect(memory.getBoard(fileKey)?.snapshotId).toBe(initial.snapshotId);
     expect(visionMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("deterministic cluster labels", () => {
+  const speed = { ...input, ingestMode: "max_speed" } as const;
+  const note = (id: string, text: string, x: number, y: number) =>
+    ({ id, name: "Sticky", type: "STICKY", characters: text, absoluteBoundingBox: { x, y, width: 100, height: 100 } });
+  const section = (id: string, name: string, children: unknown[]) =>
+    ({ id, name, type: "SECTION", absoluteBoundingBox: { x: 0, y: 0, width: 8000, height: 8000 }, children });
+  const longName = "Feedback from the pilot interviews in October";
+  // Every pair is listed bottom first, so member order differs from reading order.
+  const labelBoard = (lowerNote = "Lower note", version = "v1") => boardTree([
+    section("ideas", "3 · Ideas", [note("idea-low", "Pickup shelf with name labels", 0, 150), note("idea-top", "Order ahead", 150, 0)]),
+    section("feedback", longName, [
+      note("fb-low", "Slow checkout", 0, 150), note("fb-top", "Clear menu", 0, 0),
+      note("fb-far-low", "Late food", 3000, 150), note("fb-far-top", "Wi-Fi drops", 3000, 0),
+    ]),
+    section("unnamed", "  ", [note("u-low", "Beta", 0, 150), note("u-top", "Alpha", 0, 0)]),
+    section("solo", "Solo", [note("solo-note", "Only note", 0, 0)]),
+    note("out-low", lowerNote, 6000, 150), note("out-top", "Upper note", 6000, 0),
+  ], version);
+  const labelOf = async (nodeId: string) =>
+    (await persistence.readLatestBoard(fileKey))?.clusters.find(cluster => cluster.nodeIds.includes(nodeId))?.label;
+  const expected = {
+    "idea-top": "3 · Ideas", "fb-top": "Feedback from the pilot interviews in...: Clear menu",
+    "fb-far-top": "Feedback from the pilot interviews in...: Wi-Fi drops", "u-top": "Alpha", "solo-note": "Only note",
+    "out-top": "Upper note",
+  };
+  const expectLabels = async (labels: Record<string, string>) => {
+    for (const [nodeId, label] of Object.entries(labels)) expect(await labelOf(nodeId), nodeId).toBe(label);
+  };
+  /** Gives every persisted cluster the label an older version would have stored. */
+  async function ageLabels(): Promise<void> {
+    for (const file of await readdir(cacheDirectory, { recursive: true })) {
+      if (!/refinement-[^/\\]+\.json$/.test(file)) continue;
+      const envelope = JSON.parse(await readFile(path.join(cacheDirectory, file), "utf8"));
+      for (const cluster of envelope.derived.clusters) cluster.label = "Old label";
+      await writeFile(path.join(cacheDirectory, file), JSON.stringify(envelope));
+    }
+  }
+
+  it("names clusters after their section, else after their first text in reading order", async () => {
+    activeTree = labelBoard();
+    const result = await ingestBoard(speed);
+    expect(result.clusterCount).toBe(6);
+    await expectLabels(expected);
+  });
+
+  it("relabels deterministic clusters loaded from the cache or reused after a change", async () => {
+    activeTree = labelBoard();
+    await ingestBoard(speed);
+    await ageLabels();
+    const cached = await ingestBoard(speed);
+    expect(cached.qualityReport).toMatchObject({ cachedClusters: 6 });
+    expect(fileTreeMock).toHaveBeenCalledTimes(1);
+    await expectLabels(expected);
+
+    await ageLabels();
+    activeTree = labelBoard("Edited lower note", "v2");
+    const reused = await ingestBoard(speed);
+    expect(reused.qualityReport).toMatchObject({ reusedClusters: 5 });
+    await expectLabels(expected);
+  });
+
+  it("keeps model labels on cached and reused clusters", async () => {
+    activeTree = labelBoard();
+    await ingestBoard(input);
+    await expectLabels({ "idea-top": "Evidence idea-low", "fb-top": "Evidence fb-low" });
+    expect((await ingestBoard(input)).qualityReport).toMatchObject({ cachedClusters: 6 });
+    activeTree = labelBoard("Edited lower note", "v2");
+    expect((await ingestBoard(speed)).qualityReport).toMatchObject({ reusedClusters: 5 });
+    await expectLabels({ "idea-top": "Evidence idea-low", "fb-top": "Evidence fb-low", "out-top": "Upper note" });
   });
 });

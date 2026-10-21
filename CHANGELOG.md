@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.10.0 — Unreleased
+
+- Clusters without a model label that hold at least two texts in one section are named after it: the section name if
+  it holds no other cluster, else "<section>: <first text>". Other clusters take their first text in reading order
+  instead of member order. Labels are recomputed on every ingest, so existing snapshots get them with the next one.
+
 ## 0.9.1 — 2026-10-20
 
 - `ingest_board` sends every image to the vision model with at most 1,024 px on the longest side. Larger PNG and JPEG
