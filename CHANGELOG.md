@@ -14,6 +14,9 @@
 - `forceFullIngest` downloads and extracts the board again but keeps the image interpretations of unchanged clusters
   in every mode; pending clusters continue as on any ingest, with provider cooldowns. Model and prompt changes are
   detected without it. Before, a forced `balanced` or `max_quality` ingest discarded them and started over.
+- `diagnose_llm_config` lists the models each check tried in the new optional `attempts` (model, ok and the provider's
+  message or error). A failed check names every model with its error, and the summary names checks that passed only
+  with a later candidate, with the model that failed.
 
 ## 0.9.1 — 2026-10-20
 

@@ -55,10 +55,11 @@ export interface ChatJsonOptions {
   onUsage?: (usage: { model: string; promptTokens?: number; completionTokens?: number; totalTokens?: number }) => void;
   onRequest?: (model: string) => void;
   /**
-   * Receives the provider's message (message, code and metadata.provider_name, at most 200 characters) when the
-   * request finally fails with a provider error. Only for synthetic requests: provider text can echo the prompt.
+   * Called for every candidate that fails, in order, with the provider's message (message, code and
+   * metadata.provider_name, at most 200 characters) or else the error message. Only for synthetic requests:
+   * provider text can echo the prompt.
    */
-  onProviderError?: (message: string) => void;
+  onModelFailed?: (model: string, message: string) => void;
   /** Optional caller-owned cancellation, e.g. an ingest phase deadline. */
   signal?: AbortSignal;
 }
@@ -199,14 +200,13 @@ export async function chatJson(
         throw abortReason(options.signal, error);
       }
       errors.push(error);
+      options.onModelFailed?.(candidate, describeProviderError(error) ?? errorMessage(normalizeLlmError(error)));
       if (candidate !== models.at(-1) && shouldTryNextModel(error) && remainingMs(requestOptions) >= MIN_REQUEST_TIMEOUT_MS) {
         console.error(
           `LLM model ${candidate} failed; trying the next explicitly configured candidate.`,
         );
         continue;
       }
-      const providerMessage = options.onProviderError && describeProviderError(error);
-      if (providerMessage) options.onProviderError!(providerMessage);
       throw normalizeLlmError(error);
     }
   }

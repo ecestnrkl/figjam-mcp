@@ -88,7 +88,7 @@ configuration, then restart the server in the client.
 | `Figma API rate limit exceeded (429). …` | Figma limits requests by seat and plan; see [rate limits](https://developers.figma.com/docs/rest-api/rate-limits/). `max_speed` makes no image requests; the other modes need one image fills request per ingest and renders only for drawings without an image. |
 | `Figma download exceeds the configured byte budget` | The board's file data is larger than 64 MiB. Split the board into smaller files. |
 | `LLM_API_KEY is not set — …` | Set `LLM_API_KEY` and `LLM_BASE_URL` in the client's `env` and restart. A Figma token does not replace the provider key. |
-| `LLM request failed (HTTP 404). …` | No configured model was available. A 404 or 410, or OpenRouter's "Provider returned error", moves the request to the next candidate in `LLM_TEXT_MODELS` / `LLM_VISION_MODELS`; this error means every candidate failed. `diagnose_llm_config` names the provider's message. |
+| `LLM request failed (HTTP 404). …` | No configured model was available. A 404 or 410, or OpenRouter's "Provider returned error", moves the request to the next candidate in `LLM_TEXT_MODELS` / `LLM_VISION_MODELS`; this error means every candidate failed. `diagnose_llm_config` names each model with the provider's message. |
 | `LLM request failed (HTTP 429). …` | Free OpenRouter models allow 20 requests per minute and 50 or 1,000 per day. Wait, or configure your own model. |
 | `LLM request timed out after 20s. …` | The model was too slow. Retry, choose another model or raise `LLM_REQUEST_TIMEOUT_MS` / `LLM_VISION_REQUEST_TIMEOUT_MS`. |
 | `LLM (…) did not return valid JSON. The reply was cut off at max_tokens …` | A reasoning model used up its output tokens. Choose another model or raise the output limit. |
@@ -98,7 +98,9 @@ configuration, then restart the server in the client.
 | Result contains `persistenceWarning` | The snapshot was not saved and lives only in this process. Another server held the cache lock for over 10 seconds, or the cache directory is not writable. Ingest again; after a crash, stop all servers and delete `v4/.write-lock` (see [configuration](configuration.md#cache-migration-and-lock)). |
 | `Cursor does not match this query, snapshot, or page settings. …` | Send the same query, `limit` and `maxChars` with the cursor, or start without a cursor. |
 
-Run `diagnose_llm_config` after changing model settings. It reports which model
-answered each check and why a check failed, with the provider's message (at most
-200 characters). Its checks send only synthetic data; other tools leave provider
-messages out because they can echo board content.
+Run `diagnose_llm_config` after changing model settings. Each check lists the
+models it tried in `attempts`, in order, with the provider's message (at most 200
+characters) for each failed one; a failed check names every model with its error,
+and the summary names checks that passed only with a later candidate. Its checks
+send only synthetic data; other tools leave provider messages out because they
+can echo board content.

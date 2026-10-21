@@ -18,6 +18,10 @@ export const diagnoseLlmConfigOutputShape = {
       ok: z.boolean(),
       modelUsed: z.string().optional(),
       error: z.string().optional(),
+      attempts: z
+        .array(z.object({ model: z.string(), ok: z.boolean(), error: z.string().optional() }))
+        .optional()
+        .describe("The model candidates tried, in order; error is the provider's message or the error"),
     }),
   ),
   summary: z.string(),
