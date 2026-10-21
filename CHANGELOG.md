@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.10.2 — Unreleased
+## 0.10.2 — 2026-10-21
 
 - `diff_board` names each edited, added and removed node, in the text output and in the new optional `nodeChanges`:
   its section, old and new text (only the changed words of a long text), link and what changed (`text`, `name`,
