@@ -108,6 +108,8 @@ describe("offline ingest pipeline with actual persistent cache", () => {
     expect(fileTreeMock).toHaveBeenCalledTimes(1);
     expect(visionMock).toHaveBeenCalledTimes(2);
     expect(result.snapshotId).not.toBe(snapshotId);
+    // A snapshot of an older extraction version is not compared.
+    expect(result.summary).not.toContain("since the previous ingest");
     expect(result.relationCount).toBe(1);
     const { structuredContent: context } = await getBoardContext({ boardId: fileKey, nodeIds: ["idea", "test", "page"] });
     expect(context.connections).toEqual([expect.objectContaining({ connectorId: "arrow", fromNodeId: "idea", toNodeId: "test", direction: "forward", url: "https://www.figma.com/board/OfflineBoard?node-id=arrow" })]);
@@ -510,6 +512,20 @@ describe("offline ingest pipeline with actual persistent cache", () => {
     const visionChanged = await ingestBoard(balanced);
     expect((visionMock.mock.calls as Array<[Cluster]>).map(([cluster]) => cluster.nodeIds).sort()).toEqual([["photo-a"], ["photo-b"]]);
     expect(visionChanged.qualityReport).toMatchObject({ visionClusters: 2, reusedClusters: 0 });
+  });
+
+  it("says in the summary whether the board changed since the previous ingest", async () => {
+    activeTree = boardTree([sticky("note", "First idea")]);
+    const first = await ingestBoard(input);
+    expect(first.summary).not.toContain("since the previous ingest");
+    const unchanged = await ingestBoard(input);
+    expect(unchanged.summary).toContain(" The board content is unchanged since the previous ingest.");
+    expect(unchanged.summary).not.toContain("diff_board");
+    activeTree = boardTree([sticky("note", "Second idea")], "v2");
+    const changed = await ingestBoard(input);
+    expect(changed.summary).toContain(` The board content changed since the previous ingest; call diff_board with boardId ${fileKey} to see what changed.`);
+    const diff = await diffBoard({ boardId: fileKey, compareTo: 1 });
+    expect([diff.baselineSnapshotId, diff.currentSnapshotId]).toEqual([first.snapshotId, changed.snapshotId]);
   });
 
   it("continues a short cursor on its snapshot after the changed board is ingested", async () => {

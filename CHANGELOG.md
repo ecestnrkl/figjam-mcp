@@ -24,6 +24,8 @@
 - `get_board_context` returns `nextCursor` as `<page>.<offset>.<snapshot prefix>.<checksum>`, about 35 characters of
   digits, a–f and dots instead of over 300. A changed character or a cursor sent with other settings gives an error that
   names what to send; the cursor still reads its snapshot after later ingests, and older cursors are accepted.
+- The `ingest_board` summary says whether the board content changed since the previous ingest of the same extraction
+  version and, if so, names `diff_board` with the board's ID as the next step.
 
 ## 0.9.1 — 2026-10-20
 
