@@ -66,7 +66,12 @@ export const evidenceSchema = z.object({
 });
 
 export const evidenceConnectionSchema = z.object({
-  connectorId: z.string(), fromNodeId: z.string(), toNodeId: z.string(),
+  connectorId: z.string(), fromNodeId: z.string(),
+  fromText: z.string().max(80).optional()
+    .describe("Short text or name of the start node when it is not among this page's excerpts, redacted like excerpts"),
+  toNodeId: z.string(),
+  toText: z.string().max(80).optional()
+    .describe("Short text or name of the end node when it is not among this page's excerpts, redacted like excerpts"),
   direction: z.enum(["forward", "reverse", "bidirectional", "undirected"]),
   label: z.string().optional(), url: z.string(),
 });
@@ -87,7 +92,8 @@ export const getBoardContextOutputShape = {
   clusters: z.array(clusterContextSchema),
   snapshotId: z.string(),
   evidence: z.array(evidenceSchema),
-  connections: z.array(evidenceConnectionSchema),
+  connections: z.array(evidenceConnectionSchema)
+    .describe("Arrows with at least one end among this page's excerpts; the label is the text on the arrow"),
   totalMatched: z.number().int().nonnegative(),
   truncated: z.boolean(),
   nextCursor: z.string().optional(),

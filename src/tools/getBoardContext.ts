@@ -120,7 +120,7 @@ export async function getBoardContext(input: GetBoardContextInput): Promise<Boar
     selected = { evidence: [shortened], consumed: 1 };
   }
 
-  const connectionCount = maxFitting(countConnectionsForEvidence(board, selected.evidence), (count) => buildResult(selected, count, 0));
+  const connectionCount = maxFitting(countConnectionsForEvidence(board, selected.evidence, "either"), (count) => buildResult(selected, count, 0));
   const relationCount = maxFitting(Math.min(matchingRelations(selected.evidence).length, 50), (count) => buildResult(selected, connectionCount, count));
   const result = buildResult(selected, connectionCount, relationCount);
   if (!fits(result)) {
@@ -243,7 +243,8 @@ export async function getBoardContext(input: GetBoardContextInput): Promise<Boar
       label: relation.labels.length ? boundedText(relation.labels.join(", "), 240) : undefined,
       edgeCount: relation.edgeCount,
     }));
-    const connections = connectionLimit > 0 ? connectionsForEvidence(board, evidence).slice(0, connectionLimit) : [];
+    // An arrow appears once one of its ends is on this page; the other end is named by its short text.
+    const connections = connectionLimit > 0 ? connectionsForEvidence(board, evidence, "either").slice(0, connectionLimit) : [];
     // Repeated first rows of tables are context; only the result sequence advances the cursor.
     const nextOffset = offset + consumed;
     const remaining = retrieved.evidence.length - nextOffset;
@@ -254,7 +255,7 @@ export async function getBoardContext(input: GetBoardContextInput): Promise<Boar
     if (evidence.length === 0) orientation.push("No source evidence matched this request.");
     const parts = [...orientation, ...renderGroups(groups, shownRows(evidence))];
     if (connections.length > 0) {
-      parts.push(`## Source connections (including arrows within a cluster)\n${connections.map((connection) => `- ${formatEvidenceConnection(connection)}`).join("\n")}`);
+      parts.push(`## Source connections (including arrows within a cluster; «text» names an end not on this page)\n${connections.map((connection) => `- ${formatEvidenceConnection(connection)}`).join("\n")}`);
     }
     if (relations.length > 0) {
       parts.push(`## Connections between clusters\n${relations.map((relation) =>
@@ -263,7 +264,7 @@ export async function getBoardContext(input: GetBoardContextInput): Promise<Boar
     // Under a small budget the pointer yields to source text together with the page position.
     const contextText = [...orientation, ...(evidence.length > 0 && showPosition ? [EVIDENCE_POINTER] : [])].join("\n\n");
 
-    const totalConnections = countConnectionsForEvidence(board, evidence);
+    const totalConnections = countConnectionsForEvidence(board, evidence, "either");
     const truncation = {
       remainingEvidence: remaining,
       omittedConnections: totalConnections - connections.length,

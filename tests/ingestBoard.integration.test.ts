@@ -597,3 +597,52 @@ describe("deterministic cluster labels", () => {
     await expectLabels({ "idea-top": "Evidence idea-low", "fb-top": "Evidence fb-low", "out-top": "Upper note" });
   });
 });
+
+describe("arrows from either end", () => {
+  const speed = { ...input, ingestMode: "max_speed" } as const;
+  const note = (id: string, text: string, x: number) =>
+    ({ id, name: "Sticky", type: "STICKY", characters: text, absoluteBoundingBox: { x, y: 0, width: 100, height: 100 } });
+  const section = (id: string, name: string, x: number, children: unknown[]) =>
+    ({ id, name, type: "SECTION", absoluteBoundingBox: { x, y: 0, width: 1000, height: 1000 }, children });
+  const arrow = (id: string, text: string, from: string, to: string) => ({ id, name: text, type: "CONNECTOR", characters: text,
+    connectorStart: { endpointNodeId: from }, connectorEnd: { endpointNodeId: to }, connectorStartStrokeCap: "NONE", connectorEndStrokeCap: "ARROW_LINES" });
+  const arrowBoard = () => boardTree([
+    section("pain", "Pain points", 0, [note("queue", "Long queues at peak times", 0)]),
+    section("ideas", "Ideas", 3000, [note("order", "Order ahead with a pickup time slot", 3000), note("wifi", "Guest Wi-Fi password: CampusCafe2026", 3150)]),
+    arrow("solves", "solves", "queue", "order"),
+    arrow("needs", "needs", "queue", "wifi"),
+  ]);
+
+  it("keeps an arrow's label on the arrow instead of a loose excerpt", async () => {
+    activeTree = arrowBoard();
+    await ingestBoard(speed);
+    const { structuredContent: overview } = await getBoardContext({ boardId: fileKey });
+    expect(overview.evidence.map(item => item.nodeId).sort()).toEqual(["order", "queue", "wifi"]);
+    expect(overview.evidence.some(item => item.text === "solves" || item.text === "needs")).toBe(false);
+    expect(overview.connections.find(item => item.connectorId === "solves")).toMatchObject({ label: "solves" });
+    expect(overview.relations).toEqual([expect.objectContaining({ label: "solves, needs", edgeCount: 2 })]);
+    expect((await getBoardContext({ boardId: fileKey, outsideSections: true })).structuredContent.totalMatched).toBe(0);
+  });
+
+  it("shows an arrow with one end on the page and names the other end", async () => {
+    activeTree = arrowBoard();
+    await ingestBoard(speed);
+    const { text, structuredContent: pain } = await getBoardContext({ boardId: fileKey, nodeIds: ["pain"] });
+    expect(pain.evidence.map(item => item.nodeId)).toEqual(["queue"]);
+    expect(pain.connections).toEqual([
+      expect.objectContaining({ connectorId: "solves", fromNodeId: "queue", toNodeId: "order", toText: "Order ahead with a pickup time slot", label: "solves" }),
+      expect.objectContaining({ connectorId: "needs", toNodeId: "wifi", toText: "Guest Wi-Fi password: [redacted]" }),
+    ]);
+    expect(pain.connections.some(item => "fromText" in item)).toBe(false);
+    expect(text).toContain("- queue → order «Order ahead with a pickup time slot» (solves)");
+    expect(JSON.stringify(pain) + text).not.toContain("CampusCafe2026");
+
+    const { structuredContent: both } = await getBoardContext({ boardId: fileKey, nodeIds: ["pain", "ideas"] });
+    expect(both.connections.map(item => item.connectorId).sort()).toEqual(["needs", "solves"]);
+    expect(both.connections.some(item => "fromText" in item || "toText" in item)).toBe(false);
+
+    const { structuredContent: ideas } = await getBoardContext({ boardId: fileKey, nodeIds: ["ideas"] });
+    expect(ideas.connections.find(item => item.connectorId === "solves")).toMatchObject({ fromText: "Long queues at peak times" });
+    expect(ideas.connections.find(item => item.connectorId === "solves")).not.toHaveProperty("toText");
+  });
+});
