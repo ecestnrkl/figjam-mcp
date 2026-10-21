@@ -1,13 +1,15 @@
 import type { BoardData, ConnectorEdge, NormalizedNode, RefinedCluster } from "../types.js";
-import { STRUCTURAL_TYPES } from "./nodeTree.js";
+import { isGenericNodeName, STRUCTURAL_TYPES } from "./nodeTree.js";
 import { hashClusterNodes } from "./persistentCache.js";
 import { connectorArrow } from "./connectorGraph.js";
+import { boundedText, nodeLink } from "./evidence.js";
 
 /**
  * Compares two ingest snapshots of the same board — "what changed since the
  * last workshop?". Works on three levels:
  *  - nodes: added / removed / edited content nodes (structural containers
  *    and connectors excluded — connectors are diffed separately),
+ *    and named with their section and old and new text,
  *  - clusters: matched across snapshots by member overlap, then classified
  *    as unchanged (same content hash), modified, new, or removed,
  *  - connections: connector arrows diffed as (from, to, label) edges and
@@ -48,6 +50,30 @@ export interface BoardDiffResult {
   removedConnections: string[];
   summaryText: string;
   tableCellChanges: TableCellChange[];
+  nodeChanges: NodeChange[];
+  /** Changed nodes beyond the NODE_CHANGE_LIMIT entries in nodeChanges. */
+  nodeChangesOmitted?: number;
+}
+
+/** What differs on an edited node; "appearance" only when nothing else explains a changed contentFingerprint. */
+export type NodeChangeAspect = "text" | "name" | "image" | "rotation" | "type" | "appearance";
+
+export interface NodeChange {
+  nodeId: string;
+  changeType: "added" | "removed" | "edited";
+  nodeType: string;
+  /** Shown only when the text did not change and the name is neither a default name nor the text itself. */
+  name?: string;
+  /** The name before a rename, shown with name. */
+  previousName?: string;
+  /** Innermost section; absent outside sections. */
+  sectionId?: string;
+  section?: string;
+  /** Whitespace-collapsed excerpts, see textExcerpts. */
+  previousText?: string;
+  currentText?: string;
+  url: string;
+  changes?: NodeChangeAspect[];
 }
 
 export interface TableCellChange {
@@ -67,6 +93,18 @@ const CLUSTER_MATCH_THRESHOLD = 0.5;
 
 /** Max entries rendered per section in summaryText. */
 const SUMMARY_SECTION_LIMIT = 8;
+/** Max entries in nodeChanges and lines per node block in summaryText. */
+const NODE_CHANGE_LIMIT = 100;
+const NODE_LINES_PER_BLOCK = 20;
+/** Texts up to this length are shown whole; longer new or removed texts are cut here. */
+const FULL_TEXT_CHARS = 160;
+/** Context around the changed part of a longer edited text, and the cap for each side. */
+const EDIT_CONTEXT_CHARS = 40;
+const EDIT_EXCERPT_CHARS = 300;
+const NAME_CHARS = 80;
+const READABLE_TYPES: Record<string, string> = {
+  SHAPE_WITH_TEXT: "shape", LINK_UNFURL: "link", BOOLEAN_OPERATION: "shape", REGULAR_POLYGON: "polygon",
+};
 
 export function diffBoards(baseline: BoardData, current: BoardData): BoardDiffResult {
   const baselineNodes = contentNodesById(baseline);
@@ -82,6 +120,7 @@ export function diffBoards(baseline: BoardData, current: BoardData): BoardDiffRe
   const clusterDiff = diffClusters(baseline, current);
   const connectionDiff = diffConnections(baseline, current);
   const tableCellChanges = diffTableCells(baselineNodes, currentNodes);
+  const nodeDiff = describeNodeChanges(baseline, current, addedNodeIds, removedNodeIds, editedNodeIds);
 
   const stats: BoardDiffStats = {
     addedNodes: addedNodeIds.length,
@@ -102,8 +141,10 @@ export function diffBoards(baseline: BoardData, current: BoardData): BoardDiffRe
     modifiedClusters: clusterDiff.modifiedClusters,
     addedConnections: connectionDiff.added,
     removedConnections: connectionDiff.removed,
-    summaryText: buildSummaryText(baseline, current, stats, clusterDiff, connectionDiff),
+    summaryText: buildSummaryText(baseline, current, stats, clusterDiff, connectionDiff, nodeDiff),
     tableCellChanges,
+    nodeChanges: nodeDiff.entries,
+    ...(nodeDiff.omitted > 0 ? { nodeChangesOmitted: nodeDiff.omitted } : {}),
   };
 }
 
@@ -125,6 +166,194 @@ function nodeContentChanged(before: NormalizedNode, after: NormalizedNode): bool
     JSON.stringify(before.table?.cells) !== JSON.stringify(after.table?.cells) ||
     (before.contentFingerprint !== undefined && after.contentFingerprint !== undefined &&
       before.contentFingerprint !== after.contentFingerprint);
+}
+
+interface NodeChangeItem {
+  change: NodeChange;
+  before?: NormalizedNode;
+  after?: NormalizedNode;
+  /** The snapshot the node is named from: the current one, the baseline for removed nodes. */
+  board: BoardData;
+}
+
+interface NodeDiffInternal {
+  entries: NodeChange[];
+  omitted: number;
+  /** Per block: the first NODE_LINES_PER_BLOCK items and the total. */
+  blocks: Array<{ title: string; shown: NodeChangeItem[]; total: number }>;
+}
+
+/**
+ * Entries for edited, then added, then removed nodes, each in reading order.
+ * A table whose change is explained by its cells has no entry: tableCellChanges
+ * names them. Entries are built only for what nodeChanges and summaryText show.
+ */
+function describeNodeChanges(
+  baseline: BoardData, current: BoardData, addedIds: string[], removedIds: string[], editedIds: string[],
+): NodeDiffInternal {
+  const before = new Map(baseline.nodes.map((node) => [node.id, node]));
+  const after = new Map(current.nodes.map((node) => [node.id, node]));
+  const aspects = new Map(editedIds.map((id) => [id, changedAspects(before.get(id)!, after.get(id)!)]));
+  const groups = [
+    { title: "Edited nodes", ids: readingOrder(current, editedIds.filter((id) => aspects.get(id)!.length > 0)) },
+    { title: "Added nodes", ids: readingOrder(current, addedIds) },
+    { title: "Removed nodes", ids: readingOrder(baseline, removedIds) },
+  ];
+  const built = new Map<string, NodeChangeItem>();
+  const item = (id: string): NodeChangeItem => {
+    let result = built.get(id);
+    if (!result) {
+      const previous = before.get(id);
+      const next = after.get(id);
+      result = previous && next
+        ? { change: editedEntry(current, previous, next, aspects.get(id)!), before: previous, after: next, board: current }
+        : next ? { change: createdEntry(current, next, "added"), after: next, board: current }
+          : { change: createdEntry(baseline, previous!, "removed"), before: previous, board: baseline };
+      built.set(id, result);
+    }
+    return result;
+  };
+  const all = groups.flatMap((group) => group.ids);
+  return {
+    entries: all.slice(0, NODE_CHANGE_LIMIT).map((id) => item(id).change),
+    omitted: Math.max(0, all.length - NODE_CHANGE_LIMIT),
+    blocks: groups.map((group) => ({
+      title: group.title, total: group.ids.length, shown: group.ids.slice(0, NODE_LINES_PER_BLOCK).map(item),
+    })),
+  };
+}
+
+function changedAspects(before: NormalizedNode, after: NormalizedNode): NodeChangeAspect[] {
+  const cellsChanged = JSON.stringify(before.table?.cells) !== JSON.stringify(after.table?.cells);
+  const aspects: NodeChangeAspect[] = [];
+  // A table's text is its cells' text; changed cells explain it.
+  if ((before.text ?? "") !== (after.text ?? "") && !cellsChanged) aspects.push("text");
+  if (before.name !== after.name) aspects.push("name");
+  if (before.imageRef !== after.imageRef) aspects.push("image");
+  if (before.rotation !== after.rotation) aspects.push("rotation");
+  if (before.type !== after.type) aspects.push("type");
+  if (aspects.length === 0 && !cellsChanged && before.contentFingerprint !== after.contentFingerprint) {
+    aspects.push("appearance");
+  }
+  return aspects;
+}
+
+function entryBase(board: BoardData, node: NormalizedNode, changeType: NodeChange["changeType"]): NodeChange {
+  return { nodeId: node.id, changeType, nodeType: node.type, ...sectionOf(board, node), url: nodeLink(board, node.id) };
+}
+
+/** The innermost section around a node, with its name when it has one. */
+function sectionOf(board: BoardData, node: NormalizedNode): { sectionId?: string; section?: string } {
+  const sectionId = node.sectionIds?.at(-1);
+  if (!sectionId) return {};
+  const section = collapseWhitespace(board.nodes.find((item) => item.id === sectionId)?.name);
+  return { sectionId, ...(section ? { section: boundedText(section, NAME_CHARS) } : {}) };
+}
+
+function createdEntry(board: BoardData, node: NormalizedNode, changeType: "added" | "removed"): NodeChange {
+  const text = collapseWhitespace(node.text);
+  const name = shownName(node);
+  return {
+    ...entryBase(board, node, changeType),
+    ...(name ? { name } : {}),
+    ...(text === undefined ? {} : changeType === "added" ? { currentText: leadingText(text) } : { previousText: leadingText(text) }),
+  };
+}
+
+function editedEntry(current: BoardData, before: NormalizedNode, after: NormalizedNode, changes: NodeChangeAspect[]): NodeChange {
+  const [previousText, currentText] = textExcerpts(collapseWhitespace(before.text), collapseWhitespace(after.text));
+  const textChanged = changes.includes("text");
+  const renamed = !textChanged && changes.includes("name");
+  const name = textChanged ? undefined : renamed ? boundedName(after.name) : shownName(after);
+  return {
+    ...entryBase(current, after, "edited"),
+    ...(name ? { name } : {}),
+    ...(renamed ? { previousName: boundedName(before.name) } : {}),
+    ...(previousText === undefined ? {} : { previousText }),
+    ...(currentText === undefined ? {} : { currentText }),
+    changes,
+  };
+}
+
+/** A name that says more than the node's type or text. */
+function shownName(node: NormalizedNode): string | undefined {
+  const name = collapseWhitespace(node.name);
+  if (!name || isGenericNodeName(name) || collapseWhitespace(node.text)?.startsWith(name)) return undefined;
+  return boundedText(name, NAME_CHARS);
+}
+
+function boundedName(name: string): string {
+  return boundedText(collapseWhitespace(name) ?? "", NAME_CHARS);
+}
+
+/** Cluster by cluster, as get_board_context reads: page, then top to bottom, left to right; snapshot order within. */
+function readingOrder(board: BoardData, ids: string[]): string[] {
+  const position = new Map(board.nodes.map((node, index) => [node.id, index]));
+  const nodes = new Map(board.nodes.map((node) => [node.id, node]));
+  const pages = new Map(board.nodes.filter((node) => node.type === "CANVAS" || node.type === "PAGE")
+    .map((node, index) => [node.id, index]));
+  const owner = new Map<string, RefinedCluster>();
+  for (const cluster of board.clusters) for (const id of cluster.nodeIds) if (!owner.has(id)) owner.set(id, cluster);
+  const keyed = ids.map((id) => {
+    const node = nodes.get(id)!;
+    const cluster = owner.get(id);
+    const box = cluster?.boundingBox ?? node;
+    return { id, group: cluster?.id ?? `node\0${id}`, page: pages.get(node.pageId ?? "") ?? -1, x: box.x, y: box.y, at: position.get(id)! };
+  });
+  const first = new Map<string, number>();
+  for (const key of keyed) first.set(key.group, Math.min(first.get(key.group) ?? Infinity, key.at));
+  return keyed.sort((a, b) => a.page - b.page || a.y - b.y || a.x - b.x ||
+    first.get(a.group)! - first.get(b.group)! || a.at - b.at).map((key) => key.id);
+}
+
+function collapseWhitespace(text: string | undefined): string | undefined {
+  return text?.replace(/\s+/g, " ").trim() || undefined;
+}
+
+/** The first FULL_TEXT_CHARS characters, then "…". */
+function leadingText(text: string): string {
+  return text.length <= FULL_TEXT_CHARS ? text : `${text.slice(0, surrogateSafe(text, FULL_TEXT_CHARS))}…`;
+}
+
+/**
+ * Both texts whole up to FULL_TEXT_CHARS. Otherwise only the changed words on each
+ * side, with up to EDIT_CONTEXT_CHARS of context before and after, cut at word
+ * boundaries and marked with "…", at most EDIT_EXCERPT_CHARS per side.
+ */
+function textExcerpts(before: string | undefined, after: string | undefined): [string | undefined, string | undefined] {
+  if (before === undefined || after === undefined) {
+    return [before === undefined ? undefined : leadingText(before), after === undefined ? undefined : leadingText(after)];
+  }
+  if (before.length <= FULL_TEXT_CHARS && after.length <= FULL_TEXT_CHARS) return [before, after];
+  const shorter = Math.min(before.length, after.length);
+  let start = 0;
+  while (start < shorter && before[start] === after[start]) start++;
+  let end = 0;
+  while (end < shorter - start && before[before.length - 1 - end] === after[after.length - 1 - end]) end++;
+  // The common prefix and suffix are equal on both sides, so word boundaries are too.
+  while (start > 0 && before[start - 1] !== " ") start--;
+  while (end > 0 && before[before.length - end] !== " ") end--;
+  return [changedPart(before, start, before.length - end), changedPart(after, start, after.length - end)];
+}
+
+/** text[from, to) starts and ends at a word boundary. */
+function changedPart(text: string, from: number, to: number): string {
+  let head = Math.max(0, from - EDIT_CONTEXT_CHARS);
+  if (head > 0) head = Math.min(from, text.indexOf(" ", head - 1) + 1);
+  let tail = Math.min(text.length, to + EDIT_CONTEXT_CHARS);
+  if (tail < text.length) tail = Math.max(to, text.lastIndexOf(" ", tail));
+  const lead = head > 0 ? "…" : "";
+  const body = text.slice(head, tail).trim();
+  const trail = tail < text.length ? "…" : "";
+  if (lead.length + body.length + trail.length <= EDIT_EXCERPT_CHARS) return `${lead}${body}${trail}`;
+  const room = EDIT_EXCERPT_CHARS - lead.length - 1;
+  const space = body.lastIndexOf(" ", room);
+  return `${lead}${body.slice(0, space > room / 2 ? space : surrogateSafe(body, room)).trimEnd()}…`;
+}
+
+/** Moves a cut back by one when it would split a surrogate pair. */
+function surrogateSafe(text: string, index: number): number {
+  return index > 0 && /[\uD800-\uDBFF]/.test(text[index - 1]!) ? index - 1 : index;
 }
 
 function diffTableCells(
@@ -325,6 +554,7 @@ function buildSummaryText(
   stats: BoardDiffStats,
   clusters: ClusterDiffInternal,
   connections: ConnectionDiffInternal,
+  nodes: NodeDiffInternal,
 ): string {
   const lines: string[] = [
     `FigJam board ${current.fileKey} — changes from ${timestamp(baseline.createdAt)} to ${timestamp(current.createdAt)}:`,
@@ -369,6 +599,11 @@ function buildSummaryText(
     lines.push(...capped(connections.added, (line) => `- new: ${line}`));
     lines.push(...capped(connections.removed, (line) => `- removed: ${line}`));
   }
+  for (const block of nodes.blocks) {
+    if (block.total === 0) continue;
+    lines.push(`${block.title} (${block.total}):`, ...block.shown.map(nodeChangeLine));
+    if (block.total > block.shown.length) lines.push(`- … and ${block.total - block.shown.length} more`);
+  }
   lines.push(
     `Nodes: +${stats.addedNodes} added / -${stats.removedNodes} removed / ${stats.editedNodes} edited.`,
   );
@@ -377,6 +612,56 @@ function buildSummaryText(
   }
 
   return lines.join("\n");
+}
+
+/** "- sticky 5:87 in "Section": "old" → "new"". */
+function nodeChangeLine({ change, before, after, board }: NodeChangeItem): string {
+  const node = (after ?? before)!;
+  const head = `- ${nodeLabel(board, node, change.name)}: `;
+  if (change.changeType !== "edited") {
+    const text = change.currentText ?? change.previousText;
+    return head + (text !== undefined ? quote(text) : node.imageRef ? "image" : "no text");
+  }
+  const parts: string[] = [];
+  for (const aspect of change.changes ?? []) {
+    if (aspect === "text") {
+      parts.push(collapseWhitespace(before!.text) === collapseWhitespace(after!.text)
+        ? `text changed only in whitespace: ${quote(change.currentText ?? "")}`
+        : `${quoteOrNone(change.previousText)} → ${quoteOrNone(change.currentText)}`);
+    } else if (aspect === "name" && change.previousName !== undefined) {
+      parts.push(`renamed ${quote(change.previousName)} → ${quote(change.name ?? "")}`);
+    } else if (aspect === "image") {
+      parts.push(before!.imageRef && after!.imageRef ? "image replaced" : after!.imageRef ? "image added" : "image removed");
+    } else if (aspect === "rotation") {
+      parts.push("rotated");
+    } else if (aspect === "type") {
+      parts.push(`type changed from ${readableType(before!)} to ${readableType(after!)}`);
+    } else if (aspect === "appearance") {
+      parts.push("appearance changed (color, size or style)");
+    }
+  }
+  return head + parts.join("; ");
+}
+
+/** "sticky 5:87 in "Section"", with the name after the type when given. */
+function nodeLabel(board: BoardData, node: NormalizedNode, name: string | undefined): string {
+  const { sectionId, section } = sectionOf(board, node);
+  const place = section ? `in ${quote(section)}` : sectionId ? `in section ${sectionId}` : "outside sections";
+  return `${readableType(node)}${name ? ` ${quote(name)}` : ""} ${node.id} ${place}`;
+}
+
+/** sticky, text, shape, table, image, …; Figma's type in lower case otherwise. */
+function readableType(node: NormalizedNode): string {
+  if (node.type === "RECTANGLE" && node.imageRef) return "image";
+  return READABLE_TYPES[node.type] ?? node.type.toLowerCase().replace(/_/g, " ");
+}
+
+function quote(text: string): string {
+  return `"${text}"`;
+}
+
+function quoteOrNone(text: string | undefined): string {
+  return text === undefined ? "(no text)" : quote(text);
 }
 
 function capped<T>(items: T[], render: (item: T) => string): string[] {

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.10.2 — Unreleased
+
+- `diff_board` names each edited, added and removed node, in the text output and in the new optional `nodeChanges`:
+  its section, old and new text (only the changed words of a long text), link and what changed (`text`, `name`,
+  `image`, `rotation`, `type`, `appearance`); beyond 100 entries `nodeChangesOmitted` counts the rest. It only counted
+  them before.
+
 ## 0.10.1 — 2026-10-21
 
 - `ingest_board` downloads the board on every call. A re-ingest skipped the download while `/meta` reported the same
