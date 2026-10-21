@@ -4,7 +4,12 @@ A local MCP server that turns FigJam boards into source-cited context for LLMs.
 It reads a board through the Figma REST API, groups stickies, tables, images and
 arrows into clusters, and answers questions with links back to the original nodes.
 
-![Pipeline: a FigJam board is read through the Figma API, clustered by geometry, refined with vision and turned into LLM-ready context](https://raw.githubusercontent.com/ecestnrkl/figjam-mcp/main/docs/pipeline.gif)
+![Real run: ingest_board reads the demo board, answer_from_board cites two conflicting pilot dates, Figma's MCP server edits the board, ingest_board reports the change, diff_board names the edited sticky and table cell, answer_from_board gives the new date](https://raw.githubusercontent.com/ecestnrkl/figjam-mcp/main/docs/demo.gif)
+
+Rendered from the tool calls and outputs of a real run against the public
+[demo board](https://www.figma.com/board/MnLdkszfu3jthPDWHYWRiH/Demo-Board) with
+figjam-context-mcp 0.10.2 and `openai/gpt-4.1-mini`. Figma's MCP server
+(`use_figma`) made the edit.
 
 ## Why
 
@@ -12,6 +17,22 @@ Workshop boards hold research notes, decisions and open questions, but an LLM
 cannot read a canvas. Screenshots and PDF exports lose tables, arrow direction
 and the link to the source. This server keeps the board's structure and cites
 every answer to the nodes it came from.
+
+## Compared with Figma's MCP server
+
+Figma's official MCP server reads a FigJam board or node with its images
+(`get_figjam`) and edits boards (`use_figma`). This server turns a workshop
+board into context an assistant can cite and track:
+
+- large boards read section by section, with an overview, size-limited pages and search
+- a link to the source node for every excerpt and citation
+- tables read row by row
+- local snapshots, and `diff_board` to see what changed
+- explicit credentials redacted before they reach the cache, the output or a model
+- image descriptions from a vision model you configure
+
+The two work together: in the demo above, Figma's server edits the board and
+this one reports the change.
 
 ## Tools
 
@@ -72,6 +93,8 @@ All settings: [configuration](https://github.com/ecestnrkl/figjam-mcp/blob/main/
 Problems: [troubleshooting](https://github.com/ecestnrkl/figjam-mcp/blob/main/docs/troubleshooting.md).
 
 ## How it works
+
+![Pipeline: a FigJam board is read through the Figma API, clustered by geometry, refined with vision and turned into LLM-ready context](https://raw.githubusercontent.com/ecestnrkl/figjam-mcp/main/docs/pipeline.gif)
 
 1. **Read.** `ingest_board` downloads the board through the Figma REST API on
    every call. `get_board_context` and `answer_from_board` read the saved
