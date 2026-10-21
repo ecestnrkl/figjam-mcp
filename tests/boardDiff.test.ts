@@ -273,4 +273,16 @@ describe("diffBoards", () => {
     expect(diff.stats.editedNodes).toBe(0);
     expect(diff.stats.unchangedClusters).toBe(1);
   });
+
+  it("reports no changed cluster when only the cluster labels differ", () => {
+    const nodes = [node("idea-1", "First idea"), node("idea-2", "Second idea"), node("decision", "Decision")];
+    const edges = [{ connectorId: "arrow", fromNodeId: "idea-1", toNodeId: "decision", label: "chosen", direction: "forward" as const }];
+    const baseline = { ...board(nodes, [cluster("ideas", "Second idea", ["idea-1", "idea-2"]),
+      cluster("decisions", "Decision", ["decision"])], 1), connectorEdges: edges };
+    const current = { ...board(nodes, [cluster("ideas", "Ideas", ["idea-1", "idea-2"]),
+      cluster("decisions", "Decisions", ["decision"])], 2), connectorEdges: edges };
+    const diff = diffBoards(baseline, current);
+    expect(diff.stats).toMatchObject({ newClusters: 0, removedClusters: 0, modifiedClusters: 0, unchangedClusters: 2,
+      addedConnections: 0, removedConnections: 0 });
+  });
 });

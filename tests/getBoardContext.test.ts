@@ -50,8 +50,10 @@ describe("getBoardContext", () => {
     expect(output.evidence[0]?.text).toContain("Interview quotes");
     expect(output.evidence.map((item) => item.nodeId)).toEqual(["1:1", "1:2"]);
     expect(text).toContain("1:1 → 1:2 (inspires)");
-    expect(text).not.toContain("Brand campaign");
-    expect(output.connections.map((item) => item.connectorId)).toEqual(["2:1"]);
+    // The second hop is no excerpt; its arrow names the far end by its short text.
+    expect(text).not.toContain("node 1:3 ·");
+    expect(text).toContain("1:2 → 1:3 «Brand campaign»");
+    expect(output.connections.map((item) => [item.connectorId, item.toText])).toEqual([["2:1", undefined], ["2:2", "Brand campaign"]]);
     expect(output.totalMatched).toBe(2);
   });
 
@@ -453,6 +455,55 @@ describe("getBoardContext text and structured content", () => {
         expect(text.length).toBeLessThanOrEqual(maxChars);
         expect(JSON.stringify(structuredContent).length).toBeLessThanOrEqual(maxChars);
         expect(Buffer.byteLength(JSON.stringify({ content: [{ type: "text", text }], structuredContent }))).toBeLessThanOrEqual(128 * 1024);
+      }
+    }
+  });
+
+  it("shows an arrow between sections once an excerpt inside one is on the page, never one to a page", async () => {
+    const container = (id: string, name: string, type = "SECTION") =>
+      ({ id, name, type, x: 0, y: 0, width: 1, height: 1, rotation: 0, pageId: "0:1", ...(type === "SECTION" ? { sectionIds: [id] } : {}) });
+    const data = evidenceBoard("Sections123", [
+      { ...textNode("1:1", "Interview notes"), sectionIds: ["S:R"] },
+      { ...textNode("1:2", "Affinity map"), sectionIds: ["S:S"] },
+      { ...textNode("1:3", "Parking"), sectionIds: ["S:O"] },
+    ]);
+    data.nodes.push(container("0:1", "Page 1", "CANVAS"), container("S:R", "Research"), container("S:S", "Synthesis"), container("S:O", "Other"));
+    // Snapshots from before 0.10.0 can still hold an arrow to the canvas.
+    data.connectorEdges = [
+      { connectorId: "2:1", fromNodeId: "S:R", toNodeId: "S:S", direction: "forward", label: "feeds" },
+      { connectorId: "2:2", fromNodeId: "S:R", toNodeId: "0:1", direction: "forward", label: "anchored" },
+    ];
+    setBoard(data.boardId, data);
+    const between = { connectorId: "2:1", fromNodeId: "S:R", fromText: "Research", toNodeId: "S:S", toText: "Synthesis", label: "feeds" };
+    const research = await getBoardContext({ boardId: data.boardId, nodeIds: ["S:R"] });
+    expect(research.structuredContent.connections).toEqual([expect.objectContaining(between)]);
+    expect(research.text).toContain("- S:R «Research» → S:S «Synthesis» (feeds)");
+    expect((await getBoardContext({ boardId: data.boardId, nodeIds: ["S:O"] })).structuredContent.connections).toEqual([]);
+    const first = await getBoardContext({ boardId: data.boardId });
+    expect(first.structuredContent.evidence.map((item) => item.nodeId)).toContain("1:1");
+    expect(first.structuredContent.connections).toEqual([expect.objectContaining(between)]);
+    expect(first.text).not.toContain("anchored");
+  });
+
+  it("fits arrows with one end on the page into maxChars and counts the omitted ones", async () => {
+    const section = (id: string) => ({ id, name: `Section ${id}`, type: "SECTION", x: 0, y: 0, width: 1, height: 1, rotation: 0, pageId: "0:1", sectionIds: [id] });
+    const inSection = (id: string, text: string, sectionId: string) => ({ ...textNode(id, text), sectionIds: [sectionId] });
+    const near = Array.from({ length: 60 }, (_, i) => inSection(`1:${i}`, `Pain point ${i}: ${"queue ".repeat(20)}`, "S:1"));
+    const far = Array.from({ length: 60 }, (_, i) => inSection(`2:${i}`, `Idea ${i}: ${"order ahead ".repeat(20)}`, "S:2"));
+    const data = evidenceBoard("OneEnd123", [...near, ...far]);
+    data.nodes.push(section("S:1"), section("S:2"));
+    data.connectorEdges = near.map((node, i) => ({ connectorId: `3:${i}`, fromNodeId: node.id, toNodeId: `2:${i}`, direction: "forward" as const, label: "solves" }));
+    setBoard(data.boardId, data);
+    for (const maxChars of [2000, 12000, 24000]) {
+      const { text, structuredContent: output } = await getBoardContext({ boardId: data.boardId, nodeIds: ["S:1"], limit: 100, maxChars });
+      expect(text.length).toBeLessThanOrEqual(maxChars);
+      expect(JSON.stringify(output).length).toBeLessThanOrEqual(maxChars);
+      expect(output.evidence.every((item) => item.nodeId.startsWith("1:"))).toBe(true);
+      expect(output.connections.length + output.truncation.omittedConnections).toBe(output.evidence.length);
+      if (maxChars > 2000) {
+        expect(output.connections.length).toBeGreaterThan(0);
+        expect(output.connections[0]!.toText).toMatch(/^Idea \d+: order ahead .*…$/);
+        expect(output.connections[0]!.toText!.length).toBe(80);
       }
     }
   });

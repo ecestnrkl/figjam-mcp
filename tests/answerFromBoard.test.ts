@@ -316,6 +316,20 @@ describe("answerFromBoard evidence grounding", () => {
     expect(prompt()).not.toContain("Unrelated brand");
   });
 
+  it("keeps only arrows with both ends among the prompt's excerpts", async () => {
+    const data = evidenceBoard("BothEnds123", [textNode("1:1", "Payment failures"), textNode("1:2", "Release milestone"), textNode("1:3", "Unrelated brand")]);
+    data.connectorEdges = [
+      { connectorId: "2:1", fromNodeId: "1:1", toNodeId: "1:2", direction: "forward", label: "delays" },
+      { connectorId: "2:2", fromNodeId: "1:2", toNodeId: "1:3", direction: "forward", label: "second hop" },
+    ];
+    setBoard(data.boardId, data);
+    chatJsonMock.mockResolvedValueOnce({ kind: "answer", language: "en", answer: "No answer", evidenceIds: [] });
+    await answerFromBoard({ boardId: data.boardId, question: "What do payment failures affect?" });
+    expect(prompt()).toContain("1:1 → 1:2 (delays)");
+    expect(prompt()).not.toContain("second hop");
+    expect(prompt()).not.toContain("Unrelated brand");
+  });
+
   it("does not shorten primary excerpts when long graph neighbors are added", async () => {
     const primary = Array.from({ length: 6 }, (_, i) => textNode(`p:${i}`, `Deployment fact ${i}: ` + "factual detail ".repeat(65)));
     const neighbors = Array.from({ length: 4 }, (_, i) => textNode(`n:${i}`, "Ancillary commentary ".repeat(60)));

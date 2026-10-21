@@ -40,11 +40,27 @@ export interface Evidence {
 export interface EvidenceConnection {
   connectorId: string;
   fromNodeId: string;
+  /** Short text of the start node when it is not among the displayed excerpts. */
+  fromText?: string;
   toNodeId: string;
+  /** Short text of the end node when it is not among the displayed excerpts. */
+  toText?: string;
   direction: NonNullable<ConnectorEdge["direction"]>;
   label?: string;
   url: string;
 }
+
+/**
+ * "both": arrows between displayed nodes. "either": also arrows with one end displayed
+ * or a section, frame or group around a displayed node; never arrows to a page.
+ */
+export type ConnectionEnds = "both" | "either";
+/** An arrow end of these types is on the page when a displayed excerpt lies inside it. */
+const ENCLOSING_END_TYPES = new Set(["SECTION", "FRAME", "GROUP"]);
+const PAGE_END_TYPES = new Set(["DOCUMENT", "CANVAS", "PAGE"]);
+
+/** Length of the short text that names an end outside the displayed excerpts. */
+const END_TEXT_CHARS = 80;
 
 export interface EvidenceQuery {
   query?: string;
@@ -211,31 +227,73 @@ export function retrieveEvidence(board: BoardData, options: EvidenceQuery = {}):
   };
 }
 
-/** Only connections between displayed source nodes are evidence for the current response. */
-export function connectionsForEvidence(board: BoardData, evidence: Evidence[]): EvidenceConnection[] {
-  return matchingConnections(board, evidence)
+/**
+ * Arrows of the displayed source nodes, at most 100. With ends "either", an end
+ * that is not displayed is named by its short text; the board's redaction applies.
+ */
+export function connectionsForEvidence(board: BoardData, evidence: Evidence[], ends: ConnectionEnds = "both"): EvidenceConnection[] {
+  const selected = displayedNodeIds(evidence);
+  const endText = (nodeId: string) => {
+    if (selected.has(nodeId)) return undefined;
+    const node = boardLookups(board).nodesById.get(nodeId);
+    const text = (node?.text?.trim() || node?.name.trim() || "").replace(/\s+/g, " ");
+    return text ? boundedText(text, END_TEXT_CHARS) : undefined;
+  };
+  return matchingConnections(board, selected, ends)
     .slice(0, 100)
-    .map((edge) => ({
-      connectorId: edge.connectorId,
-      fromNodeId: edge.fromNodeId,
-      toNodeId: edge.toNodeId,
-      direction: edge.direction ?? "forward",
-      label: edge.label ? boundedText(edge.label, 240) : undefined,
-      url: nodeLink(board, edge.connectorId),
-    }));
+    .map((edge) => {
+      const fromText = endText(edge.fromNodeId);
+      const toText = endText(edge.toNodeId);
+      return {
+        connectorId: edge.connectorId,
+        fromNodeId: edge.fromNodeId,
+        ...(fromText ? { fromText } : {}),
+        toNodeId: edge.toNodeId,
+        ...(toText ? { toText } : {}),
+        direction: edge.direction ?? "forward",
+        label: edge.label ? boundedText(edge.label, 240) : undefined,
+        url: nodeLink(board, edge.connectorId),
+      };
+    });
 }
 
-export function countConnectionsForEvidence(board: BoardData, evidence: Evidence[]): number {
-  return matchingConnections(board, evidence).length;
+export function countConnectionsForEvidence(board: BoardData, evidence: Evidence[], ends: ConnectionEnds = "both"): number {
+  return matchingConnections(board, displayedNodeIds(evidence), ends).length;
 }
 
 export function formatEvidenceConnection(connection: EvidenceConnection): string {
-  return `${connection.fromNodeId} ${connectorArrow(connection)} ${connection.toNodeId}${connection.label ? ` (${connection.label})` : ""}`;
+  const end = (nodeId: string, text?: string) => text ? `${nodeId} «${text}»` : nodeId;
+  return `${end(connection.fromNodeId, connection.fromText)} ${connectorArrow(connection)} ${end(connection.toNodeId, connection.toText)}` +
+    `${connection.label ? ` (${connection.label})` : ""}`;
 }
 
-function matchingConnections(board: BoardData, evidence: Evidence[]): ConnectorEdge[] {
-  const selected = new Set(evidence.flatMap((item) => [item.nodeId, ...(item.renderNodeId ? [item.renderNodeId] : [])]));
-  return (board.connectorEdges ?? []).filter((edge) => selected.has(edge.fromNodeId) && selected.has(edge.toNodeId));
+function displayedNodeIds(evidence: Evidence[]): Set<string> {
+  return new Set(evidence.flatMap((item) => [item.nodeId, ...(item.renderNodeId ? [item.renderNodeId] : [])]));
+}
+
+function matchingConnections(board: BoardData, selected: ReadonlySet<string>, ends: ConnectionEnds): ConnectorEdge[] {
+  const edges = board.connectorEdges ?? [];
+  if (ends === "both") return edges.filter((edge) => selected.has(edge.fromNodeId) && selected.has(edge.toNodeId));
+  if (!edges.length) return [];
+  const { nodesById, enclosing } = boardLookups(board);
+  const type = (id: string) => nodesById.get(id)?.type ?? "";
+  const around = new Set<string>();
+  for (const id of selected) for (const container of enclosing(id)) if (ENCLOSING_END_TYPES.has(type(container))) around.add(container);
+  const onPage = (id: string) => selected.has(id) || around.has(id);
+  return edges.filter((edge) => !PAGE_END_TYPES.has(type(edge.fromNodeId)) && !PAGE_END_TYPES.has(type(edge.toNodeId)) &&
+    (onPage(edge.fromNodeId) || onPage(edge.toNodeId)));
+}
+
+// One lookup per published snapshot; a page is fitted to its budget with many calls.
+const lookups = new WeakMap<BoardData, { nodesById: Map<string, NormalizedNode>; enclosing: (nodeId: string) => Set<string> }>();
+
+function boardLookups(board: BoardData): { nodesById: Map<string, NormalizedNode>; enclosing: (nodeId: string) => Set<string> } {
+  let found = lookups.get(board);
+  if (!found) {
+    found = { nodesById: new Map(board.nodes.map((node) => [node.id, node])), enclosing: enclosingIdsLookup(board) };
+    lookups.set(board, found);
+  }
+  return found;
 }
 
 /** Requested IDs of pages, sections, frames and groups, in request order. */
@@ -577,7 +635,8 @@ function buildEvidence(board: BoardData, snapshotId: string): EvidenceSource[] {
           column: cell.column,
         }, cluster);
       }
-    } else if (node.text?.trim()) {
+    } else if (node.text?.trim() && node.type !== "CONNECTOR") {
+      // An arrow's text is its label in connections, relations and diffs, not an excerpt.
       append(node.text, { ...provenance, nodeId: node.id, sourceType: "board_text", modelDerived: false }, cluster);
     }
     if (!node.text?.trim() && !node.table?.cells.some((cell) => cell.text.trim()) && node.name.trim() &&

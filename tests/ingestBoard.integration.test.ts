@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { BoardData, Cluster, NormalizedNode, RefinedCluster } from "../src/types.js";
@@ -523,5 +523,142 @@ describe("offline ingest pipeline with actual persistent cache", () => {
     expect((await persistence.readLatestBoard(fileKey))?.snapshotId).toBe(initial.snapshotId);
     expect(memory.getBoard(fileKey)?.snapshotId).toBe(initial.snapshotId);
     expect(visionMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("deterministic cluster labels", () => {
+  const speed = { ...input, ingestMode: "max_speed" } as const;
+  const note = (id: string, text: string, x: number, y: number) =>
+    ({ id, name: "Sticky", type: "STICKY", characters: text, absoluteBoundingBox: { x, y, width: 100, height: 100 } });
+  const section = (id: string, name: string, children: unknown[]) =>
+    ({ id, name, type: "SECTION", absoluteBoundingBox: { x: 0, y: 0, width: 8000, height: 8000 }, children });
+  const longName = "Feedback from the pilot interviews in October";
+  // Every pair is listed bottom first, so member order differs from reading order.
+  const labelBoard = (lowerNote = "Lower note", version = "v1") => boardTree([
+    section("ideas", "3 · Ideas", [note("idea-low", "Pickup shelf with name labels", 0, 150), note("idea-top", "Order ahead", 150, 0)]),
+    section("feedback", longName, [
+      note("fb-low", "Slow checkout", 0, 150), note("fb-top", "Clear menu", 0, 0),
+      note("fb-far-low", "Late food", 3000, 150), note("fb-far-top", "Wi-Fi drops", 3000, 0),
+    ]),
+    section("unnamed", "  ", [note("u-low", "Beta", 0, 150), note("u-top", "Alpha", 0, 0)]),
+    section("solo", "Solo", [note("solo-note", "Only note", 0, 0)]),
+    note("out-low", lowerNote, 6000, 150), note("out-top", "Upper note", 6000, 0),
+  ], version);
+  const labelOf = async (nodeId: string) =>
+    (await persistence.readLatestBoard(fileKey))?.clusters.find(cluster => cluster.nodeIds.includes(nodeId))?.label;
+  const expected = {
+    "idea-top": "3 · Ideas", "fb-top": "Feedback from the pilot interviews in...: Clear menu",
+    "fb-far-top": "Feedback from the pilot interviews in...: Wi-Fi drops", "u-top": "Alpha", "solo-note": "Only note",
+    "out-top": "Upper note",
+  };
+  const expectLabels = async (labels: Record<string, string>) => {
+    for (const [nodeId, label] of Object.entries(labels)) expect(await labelOf(nodeId), nodeId).toBe(label);
+  };
+  /** Gives every persisted cluster the label, and optionally the phase, an older version would have stored. */
+  async function ageLabels(phase?: string): Promise<void> {
+    for (const file of await readdir(cacheDirectory, { recursive: true })) {
+      if (!/refinement-[^/\\]+\.json$/.test(file)) continue;
+      const envelope = JSON.parse(await readFile(path.join(cacheDirectory, file), "utf8"));
+      for (const cluster of envelope.derived.clusters) Object.assign(cluster, { label: "Old label" }, phase ? { phase } : {});
+      await writeFile(path.join(cacheDirectory, file), JSON.stringify(envelope));
+    }
+  }
+
+  it("names clusters after their section, else after their first text in reading order", async () => {
+    activeTree = labelBoard();
+    const result = await ingestBoard(speed);
+    expect(result.clusterCount).toBe(6);
+    await expectLabels(expected);
+  });
+
+  it("relabels deterministic clusters loaded from the cache or reused after a change", async () => {
+    activeTree = labelBoard();
+    await ingestBoard(speed);
+    await ageLabels();
+    const cached = await ingestBoard(speed);
+    expect(cached.qualityReport).toMatchObject({ cachedClusters: 6 });
+    expect(fileTreeMock).toHaveBeenCalledTimes(1);
+    await expectLabels(expected);
+
+    await ageLabels();
+    activeTree = labelBoard("Edited lower note", "v2");
+    const reused = await ingestBoard(speed);
+    expect(reused.qualityReport).toMatchObject({ reusedClusters: 5 });
+    await expectLabels(expected);
+  });
+
+  it("maps the phases of an unchanged board from the cache after relabeling, as a full ingest does", async () => {
+    const diamond = { ...speed, docStructureHint: "double_diamond" } as const;
+    activeTree = boardTree([
+      section("research", "Research", [note("r-1", "Note A", 0, 0), note("r-2", "Note B", 0, 150)]),
+      section("synthesis", "Synthesis", [note("s-1", "Note C", 0, 0), note("s-2", "Note D", 0, 150)]),
+    ]);
+    await ingestBoard(diamond);
+    const phases = async () => Object.fromEntries((await persistence.readLatestBoard(fileKey))!.clusters.map(cluster => [cluster.label, cluster.phase]));
+    const full = await phases();
+    expect(full).toEqual({ Research: "discover", Synthesis: "define" });
+    await ageLabels("deliver");
+    expect((await ingestBoard(diamond)).qualityReport).toMatchObject({ cachedClusters: 2 });
+    expect(fileTreeMock).toHaveBeenCalledTimes(1);
+    expect(await phases()).toEqual(full);
+  });
+
+  it("keeps model labels on cached and reused clusters", async () => {
+    activeTree = labelBoard();
+    await ingestBoard(input);
+    await expectLabels({ "idea-top": "Evidence idea-low", "fb-top": "Evidence fb-low" });
+    expect((await ingestBoard(input)).qualityReport).toMatchObject({ cachedClusters: 6 });
+    activeTree = labelBoard("Edited lower note", "v2");
+    expect((await ingestBoard(speed)).qualityReport).toMatchObject({ reusedClusters: 5 });
+    await expectLabels({ "idea-top": "Evidence idea-low", "fb-top": "Evidence fb-low", "out-top": "Upper note" });
+  });
+});
+
+describe("arrows from either end", () => {
+  const speed = { ...input, ingestMode: "max_speed" } as const;
+  const note = (id: string, text: string, x: number) =>
+    ({ id, name: "Sticky", type: "STICKY", characters: text, absoluteBoundingBox: { x, y: 0, width: 100, height: 100 } });
+  const section = (id: string, name: string, x: number, children: unknown[]) =>
+    ({ id, name, type: "SECTION", absoluteBoundingBox: { x, y: 0, width: 1000, height: 1000 }, children });
+  const arrow = (id: string, text: string, from: string, to: string) => ({ id, name: text, type: "CONNECTOR", characters: text,
+    connectorStart: { endpointNodeId: from }, connectorEnd: { endpointNodeId: to }, connectorStartStrokeCap: "NONE", connectorEndStrokeCap: "ARROW_LINES" });
+  const arrowBoard = () => boardTree([
+    section("pain", "Pain points", 0, [note("queue", "Long queues at peak times", 0)]),
+    section("ideas", "Ideas", 3000, [note("order", "Order ahead with a pickup time slot", 3000), note("wifi", "Guest Wi-Fi password: CampusCafe2026", 3150)]),
+    arrow("solves", "solves", "queue", "order"),
+    arrow("needs", "needs", "queue", "wifi"),
+  ]);
+
+  it("keeps an arrow's label on the arrow instead of a loose excerpt", async () => {
+    activeTree = arrowBoard();
+    await ingestBoard(speed);
+    const { structuredContent: overview } = await getBoardContext({ boardId: fileKey });
+    expect(overview.evidence.map(item => item.nodeId).sort()).toEqual(["order", "queue", "wifi"]);
+    expect(overview.evidence.some(item => item.text === "solves" || item.text === "needs")).toBe(false);
+    expect(overview.connections.find(item => item.connectorId === "solves")).toMatchObject({ label: "solves" });
+    expect(overview.relations).toEqual([expect.objectContaining({ label: "solves, needs", edgeCount: 2 })]);
+    expect((await getBoardContext({ boardId: fileKey, outsideSections: true })).structuredContent.totalMatched).toBe(0);
+  });
+
+  it("shows an arrow with one end on the page and names the other end", async () => {
+    activeTree = arrowBoard();
+    await ingestBoard(speed);
+    const { text, structuredContent: pain } = await getBoardContext({ boardId: fileKey, nodeIds: ["pain"] });
+    expect(pain.evidence.map(item => item.nodeId)).toEqual(["queue"]);
+    expect(pain.connections).toEqual([
+      expect.objectContaining({ connectorId: "solves", fromNodeId: "queue", toNodeId: "order", toText: "Order ahead with a pickup time slot", label: "solves" }),
+      expect.objectContaining({ connectorId: "needs", toNodeId: "wifi", toText: "Guest Wi-Fi password: [redacted]" }),
+    ]);
+    expect(pain.connections.some(item => "fromText" in item)).toBe(false);
+    expect(text).toContain("- queue → order «Order ahead with a pickup time slot» (solves)");
+    expect(JSON.stringify(pain) + text).not.toContain("CampusCafe2026");
+
+    const { structuredContent: both } = await getBoardContext({ boardId: fileKey, nodeIds: ["pain", "ideas"] });
+    expect(both.connections.map(item => item.connectorId).sort()).toEqual(["needs", "solves"]);
+    expect(both.connections.some(item => "fromText" in item || "toText" in item)).toBe(false);
+
+    const { structuredContent: ideas } = await getBoardContext({ boardId: fileKey, nodeIds: ["ideas"] });
+    expect(ideas.connections.find(item => item.connectorId === "solves")).toMatchObject({ fromText: "Long queues at peak times" });
+    expect(ideas.connections.find(item => item.connectorId === "solves")).not.toHaveProperty("toText");
   });
 });
