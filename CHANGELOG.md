@@ -17,6 +17,10 @@
 - `diagnose_llm_config` lists the models each check tried in the new optional `attempts` (model, ok and the provider's
   message or error). A failed check names every model with its error, and the summary names checks that passed only
   with a later candidate, with the model that failed.
+- The `student-free` preset sends text to `openrouter/free` only, like images: the free Nemotron 3 Super answered for
+  hours with HTTP 404 from its only provider, which cost every text request an extra request. Image interpretations
+  now depend only on the vision models, `LLM_BASE_URL`, `LLM_PROVIDER_REQUIRE_PARAMETERS` and the extraction and prompt
+  versions, so changing text models keeps them. After this update, the next ingest interprets images once again.
 
 ## 0.9.1 — 2026-10-20
 

@@ -495,6 +495,23 @@ describe("offline ingest pipeline with actual persistent cache", () => {
     expect(await persistence.readBoardHistory(fileKey)).toHaveLength(1);
   });
 
+  it("keeps interpretations after a text model change and interprets again after a vision model change", async () => {
+    activeTree = boardTree([imageNode("photo-a", 0), imageNode("photo-b", 1000), sticky("note", "Workshop note", 2000)]);
+    const balanced = { ...input, ingestMode: "balanced" } as const;
+    await ingestBoard(balanced);
+    expect(visionMock).toHaveBeenCalledTimes(2);
+    visionMock.mockClear();
+    vi.stubEnv("LLM_TEXT_MODELS", "other/text-model");
+    vi.stubEnv("LLM_FAST_TEXT_MODELS", "other/fast-model");
+    const textChanged = await ingestBoard(balanced);
+    expect(visionMock).not.toHaveBeenCalled();
+    expect(textChanged.qualityReport).toMatchObject({ visionClusters: 2, incompleteClusters: 0 });
+    vi.stubEnv("LLM_VISION_MODELS", "other/vision-model");
+    const visionChanged = await ingestBoard(balanced);
+    expect((visionMock.mock.calls as Array<[Cluster]>).map(([cluster]) => cluster.nodeIds).sort()).toEqual([["photo-a"], ["photo-b"]]);
+    expect(visionChanged.qualityReport).toMatchObject({ visionClusters: 2, reusedClusters: 0 });
+  });
+
   it("retains late source facts and internal connector evidence through ingestion", async () => {
     activeTree = boardTree([
       ...Array.from({ length: 6 }, (_, index) => sticky(`note-${index}`, index === 5 ? "Launch code: ORCHID-742" : `Research finding ${index} with sufficient original planning details.`, index * 110)),
