@@ -151,7 +151,7 @@ export function createServer(): McpServer {
     {
       title: "Diff Board Snapshots",
       description:
-        "Compare retained local snapshots of the same board, reporting cluster, node and connector changes. Names each changed node with its section and its old and new text. Requires at least two distinct ingests. compareTo=1 selects the previous snapshot, 2 selects two states back. No network or LLM calls; ingest_board must capture the current Figma state first.",
+        "Compare retained local snapshots of the same board, reporting cluster, node and connector changes. Names each changed node with its section and its old and new text, and each changed table cell with its row and column. Requires at least two distinct ingests. compareTo=1 selects the previous snapshot, 2 selects two states back. No network or LLM calls; ingest_board must capture the current Figma state first.",
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       inputSchema: diffBoardInputSchema,
       outputSchema: z.object(diffBoardOutputShape),

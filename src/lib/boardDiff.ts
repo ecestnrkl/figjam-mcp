@@ -1,8 +1,8 @@
-import type { BoardData, ConnectorEdge, NormalizedNode, RefinedCluster } from "../types.js";
+import type { BoardData, ConnectorEdge, NormalizedNode, RefinedCluster, TableCell } from "../types.js";
 import { isGenericNodeName, STRUCTURAL_TYPES } from "./nodeTree.js";
 import { hashClusterNodes } from "./persistentCache.js";
 import { connectorArrow } from "./connectorGraph.js";
-import { boundedText, nodeLink } from "./evidence.js";
+import { boundedText, nodeLink, tableCellPositions } from "./evidence.js";
 
 /**
  * Compares two ingest snapshots of the same board — "what changed since the
@@ -86,6 +86,12 @@ export interface TableCellChange {
   previousColumn?: number;
   currentRow?: number;
   currentColumn?: number;
+  /** From the current table, the baseline's for removed cells; absent for default names. */
+  tableName?: string;
+  /** Text of the first cell in the row, absent when empty or the changed cell itself. */
+  rowLabel?: string;
+  /** Text of the cell in the first row of the column, absent when empty or the changed cell itself. */
+  columnLabel?: string;
 }
 
 /** Minimum member overlap (relative to the smaller cluster) to treat two clusters as the same. */
@@ -93,7 +99,7 @@ const CLUSTER_MATCH_THRESHOLD = 0.5;
 
 /** Max entries rendered per section in summaryText. */
 const SUMMARY_SECTION_LIMIT = 8;
-/** Max entries in nodeChanges and lines per node block in summaryText. */
+/** Max entries in nodeChanges, and lines per node or table cell block in summaryText. */
 const NODE_CHANGE_LIMIT = 100;
 const NODE_LINES_PER_BLOCK = 20;
 /** Texts up to this length are shown whole; longer new or removed texts are cut here. */
@@ -141,7 +147,7 @@ export function diffBoards(baseline: BoardData, current: BoardData): BoardDiffRe
     modifiedClusters: clusterDiff.modifiedClusters,
     addedConnections: connectionDiff.added,
     removedConnections: connectionDiff.removed,
-    summaryText: buildSummaryText(baseline, current, stats, clusterDiff, connectionDiff, nodeDiff),
+    summaryText: buildSummaryText(baseline, current, stats, clusterDiff, connectionDiff, nodeDiff, tableCellChanges),
     tableCellChanges,
     nodeChanges: nodeDiff.entries,
     ...(nodeDiff.omitted > 0 ? { nodeChangesOmitted: nodeDiff.omitted } : {}),
@@ -356,6 +362,11 @@ function surrogateSafe(text: string, index: number): number {
   return index > 0 && /[\uD800-\uDBFF]/.test(text[index - 1]!) ? index - 1 : index;
 }
 
+/**
+ * Whether a cell changed depends on its text and the positions stored in the
+ * snapshot. Positions derived from cell IDs only label the change: compared,
+ * a row inserted without stored positions would move every cell below it.
+ */
 function diffTableCells(
   beforeNodes: Map<string, NormalizedNode>,
   afterNodes: Map<string, NormalizedNode>,
@@ -368,21 +379,63 @@ function diffTableCells(
   for (const tableNodeId of tableIds) {
     const before = new Map((beforeNodes.get(tableNodeId)?.table?.cells ?? []).map((cell) => [cell.id, cell]));
     const after = new Map((afterNodes.get(tableNodeId)?.table?.cells ?? []).map((cell) => [cell.id, cell]));
+    let layouts: [TableLayout, TableLayout] | undefined;
     for (const cellId of new Set([...before.keys(), ...after.keys()])) {
       const previous = before.get(cellId);
       const current = after.get(cellId);
       if (previous && current && previous.text === current.text && previous.row === current.row &&
           previous.column === current.column) continue;
+      layouts ??= [tableLayout(beforeNodes.get(tableNodeId)), tableLayout(afterNodes.get(tableNodeId))];
+      const [oldLayout, newLayout] = layouts;
+      const shownBefore = oldLayout.cells.get(cellId);
+      const shownAfter = newLayout.cells.get(cellId);
       changes.push({
         tableNodeId, cellId,
         changeType: !previous ? "added" : !current ? "removed" : "modified",
         previousText: previous?.text, currentText: current?.text,
-        previousRow: previous?.row, previousColumn: previous?.column,
-        currentRow: current?.row, currentColumn: current?.column,
+        previousRow: shownBefore?.row, previousColumn: shownBefore?.column,
+        currentRow: shownAfter?.row, currentColumn: shownAfter?.column,
+        ...(current ? newLayout : oldLayout).labels(cellId),
       });
     }
   }
   return changes;
+}
+
+interface TableLayout {
+  cells: Map<string, TableCell>;
+  labels(cellId: string): Pick<TableCellChange, "tableName" | "rowLabel" | "columnLabel">;
+}
+
+/** Cells with positions as get_board_context reads them, and the labels of their row and column. */
+function tableLayout(table: NormalizedNode | undefined): TableLayout {
+  const cells = table?.table ? tableCellPositions(table) : [];
+  const rowHeads = new Map<number, TableCell>();
+  const columnHeads = new Map<number, TableCell>();
+  for (const cell of cells) {
+    if (cell.row === undefined || cell.column === undefined) continue;
+    if (cell.column < (rowHeads.get(cell.row)?.column ?? Infinity)) rowHeads.set(cell.row, cell);
+    if (cell.row < (columnHeads.get(cell.column)?.row ?? Infinity)) columnHeads.set(cell.column, cell);
+  }
+  const name = table && !isGenericNodeName(table.name) ? collapseWhitespace(table.name) : undefined;
+  const byId = new Map(cells.map((cell) => [cell.id, cell]));
+  const label = (head: TableCell | undefined, cellId: string) => {
+    const text = head && head.id !== cellId ? collapseWhitespace(head.text) : undefined;
+    return text ? boundedText(text, NAME_CHARS) : undefined;
+  };
+  return {
+    cells: byId,
+    labels(cellId) {
+      const cell = byId.get(cellId);
+      const rowLabel = cell?.row === undefined ? undefined : label(rowHeads.get(cell.row), cellId);
+      const columnLabel = cell?.column === undefined ? undefined : label(columnHeads.get(cell.column), cellId);
+      return {
+        ...(name ? { tableName: boundedText(name, NAME_CHARS) } : {}),
+        ...(rowLabel ? { rowLabel } : {}),
+        ...(columnLabel ? { columnLabel } : {}),
+      };
+    },
+  };
 }
 
 interface ClusterDiffInternal {
@@ -555,6 +608,7 @@ function buildSummaryText(
   clusters: ClusterDiffInternal,
   connections: ConnectionDiffInternal,
   nodes: NodeDiffInternal,
+  tableCells: TableCellChange[],
 ): string {
   const lines: string[] = [
     `FigJam board ${current.fileKey} — changes from ${timestamp(baseline.createdAt)} to ${timestamp(current.createdAt)}:`,
@@ -604,6 +658,15 @@ function buildSummaryText(
     lines.push(`${block.title} (${block.total}):`, ...block.shown.map(nodeChangeLine));
     if (block.total > block.shown.length) lines.push(`- … and ${block.total - block.shown.length} more`);
   }
+  // A new or removed table is one line among the nodes, not one per cell.
+  const baselineTables = new Map(baseline.nodes.filter((node) => node.table).map((node) => [node.id, node]));
+  const currentTables = new Map(current.nodes.filter((node) => node.table).map((node) => [node.id, node]));
+  const cells = tableCells.filter((change) => baselineTables.has(change.tableNodeId) && currentTables.has(change.tableNodeId));
+  if (cells.length > 0) {
+    lines.push(`Table cells (${cells.length}):`,
+      ...cells.slice(0, NODE_LINES_PER_BLOCK).map((change) => tableCellLine(current, currentTables.get(change.tableNodeId)!, change)));
+    if (cells.length > NODE_LINES_PER_BLOCK) lines.push(`- … and ${cells.length - NODE_LINES_PER_BLOCK} more`);
+  }
   lines.push(
     `Nodes: +${stats.addedNodes} added / -${stats.removedNodes} removed / ${stats.editedNodes} edited.`,
   );
@@ -641,6 +704,30 @@ function nodeChangeLine({ change, before, after, board }: NodeChangeItem): strin
     }
   }
   return head + parts.join("; ");
+}
+
+/** "- table "Name" 5:119 in "Section", row 3 "Label", column 4 "Label": "old" → "new"", rows and columns from 1. */
+function tableCellLine(board: BoardData, table: NormalizedNode, change: TableCellChange): string {
+  const row = change.currentRow ?? change.previousRow;
+  const column = change.currentColumn ?? change.previousColumn;
+  const labelled = (label: string | undefined) => label ? ` ${quote(label)}` : "";
+  const place = row === undefined && column === undefined ? `, cell ${change.cellId}` :
+    (row === undefined ? "" : `, row ${row + 1}${labelled(change.rowLabel)}`) +
+    (column === undefined ? "" : `, column ${column + 1}${labelled(change.columnLabel)}`);
+  const before = collapseWhitespace(change.previousText);
+  const after = collapseWhitespace(change.currentText);
+  const cellText = (text: string | undefined) => text === undefined ? "(empty)" : quote(text);
+  let detail: string;
+  if (change.changeType === "added") detail = `added ${cellText(after === undefined ? undefined : leadingText(after))}`;
+  else if (change.changeType === "removed") detail = `removed ${cellText(before === undefined ? undefined : leadingText(before))}`;
+  else if (change.previousText === change.currentText) {
+    detail = `moved from row ${(change.previousRow ?? 0) + 1}, column ${(change.previousColumn ?? 0) + 1}`;
+  } else if (before === after) detail = `text changed only in whitespace: ${cellText(after)}`;
+  else {
+    const [previous, next] = textExcerpts(before, after);
+    detail = `${cellText(previous)} → ${cellText(next)}`;
+  }
+  return `- ${nodeLabel(board, table, change.tableName)}${place}: ${detail}`;
 }
 
 /** "sticky 5:87 in "Section"", with the name after the type when given. */

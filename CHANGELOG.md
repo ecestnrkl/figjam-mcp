@@ -6,6 +6,10 @@
   its section, old and new text (only the changed words of a long text), link and what changed (`text`, `name`,
   `image`, `rotation`, `type`, `appearance`); beyond 100 entries `nodeChangesOmitted` counts the rest. It only counted
   them before.
+- `diff_board` names each changed table cell in the text output with its table, row and column (counted from 1) and
+  the labels of its row and column; `tableCellChanges` entries get row and column from cell IDs like `get_board_context`
+  when the snapshot stores none, and the new optional `tableName`, `rowLabel` and `columnLabel`. Before, cells were only
+  in `tableCellChanges`, without row and column for tables read through the REST API.
 
 ## 0.10.1 — 2026-10-21
 

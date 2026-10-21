@@ -377,4 +377,76 @@ describe("diffBoards", () => {
       expect(block[20]).toBe("- … and 130 more");
     });
   });
+
+  describe("table cells", () => {
+    const section = node("5:100", undefined, { type: "SECTION", name: "3 · Ideas" });
+    const rows = [["Feature", "Owner", "Effort", "Status"], ["Pre-orders", "Ana", "M", "Done"], ["Sold-out badges", "Cem", "S", "In scope"]];
+    const columnIds = ["5:5", "5:6", "5:7", "5:8"];
+    // Cells as the REST API returns them: no stored row or column.
+    const table = (grid: string[][], rowIds = grid.map((_, row) => `5:${row}`), name = "Feature priorities") => {
+      const cells = grid.flatMap((cells, row) => cells.map((text, column) => ({ id: `T5:119;${rowIds[row]};${columnIds[column]}`, text })));
+      return node("5:119", cells.map((cell) => cell.text).join("\n"), { type: "TABLE", name, sectionIds: ["5:100"], table: { cells } });
+    };
+    const edit = (row: number, column: number, text: string) =>
+      rows.map((cells, r) => cells.map((value, c) => r === row && c === column ? text : value));
+    const pair = (before: NormalizedNode[], after: NormalizedNode[]) => diffBoards(
+      board([section, ...before], [cluster("ideas", "Ideas", before.map((item) => item.id))], 1),
+      board([section, ...after], [cluster("ideas", "Ideas", after.map((item) => item.id))], 2));
+
+    it("names a changed cell with table, row and column from its ID", () => {
+      const diff = pair([table(rows)], [table(edit(2, 3, "In pilot"))]);
+      expect(diff.tableCellChanges).toEqual([{
+        tableNodeId: "5:119", cellId: "T5:119;5:2;5:8", changeType: "modified", previousText: "In scope", currentText: "In pilot",
+        previousRow: 2, previousColumn: 3, currentRow: 2, currentColumn: 3,
+        tableName: "Feature priorities", rowLabel: "Sold-out badges", columnLabel: "Status",
+      }]);
+      expect(diff.nodeChanges).toEqual([]);
+      expect(diff.summaryText).toContain("Table cells (1):\n" +
+        '- table "Feature priorities" 5:119 in "3 · Ideas", row 3 "Sold-out badges", column 4 "Status": "In scope" → "In pilot"\n' +
+        "Nodes: +0 added / -0 removed / 1 edited.");
+      expect(diff.summaryText).not.toContain("Edited nodes");
+    });
+
+    it("gives a header cell no label of its own", () => {
+      const status = pair([table(rows)], [table(edit(0, 3, "State"))]).tableCellChanges[0]!;
+      expect(status).toMatchObject({ currentRow: 0, currentColumn: 3, rowLabel: "Feature" });
+      expect(status).not.toHaveProperty("columnLabel");
+      const corner = pair([table(rows)], [table(edit(0, 0, "Item"))]).tableCellChanges[0]!;
+      expect(corner).not.toHaveProperty("rowLabel");
+      expect(corner).not.toHaveProperty("columnLabel");
+      const unnamed = pair([table(rows, undefined, "Table 3")], [table(edit(0, 0, "Item"), undefined, "Table 3")]);
+      expect(unnamed.tableCellChanges[0]).not.toHaveProperty("tableName");
+      expect(unnamed.summaryText).toContain('- table 5:119 in "3 · Ideas", row 1, column 1: "Feature" → "Item"');
+    });
+
+    it("keeps a cell readable when the IDs form no complete rectangle", () => {
+      const ragged = (grid: string[][]) => {
+        const result = table(grid);
+        result.table!.cells.pop();
+        return result;
+      };
+      const diff = pair([ragged(rows)], [ragged(edit(1, 3, "Blocked"))]);
+      expect(diff.tableCellChanges).toEqual([expect.objectContaining({ cellId: "T5:119;5:1;5:8", currentText: "Blocked" })]);
+      expect(diff.tableCellChanges[0]?.currentRow).toBeUndefined();
+      expect(diff.tableCellChanges[0]).not.toHaveProperty("rowLabel");
+      expect(diff.summaryText).toContain('- table "Feature priorities" 5:119 in "3 · Ideas", cell T5:119;5:1;5:8: "Done" → "Blocked"');
+    });
+
+    it("reports only the new cells of an inserted row", () => {
+      const inserted = [rows[0]!, ["Group orders", "Dana", "L", "Idea"], ...rows.slice(1)];
+      const diff = pair([table(rows)], [table(inserted, ["5:0", "5:9", "5:1", "5:2"])]);
+      expect(diff.tableCellChanges.map((change) => [change.changeType, change.cellId, change.currentRow, change.currentColumn])).toEqual([
+        ["added", "T5:119;5:9;5:5", 1, 0], ["added", "T5:119;5:9;5:6", 1, 1],
+        ["added", "T5:119;5:9;5:7", 1, 2], ["added", "T5:119;5:9;5:8", 1, 3],
+      ]);
+      expect(diff.summaryText).toContain('- table "Feature priorities" 5:119 in "3 · Ideas", row 2 "Group orders", column 4 "Status": added "Idea"');
+    });
+
+    it("lists a new table once under added nodes", () => {
+      const diff = pair([], [table(rows)]);
+      expect(diff.tableCellChanges).toHaveLength(12);
+      expect(diff.summaryText).toContain('Added nodes (1):\n- table "Feature priorities" 5:119 in "3 · Ideas": "Feature Owner Effort Status');
+      expect(diff.summaryText).not.toContain("Table cells");
+    });
+  });
 });

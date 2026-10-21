@@ -65,6 +65,9 @@ export const diffBoardOutputShape = {
     previousColumn: z.number().int().nonnegative().optional(),
     currentRow: z.number().int().nonnegative().optional(),
     currentColumn: z.number().int().nonnegative().optional(),
+    tableName: z.string().optional(),
+    rowLabel: z.string().optional().describe("Text of the first cell in the row"),
+    columnLabel: z.string().optional().describe("Text of the cell in the first row of the column"),
   })).optional(),
   nodeChanges: z.array(z.object({
     nodeId: z.string(),
