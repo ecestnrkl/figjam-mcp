@@ -43,6 +43,15 @@ describe("modelRegistry", () => {
     expect(getModelsForRole("text")).toEqual(["legacy-text", "fallback-text"]);
   });
 
+  it("uses the text models for fastText without LLM_FAST_TEXT_MODELS", () => {
+    process.env.LLM_TEXT_MODELS = "text-a, text-b";
+    process.env.LLM_TEXT_MODEL = "text-first";
+    expect(getModelsForRole("fastText")).toEqual(["text-first", "text-a", "text-b"]);
+
+    process.env.LLM_FAST_TEXT_MODELS = "fast-a";
+    expect(getModelsForRole("fastText")).toEqual(["fast-a"]);
+  });
+
   it("reads and normalizes comma-separated role model lists", () => {
     process.env.LLM_TEXT_MODELS = ", ,";
     expect(getModelsForRole("text")).toEqual(["openrouter/free"]);

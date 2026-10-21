@@ -10,10 +10,10 @@ export interface ModelConfig {
   providerRequireParameters: boolean;
 }
 
+/** fastText has no preset list; it follows the text models unless LLM_FAST_TEXT_MODELS is set. */
 interface RoleModelDefaults {
   visionModels: string[];
   textModels: string[];
-  fastTextModels: string[];
 }
 
 /**
@@ -30,7 +30,6 @@ const MODEL_PRESETS: Record<string, RoleModelDefaults> = {
   "student-free": {
     visionModels: STUDENT_FREE_MODELS,
     textModels: STUDENT_FREE_MODELS,
-    fastTextModels: STUDENT_FREE_MODELS,
   },
 };
 
@@ -54,6 +53,10 @@ const MODEL_PRESET_ENV = "LLM_MODEL_PRESET";
 export function getModelConfig(): ModelConfig {
   const preset = readModelPreset();
   const defaults = MODEL_PRESETS[preset]!;
+  const textModels = withLegacyOverride(
+    LEGACY_TEXT_MODEL_ENV,
+    readModelList(MODEL_LIST_ENV.text, defaults.textModels),
+  );
 
   return {
     preset,
@@ -61,11 +64,9 @@ export function getModelConfig(): ModelConfig {
       LEGACY_VISION_MODEL_ENV,
       readModelList(MODEL_LIST_ENV.vision, defaults.visionModels),
     ),
-    textModels: withLegacyOverride(
-      LEGACY_TEXT_MODEL_ENV,
-      readModelList(MODEL_LIST_ENV.text, defaults.textModels),
-    ),
-    fastTextModels: readModelList(MODEL_LIST_ENV.fastText, defaults.fastTextModels),
+    textModels,
+    // Without its own list, fastText follows the text models, including LLM_TEXT_MODEL.
+    fastTextModels: readModelList(MODEL_LIST_ENV.fastText, textModels),
     providerRequireParameters: readBoolEnv(PROVIDER_REQUIRE_PARAMETERS_ENV, true),
   };
 }

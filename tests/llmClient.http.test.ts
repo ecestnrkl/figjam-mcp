@@ -301,6 +301,27 @@ describe("LLM requests through real local HTTP and the OpenAI SDK", () => {
     });
   });
 
+  it.each([
+    ["", "text/own"],
+    ["fast/own", "fast/own"],
+  ])("runs fast_text_json with LLM_FAST_TEXT_MODELS=%j on %s", async (fastModels, expected) => {
+    vi.stubEnv("LLM_TEXT_MODELS", "text/own");
+    vi.stubEnv("LLM_FAST_TEXT_MODELS", fastModels);
+    vi.stubEnv("LLM_VISION_MODELS", "vision/own");
+    vi.stubEnv("LLM_TEXT_MODEL", "");
+    vi.stubEnv("LLM_VISION_MODEL", "");
+    await localClient((request, response) => {
+      const prompt = JSON.stringify((request as Request & { messages: unknown }).messages);
+      const content = prompt.includes("17 + 25") ? '{"result":42}' : prompt.includes("9 * 7") ? '{"result":63}' : '{"dominantColor":"blue"}';
+      json(response, 200, { id: "local-fixture", object: "chat.completion", created: 1, model: "local-model",
+        choices: [{ index: 0, message: { role: "assistant", content }, finish_reason: "stop" }] });
+    });
+    const { diagnoseLlmConfig } = await import("../src/tools/diagnoseLlmConfig.js");
+    const diagnosis = await diagnoseLlmConfig();
+    expect(diagnosis.fastTextModels).toEqual([expected]);
+    expect(diagnosis.checks[1]).toMatchObject({ name: "fast_text_json", ok: true, modelUsed: expected });
+  });
+
   it("cancels a stalled response body and preserves the caller reason without trying another model", async () => {
     const ready = deferred();
     const closed = deferred();

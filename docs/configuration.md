@@ -32,7 +32,7 @@ it redacted.
 | `LLM_MODEL_PRESET` | `student-free` | Default model lists; `student-free` is the only preset. |
 | `LLM_TEXT_MODELS` | `openrouter/free` | Candidates for `answer_from_board`, tried in order. Changing them keeps image interpretations. |
 | `LLM_VISION_MODELS` | `openrouter/free` | Candidates for image interpretation. Changing them, `LLM_BASE_URL` or `LLM_PROVIDER_REQUIRE_PARAMETERS` interprets images again on the next ingest. |
-| `LLM_FAST_TEXT_MODELS` | same as `LLM_TEXT_MODELS` | Used only by `diagnose_llm_config`. |
+| `LLM_FAST_TEXT_MODELS` | the text models (`LLM_TEXT_MODEL`, `LLM_TEXT_MODELS`) | Used only by `diagnose_llm_config`. |
 | `LLM_TEXT_MODEL`, `LLM_VISION_MODEL` | none | Legacy: one model placed in front of the list. |
 | `LLM_PROVIDER_REQUIRE_PARAMETERS` | `true` | Only when `LLM_BASE_URL` points to `openrouter.ai`: sends `provider.require_parameters` with JSON requests, so only endpoints that support structured output are used. `false` turns it off. |
 | `LLM_ANSWER_REASONING_EFFORT` | unset | `none`, `low`, `medium` or `high` for `answer_from_board` only. Unset keeps the model's default. |

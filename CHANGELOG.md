@@ -8,6 +8,8 @@
   429 or a cancellation) is sent once more while at least a second of the deadline is left: the router picks a model per
   request, and the free Nemotron often fails with HTTP 404 from its only provider. `diagnose_llm_config` lists both
   attempts and calls a check that passed on the second one a retry, not a fallback.
+- Without `LLM_FAST_TEXT_MODELS`, `diagnose_llm_config`'s `fast_text_json` check uses the text models, including
+  `LLM_TEXT_MODEL`, as documented; it used the preset's list, so a custom `LLM_TEXT_MODELS` was not checked there.
 
 ## 0.10.0 — 2026-10-21
 
