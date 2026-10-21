@@ -366,6 +366,26 @@ describe("diffBoards", () => {
       expect(diff.summaryText).toContain('5:87 in "4 · Decisions & next steps": text changed only in whitespace: "Pilot starts Monday"');
     });
 
+    it("shows the start of an unchanged long text", () => {
+      const long = Array.from({ length: 40 }, (_, index) => `word${index}`).join(" ");
+      const text = (fill: string) => node("5:88", long, { type: "TEXT", name: "Notes", contentFingerprint: fill });
+      const change = pair([text("yellow")], [text("green")]).nodeChanges[0]!;
+      expect(long.length).toBeGreaterThan(160);
+      expect(change.changes).toEqual(["appearance"]);
+      for (const excerpt of [change.previousText!, change.currentText!]) {
+        expect(excerpt).toBe(`${long.slice(0, 160)}…`);
+        expect(excerpt.length).toBeLessThanOrEqual(161);
+      }
+    });
+
+    it("shows the start of a long text that changed only in whitespace", () => {
+      const words = Array.from({ length: 40 }, (_, index) => `word${index}`);
+      const diff = pair([sticky(words.join("  "))], [sticky(words.join(" "))]);
+      const start = words.join(" ").slice(0, 160);
+      expect(diff.nodeChanges[0]).toMatchObject({ previousText: `${start}…`, currentText: `${start}…`, changes: ["text"] });
+      expect(diff.summaryText).toContain(`text changed only in whitespace: "${start}…"`);
+    });
+
     it("lists at most 100 entries and 20 lines per block", () => {
       const notes = (suffix: string) => Array.from({ length: 150 }, (_, index) => node(`9:${index}`, `Note ${index}${suffix}`, { y: index }));
       const diff = pair(notes(""), notes(" (revised)"));
@@ -417,6 +437,13 @@ describe("diffBoards", () => {
       const unnamed = pair([table(rows, undefined, "Table 3")], [table(edit(0, 0, "Item"), undefined, "Table 3")]);
       expect(unnamed.tableCellChanges[0]).not.toHaveProperty("tableName");
       expect(unnamed.summaryText).toContain('- table 5:119 in "3 · Ideas", row 1, column 1: "Feature" → "Item"');
+    });
+
+    it("shows the start of a long cell that changed only in whitespace", () => {
+      const words = Array.from({ length: 40 }, (_, index) => `word${index}`);
+      const diff = pair([table(edit(2, 3, words.join("  ")))], [table(edit(2, 3, words.join(" ")))]);
+      expect(diff.summaryText).toContain(
+        `column 4 "Status": text changed only in whitespace: "${words.join(" ").slice(0, 160)}…"`);
     });
 
     it("keeps a cell readable when the IDs form no complete rectangle", () => {

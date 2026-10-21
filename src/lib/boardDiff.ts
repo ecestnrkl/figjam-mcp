@@ -322,12 +322,13 @@ function leadingText(text: string): string {
 }
 
 /**
- * Both texts whole up to FULL_TEXT_CHARS. Otherwise only the changed words on each
- * side, with up to EDIT_CONTEXT_CHARS of context before and after, cut at word
- * boundaries and marked with "…", at most EDIT_EXCERPT_CHARS per side.
+ * Both texts whole up to FULL_TEXT_CHARS, and their leading text when they are equal.
+ * Otherwise only the changed words on each side, with up to EDIT_CONTEXT_CHARS of
+ * context before and after, cut at word boundaries and marked with "…", at most
+ * EDIT_EXCERPT_CHARS per side.
  */
 function textExcerpts(before: string | undefined, after: string | undefined): [string | undefined, string | undefined] {
-  if (before === undefined || after === undefined) {
+  if (before === undefined || after === undefined || before === after) {
     return [before === undefined ? undefined : leadingText(before), after === undefined ? undefined : leadingText(after)];
   }
   if (before.length <= FULL_TEXT_CHARS && after.length <= FULL_TEXT_CHARS) return [before, after];
@@ -722,8 +723,9 @@ function tableCellLine(board: BoardData, table: NormalizedNode, change: TableCel
   else if (change.changeType === "removed") detail = `removed ${cellText(before === undefined ? undefined : leadingText(before))}`;
   else if (change.previousText === change.currentText) {
     detail = `moved from row ${(change.previousRow ?? 0) + 1}, column ${(change.previousColumn ?? 0) + 1}`;
-  } else if (before === after) detail = `text changed only in whitespace: ${cellText(after)}`;
-  else {
+  } else if (before === after) {
+    detail = `text changed only in whitespace: ${cellText(after === undefined ? undefined : leadingText(after))}`;
+  } else {
     const [previous, next] = textExcerpts(before, after);
     detail = `${cellText(previous)} → ${cellText(next)}`;
   }
