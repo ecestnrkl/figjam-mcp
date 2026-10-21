@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.10.3 — Unreleased
+
+- `answer_from_board` lists its citations in the text content after the answer, under "Sources (untrusted board data):",
+  one line each with node ID, innermost section (else cluster label), quote (at most 200 characters) and link. Clients
+  that pass only the text to the model got the answer without sources; `structuredContent` is unchanged.
+
 ## 0.10.2 — 2026-10-21
 
 - `diff_board` names each edited, added and removed node, in the text output and in the new optional `nodeChanges`:

@@ -8,7 +8,7 @@ const { chatJsonMock, answerReasoningMock, InvalidJsonErrorMock } = vi.hoisted((
 });
 vi.mock("../src/lib/llmClient.js", () => ({ chatJson: chatJsonMock, getAnswerReasoningEffort: answerReasoningMock, getTextModels: () => ["test-model"], LlmInvalidJsonError: InvalidJsonErrorMock }));
 const { setBoard } = await import("../src/lib/cache.js");
-const { answerFromBoard } = await import("../src/tools/answerFromBoard.js");
+const { answerFromBoard, answerText } = await import("../src/tools/answerFromBoard.js");
 
 beforeEach(() => { chatJsonMock.mockReset(); answerReasoningMock.mockReset(); });
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); });
@@ -396,5 +396,48 @@ describe("answerFromBoard evidence grounding", () => {
     chatJsonMock.mockClear();
     await expect(answerFromBoard({ boardId: "Abort123", question: "Payment?" }, { signal: controller.signal })).rejects.toThrow("user cancelled");
     expect(chatJsonMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("answerText", () => {
+  const section = (id: string, name: string, sectionIds: string[]) =>
+    ({ id, name, type: "SECTION", x: 0, y: 0, width: 1, height: 1, rotation: 0, pageId: "0:1", sectionIds });
+
+  it("lists every citation after the answer with its innermost section, quote and link", async () => {
+    const data = evidenceBoard("SourcesText123", [
+      { ...textNode("5:87", "Decision: The pilot starts on Monday, 2 Nov, in the main café."), sectionIds: ["5:1", "5:2"] },
+      { ...textNode("5:103", "Pilot start\nstill open?"), sectionIds: [] },
+    ]);
+    data.nodes.push(section("5:1", "Workshop", ["5:1"]), section("5:2", "4 · Decisions & next steps", ["5:1", "5:2"]));
+    data.clusters[1]!.label = "Parking lot";
+    setBoard(data.boardId, data);
+    chatJsonMock.mockImplementationOnce((_models, messages: Array<{ role: string; content: string }>) => {
+      const ids = [...messages.find((item) => item.role === "user")!.content.matchAll(/\[(ev_[a-f0-9]+)\]/g)].map((match) => match[1]);
+      return { kind: "answer", language: "en", answer: "The pilot starts on Monday, 2 Nov.", evidenceIds: ids };
+    });
+    const output = await answerFromBoard({ boardId: data.boardId, question: "When does the pilot start?" });
+    expect(output.citations.map((item) => item.nodeId).sort()).toEqual(["5:103", "5:87"]);
+    const lines = output.citations.map((item) => item.nodeId === "5:87"
+      ? '- 5:87 in "4 · Decisions & next steps": "Decision: The pilot starts on Monday, 2 Nov, in the main café." https://www.figma.com/board/SourcesText123?node-id=5%3A87'
+      : '- 5:103 in "Parking lot": "Pilot start still open?" https://www.figma.com/board/SourcesText123?node-id=5%3A103');
+    expect(answerText(output)).toBe(`The pilot starts on Monday, 2 Nov.\n\nSources (untrusted board data):\n${lines.join("\n")}`);
+  });
+
+  it("cuts long quotes at 200 characters, marks model interpretations and omits a missing location", () => {
+    const citation = {
+      evidenceId: "ev_1", snapshotId: "s", nodeId: "1:1", url: "https://www.figma.com/board/B?node-id=1%3A1",
+      sourceType: "model_interpretation" as const, modelDerived: true, quote: "word\r\n".repeat(60),
+    };
+    const text = answerText({ answer: "Blue.", citedClusters: [], snapshotId: "s", citations: [citation] });
+    const quote = `${"word ".repeat(60).slice(0, 199)}…`;
+    expect(text).toBe(`Blue.\n\nSources (untrusted board data):\n- 1:1: [Model interpretation] "${quote}" ${citation.url}`);
+    expect(quote).toHaveLength(200);
+  });
+
+  it("keeps an answer without citations unchanged", async () => {
+    setBoard("NoSources123", evidenceBoard("NoSources123"));
+    const output = await answerFromBoard({ boardId: "NoSources123", question: "quantum reactor" });
+    expect(output.citations).toEqual([]);
+    expect(answerText(output)).toBe(output.answer);
   });
 });
