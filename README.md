@@ -102,7 +102,8 @@ Problems: [troubleshooting](https://github.com/ecestnrkl/figjam-mcp/blob/main/do
 The default preset `student-free` uses free OpenRouter models: text and images go
 to `openrouter/free`, which picks a free model that supports structured outputs
 (and images, for images). The free default is best effort: free models change, hit rate limits
-and time out. Images go to the model with at most 1,024 px on the longest side;
+and time out. A request to `openrouter/free` or `openrouter/auto` that fails with
+a provider error is sent once more, since the router may pick another model. Images go to the model with at most 1,024 px on the longest side;
 larger ones are scaled down locally.
 
 - OpenRouter allows free models 20 requests per minute and 50 requests per day,

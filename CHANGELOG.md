@@ -4,6 +4,10 @@
 
 - Renders for image interpretation show the current board. They were requested for the file's `version`, so Figma
   rendered its last autosave: edited drawings looked outdated and nodes added since were missing.
+- A request to `openrouter/free` or `openrouter/auto` that fails with an error that moves on to the next model (not a
+  429 or a cancellation) is sent once more while at least a second of the deadline is left: the router picks a model per
+  request, and the free Nemotron often fails with HTTP 404 from its only provider. `diagnose_llm_config` lists both
+  attempts and calls a check that passed on the second one a retry, not a fallback.
 
 ## 0.10.0 — 2026-10-21
 

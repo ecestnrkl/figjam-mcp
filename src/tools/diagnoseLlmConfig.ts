@@ -90,9 +90,19 @@ export async function diagnoseLlmConfig(options: { signal?: AbortSignal } = {}):
   ]);
 
   const ok = checks.every((check) => check.ok);
-  const fallbacks = checks.filter((check) => check.ok && (check.attempts?.length ?? 0) > 1).map((check) =>
-    `${check.name} used ${check.modelUsed} after ${check.attempts!.filter((attempt) => !attempt.ok).map((attempt) => attempt.model).join(", ")} failed`);
-  const fallbackNote = fallbacks.length ? ` Fallback: ${fallbacks.join("; ")}.` : "";
+  const fallbacks: string[] = [];
+  const retries: string[] = [];
+  for (const check of checks.filter((check) => check.ok && (check.attempts?.length ?? 0) > 1)) {
+    const failed = check.attempts!.filter((attempt) => !attempt.ok);
+    // A router candidate is repeated once; its failed first request is a retry, not a fallback.
+    const retried = failed.some((attempt) => attempt.model === check.modelUsed);
+    const others = [...new Set(failed.map((attempt) => attempt.model).filter((model) => model !== check.modelUsed))];
+    if (others.length) {
+      fallbacks.push(`${check.name} used ${check.modelUsed}${retried ? " on its second attempt" : ""} after ${others.join(", ")} failed`);
+    } else retries.push(`${check.name} passed on the second ${check.modelUsed} attempt`);
+  }
+  const fallbackNote = (retries.length ? ` Retry: ${retries.join("; ")}.` : "")
+    + (fallbacks.length ? ` Fallback: ${fallbacks.join("; ")}.` : "");
   return {
     ok,
     preset: config.preset,

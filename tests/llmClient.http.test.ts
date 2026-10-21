@@ -224,6 +224,83 @@ describe("LLM requests through real local HTTP and the OpenAI SDK", () => {
     await expect(answer).rejects.not.toThrow(/Provider returned error|SyntheticProvider|synthetic detail|raw provider body/);
   });
 
+  describe("router retry", () => {
+    const providerError = (response: ServerResponse) => json(response, 404, { error: { code: 404,
+      message: "Provider returned error", metadata: { provider_name: "Nvidia" } } });
+
+    it("repeats a failed openrouter/free request once and returns its reply", async () => {
+      const { chatJson } = await localClient((_request, response) => requests.length === 1 ? providerError(response) : success(response));
+      const failed: string[] = [];
+      await expect(chatJson(["openrouter/free"], messages, { ...schemaOptions, onModelFailed: model => failed.push(model) }))
+        .resolves.toEqual({ ok: true });
+      expect(requests.map(request => request.model)).toEqual(["openrouter/free", "openrouter/free"]);
+      expect(failed).toEqual(["openrouter/free"]);
+    });
+
+    it.each([
+      [["openrouter/free"], ["openrouter/free", "openrouter/free"]],
+      [["openrouter/auto", "next/model"], ["openrouter/auto", "openrouter/auto", "next/model"]],
+    ])("fails %j after exactly two router requests, then tries the next candidate", async (models, expected) => {
+      const { chatJson } = await localClient((request, response) => request.model.startsWith("openrouter/") ? providerError(response) : success(response));
+      const result = chatJson(models, messages, schemaOptions);
+      if (models.length === 1) await expect(result).rejects.toThrow("LLM request failed (HTTP 404)");
+      else await expect(result).resolves.toEqual({ ok: true });
+      expect(requests.map(request => request.model)).toEqual(expected);
+    });
+
+    it("does not repeat other models or rate-limited router requests", async () => {
+      let status = 404;
+      const { chatJson } = await localClient((_request, response) => status === 429
+        ? json(response, 429, { error: { code: 429, message: "Rate limit exceeded" } }) : providerError(response));
+      await expect(chatJson(["plain/model"], messages, schemaOptions)).rejects.toThrow("HTTP 404");
+      expect(requests).toHaveLength(1);
+      status = 429;
+      await expect(chatJson(["openrouter/free"], messages, schemaOptions)).rejects.toThrow("HTTP 429");
+      expect(requests).toHaveLength(2);
+    });
+
+    it("does not repeat a router request without enough time left or after cancellation", async () => {
+      const controller = new AbortController();
+      const { chatJson } = await localClient(async (_request, response) => {
+        await new Promise(resolve => setTimeout(resolve, requests.length === 1 ? 700 : 50));
+        if (requests.length === 2) controller.abort(new Error("Caller stopped the synthetic request"));
+        providerError(response);
+      });
+      // 1,500 ms in total leave less than MIN_REQUEST_TIMEOUT_MS after a 700 ms first request.
+      await expect(chatJson(["openrouter/free", "unused/model"], messages, { ...schemaOptions, totalTimeoutMs: 1500 }))
+        .rejects.toThrow("HTTP 404");
+      expect(requests).toHaveLength(1);
+      await expect(chatJson(["openrouter/free"], messages, { ...schemaOptions, signal: controller.signal }))
+        .rejects.toThrow("Caller stopped the synthetic request");
+      expect(requests).toHaveLength(2);
+    });
+
+    it("lists both router attempts in diagnose_llm_config and names the retry", async () => {
+      for (const name of ["LLM_TEXT_MODELS", "LLM_FAST_TEXT_MODELS", "LLM_VISION_MODELS"]) vi.stubEnv(name, "openrouter/free");
+      vi.stubEnv("LLM_TEXT_MODEL", "");
+      vi.stubEnv("LLM_VISION_MODEL", "");
+      let textRequests = 0;
+      await localClient((request, response) => {
+        const prompt = JSON.stringify((request as Request & { messages: unknown }).messages);
+        const content = prompt.includes("17 + 25") ? '{"result":42}' : prompt.includes("9 * 7") ? '{"result":63}' : '{"dominantColor":"blue"}';
+        if (prompt.includes("17 + 25") && ++textRequests === 1) return providerError(response);
+        json(response, 200, { id: "local-fixture", object: "chat.completion", created: 1, model: "local-model",
+          choices: [{ index: 0, message: { role: "assistant", content }, finish_reason: "stop" }] });
+      });
+      const { diagnoseLlmConfig } = await import("../src/tools/diagnoseLlmConfig.js");
+      const diagnosis = await diagnoseLlmConfig();
+      expect(diagnosis.ok).toBe(true);
+      expect(diagnosis.checks[0]?.attempts).toEqual([
+        { model: "openrouter/free", ok: false, error: expect.stringContaining("Provider returned error") },
+        { model: "openrouter/free", ok: true },
+      ]);
+      expect(diagnosis.checks[0]?.attempts?.[0]?.error).toContain("Nvidia");
+      expect(diagnosis.summary).toContain("Retry: text_json passed on the second openrouter/free attempt.");
+      expect(diagnosis.summary).not.toContain("Fallback");
+      expect(requests).toHaveLength(4);
+    });
+  });
+
   it("cancels a stalled response body and preserves the caller reason without trying another model", async () => {
     const ready = deferred();
     const closed = deferred();
