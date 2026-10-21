@@ -5,14 +5,14 @@ import path from "node:path";
 import type { BoardData, Cluster, NormalizedNode, RefinedCluster } from "../src/types.js";
 import { pngHeader } from "./fixtures/images.js";
 
-const { fileTreeMock, metadataMock, screenshotMock, downloadMock, imageFillsMock, visionMock } = vi.hoisted(() => ({
-  fileTreeMock: vi.fn(), metadataMock: vi.fn(), screenshotMock: vi.fn(), downloadMock: vi.fn(), imageFillsMock: vi.fn(), visionMock: vi.fn(),
+const { fileTreeMock, screenshotMock, downloadMock, imageFillsMock, visionMock } = vi.hoisted(() => ({
+  fileTreeMock: vi.fn(), screenshotMock: vi.fn(), downloadMock: vi.fn(), imageFillsMock: vi.fn(), visionMock: vi.fn(),
 }));
 // Only the external boundaries are mocked. Normalization, hashes, clustering,
 // source snapshots, refinement cache, history, context and diff run together.
 vi.mock("../src/lib/figmaApi.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/lib/figmaApi.js")>()),
-  fetchFileTree: fileTreeMock, fetchFileMetadata: metadataMock,
+  fetchFileTree: fileTreeMock,
   fetchRenderUrls: screenshotMock, downloadRenders: downloadMock, fetchImageRefs: imageFillsMock,
 }));
 vi.mock("../src/lib/visionInterpreter.js", () => ({ refineClusterWithVision: visionMock }));
@@ -58,7 +58,6 @@ beforeEach(async () => {
   }));
   activeTree = boardTree([table("Budget 100")]);
   fileTreeMock.mockImplementation(async () => activeTree);
-  metadataMock.mockImplementation(async () => ({ version: activeTree.version }));
   screenshotMock.mockImplementation(async (_key: string, ids: string[]) => Object.fromEntries(ids.map(id => [id, `https://offline-images.invalid/${id}`])));
   downloadMock.mockImplementation(async (ids: string[]) => ids.map(() => pngHeader(100, 100, "offline-image")));
   imageFillsMock.mockImplementation(async () => new Proxy({}, { get: (_target, ref) => `https://offline-originals.invalid/${String(ref)}` }));
@@ -104,7 +103,6 @@ describe("offline ingest pipeline with actual persistent cache", () => {
       latest: "legacy-cache", latestRevision: "legacy", history: [{ cacheKey: "legacy-cache", refinementId: "legacy", snapshotId, nodeHash, createdAt: 1 }] }));
     expect((await persistence.readLatestBoard(fileKey))?.extractionVersion).toBe(4);
     const result = await ingestBoard(input);
-    expect(metadataMock).not.toHaveBeenCalled();
     expect(fileTreeMock).toHaveBeenCalledTimes(1);
     expect(visionMock).toHaveBeenCalledTimes(2);
     expect(result.snapshotId).not.toBe(snapshotId);
@@ -161,8 +159,7 @@ describe("offline ingest pipeline with actual persistent cache", () => {
     expect(after.qualityReport).toMatchObject({ visionClusters: 2, incompleteClusters: 0, fallbackCount: 0, reusedClusters: 1 });
     expect(after.snapshotId).toBe(before.snapshotId);
     expect(await persistence.readBoardHistory(fileKey)).toHaveLength(1);
-    expect(fileTreeMock).toHaveBeenCalledTimes(1);
-    expect(metadataMock).toHaveBeenCalledTimes(1);
+    expect(fileTreeMock).toHaveBeenCalledTimes(2);
   });
 
   it("keeps interpretations through a forced ingest in every mode", async () => {
@@ -199,7 +196,6 @@ describe("offline ingest pipeline with actual persistent cache", () => {
     visionMock.mockClear();
     const forced = await ingestBoard({ ...input, ingestMode, forceFullIngest: true });
     expect(fileTreeMock).toHaveBeenCalledTimes(2);
-    expect(metadataMock).not.toHaveBeenCalled();
     expect((visionMock.mock.calls as Array<[Cluster]>).map(([cluster]) => cluster.nodeIds)).toEqual([["photo-c"]]);
     expect(forced.qualityReport).toMatchObject({ visionClusters: 3, reusedClusters: 2, incompleteClusters: 0 });
     const saved = await persistence.readLatestBoard(fileKey);
@@ -242,15 +238,43 @@ describe("offline ingest pipeline with actual persistent cache", () => {
     expect(note).toMatchObject({ summarySource: "vision_llm", summary: "Workshop note" });
   });
 
-  it("uses unchanged metadata without downloading the file or rerunning vision", async () => {
+  it("downloads an unchanged board again without rerunning vision", async () => {
     const before = await ingestBoard(input);
     const after = await ingestBoard(input);
-    expect(fileTreeMock).toHaveBeenCalledTimes(1);
-    expect(metadataMock).toHaveBeenCalledTimes(1);
+    expect(fileTreeMock).toHaveBeenCalledTimes(2);
     expect(visionMock).toHaveBeenCalledTimes(1);
     expect(after.snapshotId).toBe(before.snapshotId);
     expect(after.qualityReport).toMatchObject({ cachedClusters: 1, visionClusters: 1, fallbackCount: 0 });
     expect((await persistence.readLatestBoard(fileKey))?.clusters[0]?.summarySource).toBe("vision_llm");
+  });
+
+  it("downloads the board again after an edit before Figma saves a new version", async () => {
+    const before = await ingestBoard(input);
+    // version changes only with Figma's next autosave.
+    activeTree = boardTree([table("Budget 999")]);
+    const after = await ingestBoard(input);
+    expect(fileTreeMock).toHaveBeenCalledTimes(2);
+    expect(after.figmaVersion).toBe(before.figmaVersion);
+    expect(after.snapshotId).not.toBe(before.snapshotId);
+    expect(after.summary).toContain("The board content changed since the previous ingest");
+    expect(await persistence.readBoardHistory(fileKey)).toHaveLength(2);
+  });
+
+  it("downloads an unchanged board on every ingest without reading /meta or adding a snapshot", async () => {
+    const actual = await vi.importActual<typeof import("../src/lib/figmaApi.js")>("../src/lib/figmaApi.js");
+    const requested: string[] = [];
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      requested.push(new URL(url).pathname);
+      return Response.json(activeTree);
+    }));
+    fileTreeMock.mockImplementation((...args: Parameters<typeof actual.fetchFileTree>) => actual.fetchFileTree(...args));
+    const speed = { ...input, ingestMode: "max_speed" } as const;
+    const before = await ingestBoard(speed);
+    const after = await ingestBoard(speed);
+    expect(requested).toEqual([`/v1/files/${fileKey}`, `/v1/files/${fileKey}`]);
+    expect(after.snapshotId).toBe(before.snapshotId);
+    expect(after.summary).toContain("The board content is unchanged since the previous ingest.");
+    expect(await persistence.readBoardHistory(fileKey)).toHaveLength(1);
   });
 
   it("honors an explicit phase deadline and starts no queued request after it expires", async () => {
@@ -356,8 +380,7 @@ describe("offline ingest pipeline with actual persistent cache", () => {
 
       const redacted = await reloadIngest({});
       const second = await redacted(input);
-      expect(fileTreeMock).toHaveBeenCalledTimes(1);
-      expect(metadataMock).toHaveBeenCalledTimes(1);
+      expect(fileTreeMock).toHaveBeenCalledTimes(2);
       expect(visionMock).toHaveBeenCalledTimes(2);
       const visionNodes = visionMock.mock.calls.flatMap(call => call[2] as NormalizedNode[]);
       expect(visionNodes.find(node => node.id === "login")).toMatchObject({ name: "Sticky", text: "Passwort: [redacted]" });
@@ -400,7 +423,7 @@ describe("offline ingest pipeline with actual persistent cache", () => {
       const before = await ingestBoard(input);
       const after = await ingestBoard(input);
       expect(after.snapshotId).toBe(before.snapshotId);
-      expect(fileTreeMock).toHaveBeenCalledTimes(1);
+      expect(fileTreeMock).toHaveBeenCalledTimes(2);
       expect(visionMock).toHaveBeenCalledTimes(2);
       expect(after.qualityReport).toMatchObject({ cachedClusters: 2, visionClusters: 2, fallbackCount: 0 });
       expect(JSON.stringify(await persistence.readLatestBoard(fileKey))).not.toContain(secret);
@@ -439,18 +462,6 @@ describe("offline ingest pipeline with actual persistent cache", () => {
     expect(visionMock).toHaveBeenCalledTimes(2);
   });
 
-  it("falls back from a missing metadata scope, but does not bypass rate limits", async () => {
-    await ingestBoard(input);
-    const { FigmaApiError } = await import("../src/lib/figmaApi.js");
-    metadataMock.mockRejectedValueOnce(new FigmaApiError("Metadata access denied", 403));
-    await ingestBoard(input);
-    expect(fileTreeMock).toHaveBeenCalledTimes(2);
-    expect(visionMock).toHaveBeenCalledTimes(1);
-    metadataMock.mockRejectedValueOnce(new FigmaApiError("Rate limited", 429, 60));
-    await expect(ingestBoard(input)).rejects.toThrow("Rate limited");
-    expect(fileTreeMock).toHaveBeenCalledTimes(2);
-  });
-
   it("keeps matching canvas coordinates on different pages in separate clusters", async () => {
     activeTree = boardTree([sticky("first", "Finding from page one")]);
     activeTree.document.children.push({ id: "other-page", name: "Other page", type: "CANVAS", children: [sticky("second", "Finding from page two")] });
@@ -472,7 +483,7 @@ describe("offline ingest pipeline with actual persistent cache", () => {
     expect(secondBoard?.cacheKey).not.toBe(firstBoard?.cacheKey);
     expect(after.snapshotId).toBe(before.snapshotId);
     expect(await persistence.readBoardHistory(fileKey)).toHaveLength(1);
-    expect(fileTreeMock).toHaveBeenCalledTimes(1);
+    expect(fileTreeMock).toHaveBeenCalledTimes(2);
   });
 
   it("does not reuse an older prompt signature from the previous snapshot", async () => {
@@ -489,7 +500,7 @@ describe("offline ingest pipeline with actual persistent cache", () => {
     const before = await persistence.readLatestBoard(fileKey);
     await ingestBoard(input);
     expect(visionMock).toHaveBeenCalledTimes(1);
-    expect(fileTreeMock).not.toHaveBeenCalled();
+    expect(fileTreeMock).toHaveBeenCalledTimes(1);
     const after = await persistence.readLatestBoard(fileKey);
     expect(after?.snapshotId).toBe(before?.snapshotId);
     expect(after?.clusters[0]?.summary).toBe("Budget 100");
@@ -649,7 +660,7 @@ describe("deterministic cluster labels", () => {
     await ageLabels();
     const cached = await ingestBoard(speed);
     expect(cached.qualityReport).toMatchObject({ cachedClusters: 6 });
-    expect(fileTreeMock).toHaveBeenCalledTimes(1);
+    expect(fileTreeMock).toHaveBeenCalledTimes(2);
     await expectLabels(expected);
 
     await ageLabels();
@@ -671,7 +682,7 @@ describe("deterministic cluster labels", () => {
     expect(full).toEqual({ Research: "discover", Synthesis: "define" });
     await ageLabels("deliver");
     expect((await ingestBoard(diamond)).qualityReport).toMatchObject({ cachedClusters: 2 });
-    expect(fileTreeMock).toHaveBeenCalledTimes(1);
+    expect(fileTreeMock).toHaveBeenCalledTimes(2);
     expect(await phases()).toEqual(full);
   });
 

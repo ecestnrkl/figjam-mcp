@@ -28,8 +28,7 @@ every answer to the nodes it came from.
 Requires Node.js 22.12 or later.
 
 1. Create a Figma personal access token under **Settings → Security → Personal
-   access tokens** with the scope `file_content:read`. Add `file_metadata:read`
-   so re-ingests of an unchanged board skip the download. The token's account
+   access tokens** with the scope `file_content:read`. The token's account
    needs access to the board.
 2. Optional: create an OpenRouter key at
    [openrouter.ai/keys](https://openrouter.ai/keys). It enables image
@@ -74,8 +73,9 @@ Problems: [troubleshooting](https://github.com/ecestnrkl/figjam-mcp/blob/main/do
 
 ## How it works
 
-1. **Read.** `ingest_board` downloads the board through the Figma REST API. If
-   Figma reports the same version as the last ingest, the download is skipped.
+1. **Read.** `ingest_board` downloads the board through the Figma REST API on
+   every call. `get_board_context` and `answer_from_board` read the saved
+   snapshot without a new request.
 2. **Normalize.** Nodes become text, table cells, images and connectors, with
    their pages and sections. Tables are read row by row: row and column come
    from the cell IDs, and each row becomes one excerpt.
@@ -112,7 +112,8 @@ larger ones are scaled down locally.
   ([rate limits](https://developers.figma.com/docs/rest-api/rate-limits/)). File
   downloads and image renders are Tier 1: Dev and Full seats on paid plans get
   10–20 requests per minute, View and Collab seats and files in Starter plans at
-  most 20 per month. Images come from the image fills instead, Tier 2 with at
+  most 20 per month. Every `ingest_board` call is one file download, so a View or
+  Collab seat allows about 20 ingests a month. Images come from the image fills instead, Tier 2 with at
   least 5 requests per minute, in one request per ingest. Renders are left for
   drawings without an image and as a fallback for single images; one render
   request covers up to 18 nodes. `max_speed` needs neither.

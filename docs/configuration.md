@@ -10,7 +10,7 @@ the client win. Restart the server after a change.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `FIGMA_ACCESS_TOKEN` | required for `ingest_board` | Figma personal access token with `file_content:read`. Add `file_metadata:read` so re-ingests of an unchanged board skip the download. |
+| `FIGMA_ACCESS_TOKEN` | required for `ingest_board` | Figma personal access token with `file_content:read`. |
 | `LLM_BASE_URL` | none | OpenAI-compatible endpoint, for example `https://openrouter.ai/api/v1`. Required for every LLM call. |
 | `LLM_API_KEY` | none | Provider key. Required for every LLM call. |
 
@@ -85,7 +85,8 @@ Invalid numbers fail with an error that names the variable and its minimum.
 | `max_quality` | Every cluster | Yes |
 
 Clusters without vision keep a summary built from their extracted text.
-`forceFullIngest: true` downloads and extracts the board again, for example after
+Every ingest downloads the board. `forceFullIngest: true` builds the snapshot
+from it again instead of the cached result for unchanged content, for example after
 turning redaction off. It does not interpret images again: interpretations of
 unchanged clusters are kept, and pending clusters continue as on any ingest. The
 server detects model and prompt changes itself. An unchanged board gives no new

@@ -90,12 +90,6 @@ export async function fetchFileTree(fileKey: string, token: string, signal?: Abo
   const apiPath = `/files/${fileKey}`;
   return readJson(await figmaFetch(apiPath, token, FIGMA_FILE_REQUEST_TIMEOUT_MS, signal), apiPath, FIGMA_FILE_REQUEST_TIMEOUT_MS, signal);
 }
-export async function fetchFileMetadata(fileKey: string, token: string, signal?: AbortSignal): Promise<{ version: string }> {
-  const apiPath = `/files/${fileKey}/meta`;
-  const data = await readJson<{ file?: { version?: unknown } }>(await figmaFetch(apiPath, token, FIGMA_REQUEST_TIMEOUT_MS, signal), apiPath, FIGMA_REQUEST_TIMEOUT_MS, signal);
-  if (typeof data.file?.version !== "string" || !data.file.version) throw new Error("Figma metadata did not include a file version; freshness cannot be confirmed");
-  return { version: data.file.version };
-}
 /** One GET /v1/files/:key/images request (Tier 2): imageRef → URL of the original image, for the whole file. */
 export async function fetchImageRefs(fileKey: string, token: string, signal?: AbortSignal): Promise<Record<string, string>> {
   const apiPath = `/files/${fileKey}/images`;
