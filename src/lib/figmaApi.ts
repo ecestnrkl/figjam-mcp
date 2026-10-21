@@ -90,12 +90,6 @@ export async function fetchFileTree(fileKey: string, token: string, signal?: Abo
   const apiPath = `/files/${fileKey}`;
   return readJson(await figmaFetch(apiPath, token, FIGMA_FILE_REQUEST_TIMEOUT_MS, signal), apiPath, FIGMA_FILE_REQUEST_TIMEOUT_MS, signal);
 }
-export async function fetchFileMetadata(fileKey: string, token: string, signal?: AbortSignal): Promise<{ version: string }> {
-  const apiPath = `/files/${fileKey}/meta`;
-  const data = await readJson<{ file?: { version?: unknown } }>(await figmaFetch(apiPath, token, FIGMA_REQUEST_TIMEOUT_MS, signal), apiPath, FIGMA_REQUEST_TIMEOUT_MS, signal);
-  if (typeof data.file?.version !== "string" || !data.file.version) throw new Error("Figma metadata did not include a file version; freshness cannot be confirmed");
-  return { version: data.file.version };
-}
 /** One GET /v1/files/:key/images request (Tier 2): imageRef → URL of the original image, for the whole file. */
 export async function fetchImageRefs(fileKey: string, token: string, signal?: AbortSignal): Promise<Record<string, string>> {
   const apiPath = `/files/${fileKey}/images`;
@@ -167,11 +161,13 @@ export async function downloadOriginals(urls: Array<string | undefined>, imageMa
   } catch (error) { controller.abort(error); throw error; }
 }
 export type RenderUrls = Record<string, string | null | undefined>;
-/** One GET /v1/images request (Tier 1) for all given nodes; images are downloaded separately. */
-export async function fetchRenderUrls(fileKey: string, nodeIds: string[], token: string, signal?: AbortSignal, version?: string): Promise<RenderUrls> {
+/**
+ * One GET /v1/images request (Tier 1) for all given nodes; images are downloaded separately. Without a version, Figma
+ * renders the current file; a version renders its last autosave, without later nodes and edits.
+ */
+export async function fetchRenderUrls(fileKey: string, nodeIds: string[], token: string, signal?: AbortSignal): Promise<RenderUrls> {
   if (!nodeIds.length) throw new Error("fetchRenderUrls: nodeIds must not be empty");
   const params = new URLSearchParams({ ids: nodeIds.join(","), format: "png", scale: "1" });
-  if (version) params.set("version", version);
   const apiPath = `/images/${fileKey}?${params}`;
   const data = await readJson<{ images?: RenderUrls; err?: string }>(await figmaFetch(apiPath, token, FIGMA_REQUEST_TIMEOUT_MS, signal), apiPath, FIGMA_REQUEST_TIMEOUT_MS, signal);
   if (data.err) throw new Error("Figma could not render the requested nodes");

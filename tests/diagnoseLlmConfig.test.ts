@@ -179,6 +179,30 @@ describe("diagnoseLlmConfig", () => {
     expect(result.summary).toBe("LLM configuration OK (student-free). Fallback: text_json used router/free after text-model failed.");
   });
 
+  it("reports a router retry apart from a fallback after both router attempts failed", async () => {
+    chatJsonMock.mockImplementation(async (models: string[], _messages, options) => {
+      if (models[0] === "text-model") {
+        options.onModelFailed?.("openrouter/free", "Provider returned error");
+        options.onModelUsed?.("openrouter/free");
+        return { result: 42 };
+      }
+      if (models[0] === "fast-model") {
+        options.onModelFailed?.("openrouter/free", "Provider returned error");
+        options.onModelFailed?.("openrouter/free", "Provider returned error");
+        options.onModelUsed?.("fast-model");
+        return { result: 63 };
+      }
+      options.onModelUsed?.(models[0]);
+      return { dominantColor: "blue" };
+    });
+
+    const result = await diagnoseLlmConfig();
+
+    expect(result.checks[1]?.attempts?.map((attempt) => attempt.model)).toEqual(["openrouter/free", "openrouter/free", "fast-model"]);
+    expect(result.summary).toBe("LLM configuration OK (student-free). Retry: text_json passed on the second openrouter/free attempt."
+      + " Fallback: fast_text_json used fast-model after openrouter/free failed.");
+  });
+
   it("names each failed candidate with its error", async () => {
     chatJsonMock.mockImplementation(async (models: string[], _messages, options) => {
       if (models[0] === "text-model") {

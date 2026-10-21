@@ -6,7 +6,6 @@ import { cornerColours, gifHeader, jpegHeader, markedJpeg, pngHeader, syntheticJ
 
 const {
   fetchFileTreeMock,
-  fetchFileMetadataMock,
   fetchRenderUrlsMock,
   downloadRendersMock,
   fetchImageRefsMock,
@@ -19,7 +18,6 @@ const {
   fakeHashClusterNodes,
 } = vi.hoisted(() => ({
   fetchFileTreeMock: vi.fn(),
-  fetchFileMetadataMock: vi.fn(),
   fetchRenderUrlsMock: vi.fn(),
   downloadRendersMock: vi.fn(),
   fetchImageRefsMock: vi.fn(),
@@ -40,7 +38,6 @@ const {
 vi.mock("../src/lib/figmaApi.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../src/lib/figmaApi.js")>()),
   fetchFileTree: fetchFileTreeMock,
-  fetchFileMetadata: fetchFileMetadataMock,
   fetchRenderUrls: fetchRenderUrlsMock,
   downloadRenders: downloadRendersMock,
   fetchImageRefs: fetchImageRefsMock,
@@ -227,7 +224,6 @@ beforeEach(() => {
   );
   readCachedBoardMock.mockResolvedValue(undefined);
   persistBoardMock.mockResolvedValue(undefined);
-  fetchFileMetadataMock.mockResolvedValue({ version: "v1" });
   readLatestBoardMock.mockResolvedValue(undefined);
 });
 
@@ -1009,13 +1005,12 @@ describe("ingestBoard", () => {
     expect(output.qualityReport?.cachedClusters).toBe(2);
   });
 
-  it.each([undefined, 4])("does not reuse extraction %s even when metadata and refinement match", async (extractionVersion) => {
+  it.each([undefined, 4])("does not reuse extraction %s even when version and refinement match", async (extractionVersion) => {
     const legacy = { ...cachedBoard(), extractionVersion, figmaVersion: "v1" };
     readCachedBoardMock.mockResolvedValueOnce(legacy);
     readLatestBoardMock.mockResolvedValueOnce(legacy);
     const output = await ingestBoard({ figmaFileUrl: "https://www.figma.com/board/AbC123/Test",
       docStructureHint: "freeform", ingestMode: "max_quality" });
-    expect(fetchFileMetadataMock).not.toHaveBeenCalled();
     expect(fetchFileTreeMock).toHaveBeenCalledTimes(1);
     expect(refineClusterWithVisionMock).toHaveBeenCalledTimes(2);
     expect(output.qualityReport).toMatchObject({ reusedClusters: 0, cachedClusters: 0 });
@@ -1202,7 +1197,6 @@ describe("ingestBoard", () => {
     readLatestBoardMock.mockResolvedValueOnce(cachedBoard());
     const output = await ingestBoard({ figmaFileUrl: "https://www.figma.com/board/AbC123/Test",
       docStructureHint: "freeform", ingestMode: "max_quality", forceFullIngest: true });
-    expect(fetchFileMetadataMock).not.toHaveBeenCalled();
     expect(fetchFileTreeMock).toHaveBeenCalledTimes(1);
     expect(refineClusterWithVisionMock).not.toHaveBeenCalled();
     expect(output.qualityReport).toMatchObject({ reusedClusters: 2, visionClusters: 2 });
@@ -1217,8 +1211,7 @@ describe("ingestBoard", () => {
     });
 
     expect(readCachedBoardMock).not.toHaveBeenCalled();
-    // Without a previous board there is nothing to reuse; neither metadata nor the cache is read.
-    expect(fetchFileMetadataMock).not.toHaveBeenCalled();
+    // Without a previous board there is nothing to reuse.
     expect(refineClusterWithVisionMock).toHaveBeenCalledTimes(2);
     expect(output.qualityReport?.reusedClusters).toBe(0);
   });

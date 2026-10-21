@@ -207,13 +207,10 @@ try {
           record('figma_denied');
           return new Response(null, { status: 403 });
         }
-        if (url.pathname === '/v1/files/SmokeBoard123/meta') {
-          record('figma_metadata');
-          return json({ file: { version: String(fileReads) } });
-        }
         if (url.pathname === '/v1/files/SmokeBoard123') {
           record('figma_file');
-          fileReads++;
+          // The board changes once, between the first and second read.
+          fileReads = Math.min(fileReads + 1, 2);
           return json({ version: String(fileReads), lastModified: '2026-10-08T10:00:00Z', document: {
             id: '0:0', name: 'Document', type: 'DOCUMENT', children: [{
               id: '0:1', name: 'Workshop', type: 'CANVAS', children: [{
@@ -223,10 +220,6 @@ try {
               }]
             }]
           } });
-        }
-        if (url.pathname === '/v1/files/TableBoard123/meta') {
-          record('table_metadata');
-          return json({ file: { version: String(tableReads + 1) } });
         }
         if (url.pathname === '/v1/files/TableBoard123') {
           record('table_file');
@@ -257,10 +250,6 @@ try {
             }]
           } });
         }
-        if (url.pathname === '/v1/files/ImageBoard123/meta') {
-          record('image_board_metadata');
-          return json({ file: { version: '1' } });
-        }
         if (url.pathname === '/v1/files/ImageBoard123') {
           record('image_board_file');
           return json({ version: '1', document: {
@@ -280,14 +269,14 @@ try {
         if (url.pathname === '/v1/images/LongBoard123') {
           assert.equal(process.env.SMOKE_LONG_CHECK, '1');
           record('long_render');
-          assert.equal(url.searchParams.get('version'), '1');
+          assert.equal(url.searchParams.get('version'), null, 'Renders show the current file');
           assert.equal(url.searchParams.get('ids'), '3:1');
           longRenderPending = true;
           return json({ images: { '3:1': 'https://offline-images.invalid/long.png' } });
         }
         if (url.pathname === '/v1/images/SmokeBoard123') {
           record('figma_render');
-          assert.equal(url.searchParams.get('version'), '2');
+          assert.equal(url.searchParams.get('version'), null, 'Renders show the current file');
           assert.equal(url.searchParams.get('ids'), '1:1');
           return json({ images: { '1:1': 'https://offline-images.invalid/evidence.png' } });
         }
@@ -372,6 +361,7 @@ try {
     assert(!reused.isError, JSON.stringify(reused));
     assert.equal(reused.structuredContent.snapshotId, updated.structuredContent.snapshotId);
     assert.equal(reused.structuredContent.qualityReport.cachedClusters, 1);
+    assert.match(reused.structuredContent.summary, /The board content is unchanged since the previous ingest\./);
     const context = await client.callTool({ name: "get_board_context", arguments: { boardId: "SmokeBoard123" } });
     assert(!context.isError, JSON.stringify(context));
     assert.match(context.content[0].text, /Workshop finding version 2/);
@@ -521,9 +511,10 @@ try {
     await unconfigured.close();
   }
   const requests = (await readFile(requestsFile, "utf8")).trim().split("\n").map(line => JSON.parse(line).kind);
-  const expectedRequests = { figma_file: 2, figma_metadata: 1, figma_render: 1, image_download: 1,
+  // Every ingest downloads its board; the unchanged re-ingest reuses the cached interpretation.
+  const expectedRequests = { figma_file: 3, figma_render: 1, image_download: 1,
     figjam_cluster_refinement: longCheck ? 3 : 2, figjam_evidence_answer: 1, diagnose_text_json: 1, diagnose_fast_text_json: 1, diagnose_vision_json: 1, figma_denied: 1,
-    table_file: 2, table_metadata: 1, legacy_file: 2, image_board_file: 1, figma_image_fills: 1, original_download: 1, bounded_original: 1,
+    table_file: 2, legacy_file: 2, image_board_file: 1, figma_image_fills: 1, original_download: 1, bounded_original: 1,
     ...(longCheck ? { long_file: 1, long_render: 1, long_image: 1, long_model_delay_started: 1, long_model_delay_completed: 1 } : {}),
   };
   for (const [kind, count] of Object.entries(expectedRequests)) {

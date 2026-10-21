@@ -66,6 +66,8 @@ export interface ChatJsonOptions {
 
 /** Requests shorter than this cannot complete; the caller's deadline is treated as reached. */
 const MIN_REQUEST_TIMEOUT_MS = 1000;
+/** OpenRouter routers that choose a model per request; a failed request is repeated once. */
+const ROUTER_MODELS = new Set(["openrouter/free", "openrouter/auto"]);
 type RequestOptions = ChatJsonOptions & { deadlineAt?: number };
 
 export type JsonSchema = Record<string, unknown>;
@@ -185,29 +187,38 @@ export async function chatJson(
   const requestOptions: RequestOptions = totalTimeoutMs === undefined ? options : { ...options, deadlineAt: Date.now() + totalTimeoutMs };
 
   for (const candidate of models) {
-    try {
-      const completion = await createJsonCompletion(llm, candidate, messages, requestOptions);
-      const choice = completion.choices[0];
-      const raw = choice?.message?.content;
-      if (!raw) {
-        throw new Error(`LLM (${candidate}) returned an empty response`);
+    for (let attempt = 1; ; attempt++) {
+      try {
+        const completion = await createJsonCompletion(llm, candidate, messages, requestOptions);
+        const choice = completion.choices[0];
+        const raw = choice?.message?.content;
+        if (!raw) {
+          throw new Error(`LLM (${candidate}) returned an empty response`);
+        }
+        const parsed = parseJsonReply(raw, candidate, choice?.finish_reason);
+        options.onModelUsed?.(candidate);
+        return parsed;
+      } catch (error) {
+        if (options.signal?.aborted) {
+          throw abortReason(options.signal, error);
+        }
+        errors.push(error);
+        options.onModelFailed?.(candidate, describeProviderError(error) ?? errorMessage(normalizeLlmError(error)));
+        const recoverable = shouldTryNextModel(error) && remainingMs(requestOptions) >= MIN_REQUEST_TIMEOUT_MS;
+        // A router picks a model per request, so one more request can reach a working one.
+        // Rate limits have their own backoff in createCompletion.
+        if (recoverable && attempt === 1 && ROUTER_MODELS.has(candidate) && !isRateLimitError(error)) {
+          console.error(`LLM router ${candidate} failed; trying it once more.`);
+          continue;
+        }
+        if (recoverable && candidate !== models.at(-1)) {
+          console.error(
+            `LLM model ${candidate} failed; trying the next explicitly configured candidate.`,
+          );
+          break;
+        }
+        throw normalizeLlmError(error);
       }
-      const parsed = parseJsonReply(raw, candidate, choice?.finish_reason);
-      options.onModelUsed?.(candidate);
-      return parsed;
-    } catch (error) {
-      if (options.signal?.aborted) {
-        throw abortReason(options.signal, error);
-      }
-      errors.push(error);
-      options.onModelFailed?.(candidate, describeProviderError(error) ?? errorMessage(normalizeLlmError(error)));
-      if (candidate !== models.at(-1) && shouldTryNextModel(error) && remainingMs(requestOptions) >= MIN_REQUEST_TIMEOUT_MS) {
-        console.error(
-          `LLM model ${candidate} failed; trying the next explicitly configured candidate.`,
-        );
-        continue;
-      }
-      throw normalizeLlmError(error);
     }
   }
 
@@ -394,6 +405,12 @@ function shouldTryNextModel(error: unknown): boolean {
     );
   }
   return false;
+}
+
+function isRateLimitError(error: unknown): boolean {
+  if (error instanceof OpenAI.RateLimitError) return true;
+  if (error instanceof LlmRequestError || error instanceof OpenAI.APIError) return error.status === 429;
+  return error instanceof Error && /429|rate limit/i.test(error.message);
 }
 
 function normalizeLlmError(error: unknown): unknown {

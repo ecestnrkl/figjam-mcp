@@ -2,14 +2,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 afterEach(() => { vi.restoreAllMocks(); vi.resetModules(); vi.unstubAllGlobals(); });
 function json(data: unknown): Response { return new Response(JSON.stringify(data)); }
 describe("bounded Figma requests", () => {
-  it("reads metadata version and handles missing scope distinctly", async () => {
-    const mock = vi.fn().mockResolvedValueOnce(json({ file: { version: "v2" } })).mockResolvedValueOnce(new Response("", { status: 403 }));
-    vi.stubGlobal("fetch", mock);
-    const { fetchFileMetadata } = await import("../src/lib/figmaApi.js");
-    await expect(fetchFileMetadata("AbC123", "secret")).resolves.toEqual({ version: "v2" });
-    expect(mock.mock.calls[0]?.[0]).toContain("/files/AbC123/meta");
-    await expect(fetchFileMetadata("AbC123", "secret")).rejects.toMatchObject({ status: 403 });
-  });
   it("wraps response body timeouts", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(new ReadableStream({ start(controller) { controller.error(new DOMException("expired", "TimeoutError")); } }))));
     const { fetchFileTree } = await import("../src/lib/figmaApi.js");
@@ -116,12 +108,12 @@ describe("bounded Figma requests", () => {
       .rejects.toMatchObject({ name: "FigmaDownloadBudgetError" });
     expect(budget.usedBytes).toBe(0);
   });
-  it("exposes typed byte-budget and metadata-timeout errors", async () => {
+  it("exposes typed byte-budget and request-timeout errors", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValueOnce(new Response("{}", { headers: { "Content-Length": String(65 * 1024 * 1024) } }))
       .mockRejectedValueOnce(new DOMException("timeout", "TimeoutError")));
-    const { fetchFileTree, fetchFileMetadata } = await import("../src/lib/figmaApi.js");
+    const { fetchFileTree, fetchImageRefs } = await import("../src/lib/figmaApi.js");
     await expect(fetchFileTree("AbC123", "secret")).rejects.toMatchObject({ name: "FigmaDownloadBudgetError" });
-    const pending = fetchFileMetadata("AbC123", "secret");
+    const pending = fetchImageRefs("AbC123", "secret");
     await expect(pending).rejects.toMatchObject({ name: "FigmaTimeoutError" });
     await expect(pending).rejects.toThrow(/FIGMA_REQUEST_TIMEOUT_MS/);
   });
@@ -136,16 +128,16 @@ describe("bounded Figma requests", () => {
       expect(fetchMock.mock.calls.at(-1)?.[1].signal.aborted).toBe(true);
     }
   });
-  it("cancels a stalled screenshot body and pins renders to the captured version", async () => {
+  it("cancels a stalled screenshot body and renders the current file", async () => {
     let canceled = false;
     const fetchMock = vi.fn().mockResolvedValueOnce(json({ images: { a: "https://cdn.example/a" } })).mockResolvedValueOnce(new Response(new ReadableStream({ cancel() { canceled = true; } })));
     vi.stubGlobal("fetch", fetchMock);
     const { fetchRenderUrls, downloadRenders } = await import("../src/lib/figmaApi.js");
     const controller = new AbortController();
-    const urls = await fetchRenderUrls("AbC123", ["a"], "secret", controller.signal, "version-1");
+    const urls = await fetchRenderUrls("AbC123", ["a"], "secret", controller.signal);
     const pending = downloadRenders(["a"], urls, controller.signal);
     await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2)); controller.abort();
     await expect(pending).rejects.toMatchObject({ name: "AbortError" });
-    expect(canceled).toBe(true); expect(fetchMock.mock.calls[0]?.[0]).toContain("version=version-1");
+    expect(canceled).toBe(true); expect(fetchMock.mock.calls[0]?.[0]).not.toContain("version=");
   });
 });

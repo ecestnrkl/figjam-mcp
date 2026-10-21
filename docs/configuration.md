@@ -10,7 +10,7 @@ the client win. Restart the server after a change.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `FIGMA_ACCESS_TOKEN` | required for `ingest_board` | Figma personal access token with `file_content:read`. Add `file_metadata:read` so re-ingests of an unchanged board skip the download. |
+| `FIGMA_ACCESS_TOKEN` | required for `ingest_board` | Figma personal access token with `file_content:read`. |
 | `LLM_BASE_URL` | none | OpenAI-compatible endpoint, for example `https://openrouter.ai/api/v1`. Required for every LLM call. |
 | `LLM_API_KEY` | none | Provider key. Required for every LLM call. |
 
@@ -32,7 +32,7 @@ it redacted.
 | `LLM_MODEL_PRESET` | `student-free` | Default model lists; `student-free` is the only preset. |
 | `LLM_TEXT_MODELS` | `openrouter/free` | Candidates for `answer_from_board`, tried in order. Changing them keeps image interpretations. |
 | `LLM_VISION_MODELS` | `openrouter/free` | Candidates for image interpretation. Changing them, `LLM_BASE_URL` or `LLM_PROVIDER_REQUIRE_PARAMETERS` interprets images again on the next ingest. |
-| `LLM_FAST_TEXT_MODELS` | same as `LLM_TEXT_MODELS` | Used only by `diagnose_llm_config`. |
+| `LLM_FAST_TEXT_MODELS` | the text models (`LLM_TEXT_MODEL`, `LLM_TEXT_MODELS`) | Used only by `diagnose_llm_config`. |
 | `LLM_TEXT_MODEL`, `LLM_VISION_MODEL` | none | Legacy: one model placed in front of the list. |
 | `LLM_PROVIDER_REQUIRE_PARAMETERS` | `true` | Only when `LLM_BASE_URL` points to `openrouter.ai`: sends `provider.require_parameters` with JSON requests, so only endpoints that support structured output are used. `false` turns it off. |
 | `LLM_ANSWER_REASONING_EFFORT` | unset | `none`, `low`, `medium` or `high` for `answer_from_board` only. Unset keeps the model's default. |
@@ -85,7 +85,8 @@ Invalid numbers fail with an error that names the variable and its minimum.
 | `max_quality` | Every cluster | Yes |
 
 Clusters without vision keep a summary built from their extracted text.
-`forceFullIngest: true` downloads and extracts the board again, for example after
+Every ingest downloads the board. `forceFullIngest: true` builds the snapshot
+from it again instead of the cached result for unchanged content, for example after
 turning redaction off. It does not interpret images again: interpretations of
 unchanged clusters are kept, and pending clusters continue as on any ingest. The
 server detects model and prompt changes itself. An unchanged board gives no new

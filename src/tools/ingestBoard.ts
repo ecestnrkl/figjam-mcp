@@ -2,7 +2,7 @@ import type { IngestBoardInput, IngestBoardOutput } from "../schemas/ingestBoard
 import { setImmediate as yieldToRequests } from "node:timers/promises";
 import { extractFigmaFileKeyFromUrl } from "../schemas/common.js";
 import type { Cluster, IngestFocusReport, IngestMode, IngestQualityReport, NormalizedNode, RefinedCluster, BoardData, OperationOptions } from "../types.js";
-import { fetchFileTree, fetchRenderUrls, downloadRenders, fetchFileMetadata, fetchImageRefs, downloadOriginals, FigmaApiError, FigmaDownloadBudgetError,
+import { fetchFileTree, fetchRenderUrls, downloadRenders, fetchImageRefs, downloadOriginals, FigmaApiError, FigmaDownloadBudgetError,
   FigmaTimeoutError, IMAGE_MAX_BYTES, INGEST_IMAGE_MAX_BYTES, type OriginalImage, type RenderUrls } from "../lib/figmaApi.js";
 import { LLMConfigurationError, LlmInvalidJsonError, LlmRequestError, LlmTimeoutError, validateLlmConfiguration } from "../lib/llmClient.js";
 import { flattenNodeTree, isGenericNodeName } from "../lib/nodeTree.js";
@@ -12,7 +12,7 @@ import { prepareRenders, prepareVisionImage } from "../lib/visionImages.js";
 import { mapClustersToPhases } from "../lib/docStructureMapper.js";
 import { buildClusterRelations, extractConnectorEdges } from "../lib/connectorGraph.js";
 import { setBoard } from "../lib/cache.js";
-import { redactBoard, redactNodes } from "../lib/redact.js";
+import { redactBoard } from "../lib/redact.js";
 import { readIntEnv } from "../lib/env.js";
 import { describeModelConfig } from "../lib/modelRegistry.js";
 import { sectionGuide } from "../lib/sections.js";
@@ -107,35 +107,14 @@ async function performIngest(input: IngestBoardInput, options: OperationOptions)
   const token = input.figmaAccessToken?.trim() || process.env.FIGMA_ACCESS_TOKEN?.trim();
   if (!token) throw new Error("No Figma access token — set FIGMA_ACCESS_TOKEN in your MCP client's environment");
   const previousBoard = await readLatestBoard(fileKey);
-  let nodes: NormalizedNode[];
-  let figmaLastModified: string | undefined;
-  let figmaVersion: string | undefined;
-  let unchanged = false;
-  if (previousBoard?.figmaVersion && previousBoard.extractionVersion === EXTRACTION_VERSION && !input.forceFullIngest) {
-    try {
-      const metadata = await fetchFileMetadata(fileKey, token, signal);
-      unchanged = metadata.version === previousBoard.figmaVersion;
-    } catch (error) {
-      signal?.throwIfAborted();
-      // Older tokens may not have file_metadata:read. Other failures must not
-      // silently claim freshness or consume another request after a rate limit.
-      if (!(error instanceof FigmaApiError && [403, 404].includes(error.status))) throw error;
-    }
-  }
-  if (unchanged && previousBoard) {
-    // The previous ingest may have run with redaction off. Redaction is idempotent,
-    // so already redacted nodes keep their hash, snapshot ID and cache key.
-    nodes = redactNodes(previousBoard.nodes);
-    figmaLastModified = previousBoard.figmaLastModified;
-    figmaVersion = previousBoard.figmaVersion;
-  } else {
-    const rawTree = await fetchFileTree(fileKey, token, signal);
-    signal?.throwIfAborted();
-    nodes = flattenNodeTree(rawTree);
-    figmaLastModified = extractFigmaLastModified(rawTree);
-    const version = (rawTree as { version?: unknown } | null)?.version;
-    figmaVersion = typeof version === "string" ? version : undefined;
-  }
+  // Every ingest downloads the board: /meta reports edits only with Figma's next
+  // autosave or after a content read, minutes later, so it cannot confirm freshness.
+  const rawTree = await fetchFileTree(fileKey, token, signal);
+  signal?.throwIfAborted();
+  const nodes = flattenNodeTree(rawTree);
+  const figmaLastModified = extractFigmaLastModified(rawTree);
+  const version = (rawTree as { version?: unknown } | null)?.version;
+  const figmaVersion = typeof version === "string" ? version : undefined;
   const freshnessCheckedAt = Date.now();
   await progress("extract", 1);
   const connectorEdges = extractConnectorEdges(nodes);
@@ -230,7 +209,7 @@ async function performIngest(input: IngestBoardInput, options: OperationOptions)
     let request = renderRequests[batch];
     if (!request) {
       figmaRequests.renders++;
-      request = fetchRenderUrls(fileKey, renderBatches[batch]!.flatMap(index => screenshotNodes.get(index)!), token!, renderSignal, figmaVersion);
+      request = fetchRenderUrls(fileKey, renderBatches[batch]!.flatMap(index => screenshotNodes.get(index)!), token!, renderSignal);
       // Workers observe the outcome; a prefetch may end unobserved.
       request.catch(() => undefined);
       renderRequests[batch] = request;
@@ -278,7 +257,7 @@ async function performIngest(input: IngestBoardInput, options: OperationOptions)
     const renders = new Map<string, Buffer | undefined>();
     if (renderIds.length) {
       figmaRequests.renders++;
-      const renderUrls = await fetchRenderUrls(fileKey, renderIds, token!, requestSignal, figmaVersion);
+      const renderUrls = await fetchRenderUrls(fileKey, renderIds, token!, requestSignal);
       (await prepareRenders(await downloadRenders(renderIds, renderUrls, requestSignal, imageBudget), requestSignal))
         .forEach((image, position) => renders.set(renderIds[position]!, image));
     }
