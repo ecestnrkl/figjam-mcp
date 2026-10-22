@@ -125,7 +125,7 @@ describe("getBoardContext", () => {
     setBoard("Unknown123", board("Unknown123"));
     await expect(getBoardContext({ boardId: "Unknown123", nodeIds: ["999:999"] })).rejects.toThrow(
       `No node with ID 999:999 in snapshot ${"a".repeat(64)} of board Unknown123. Valid IDs: the first page of `
-      + "get_board_context without parameters lists all sections with their IDs, and node-id in a Figma link names a node "
+      + "get_board_context without parameters lists sections with their IDs, and node-id in a Figma link names a node "
       + "(node-id=5-87 is 5:87). For a node added since the last ingest, run ingest_board again.");
     await expect(getBoardContext({ boardId: "Unknown123", nodeIds: ["999:999", "998:1"] })).rejects.toThrow(/^No nodes with IDs 999:999, 998:1 in snapshot/);
   });
@@ -153,6 +153,32 @@ describe("getBoardContext", () => {
     const mixed = await getBoardContext({ boardId: "Textless123", nodeIds: ["1:1", "1:3"] });
     expect(mixed.structuredContent.evidence.map((item) => item.nodeId)).toEqual(["1:1"]);
     expect(mixed.text).toContain("This node contains no text, for example a shape or image without text: 1:3.");
+  });
+
+  it("names requested arrows without excerpts apart from nodes without text", async () => {
+    const data = board("Arrow123");
+    data.nodes.push({ ...textNode("2:1", "inspires"), name: "Connector", type: "CONNECTOR", connectorStartId: "1:1", connectorEndId: "1:2" });
+    data.nodes.push({ ...textNode("1:3", ""), name: "Rectangle", type: "SHAPE_WITH_TEXT", text: undefined });
+    setBoard("Arrow123", data);
+    const arrowLine = "Arrows have no excerpts; an arrow and its label are listed under connections on pages with an excerpt "
+      + "at one of its ends: 2:1.";
+    const { text, structuredContent: output } = await getBoardContext({ boardId: "Arrow123", nodeIds: ["2:1"] });
+    expect(output).toMatchObject({ evidence: [], totalMatched: 0 });
+    expect(text).toContain(arrowLine);
+    expect(text).not.toContain("contains no text");
+    const both = await getBoardContext({ boardId: "Arrow123", nodeIds: ["2:1", "1:3"] });
+    expect(both.text).toContain(arrowLine);
+    expect(both.text).toContain("This node contains no text, for example a shape or image without text: 1:3.");
+  });
+
+  it("treats an empty table cell without a row excerpt as a node without text", async () => {
+    const data = tableBoard("EmptyCell123", 3, 2);
+    for (const cell of data.nodes.find((node) => node.id === "5:1")!.table!.cells) if (cell.id.startsWith("T5:1;6:2;")) cell.text = "";
+    setBoard("EmptyCell123", data);
+    expect(retrieveEvidence(data, { nodeIds: ["T5:1;6:2;7:1"] }).evidence).toEqual([]);
+    const { text, structuredContent: output } = await getBoardContext({ boardId: "EmptyCell123", nodeIds: ["T5:1;6:2;7:1"] });
+    expect(output.unknownNodeIds).toBeUndefined();
+    expect(text).toContain("This node contains no text, for example a shape or image without text: T5:1;6:2;7:1.");
   });
 
   it("supports node lookup and rejects simultaneous topic and nodeIds", async () => {

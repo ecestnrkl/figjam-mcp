@@ -37,19 +37,22 @@ const ANSWER_SYSTEM_PROMPT =
   "Use 'unsupported' only when no provided source supports an answer. " +
   "Set language to the BCP-47 language code of the question (for example de, en, fr, tr), including short questions. " +
   'Reply with JSON only: {"kind": string, "language": string, "answer": string, "evidenceIds": string[]}. Cite the exact evidence IDs shown in the context that support your answer.';
-const EVIDENCE_ID = "ev_[0-9a-f]{32}";
+const QUOTE = `["'“”„‘’]`;
+/** One evidence ID; quotes and square brackets around it belong to it. */
+const EVIDENCE_ID = `(?:\\[\\s*)?${QUOTE}?ev_[0-9a-f]{32}${QUOTE}?(?:\\s*\\])?`;
 const EVIDENCE_ID_LIST = `${EVIDENCE_ID}(?:\\s*(?:,|;|&|and|und)\\s*${EVIDENCE_ID})*`;
-const EVIDENCE_ID_LEAD = "\\b(?:(?:see|siehe)\\s+)?(?:(?:evidence|source|beleg)[ _-]?(?:ids?)?|ids?)\\s*:?\\s*";
-/**
- * Evidence IDs a model wrote into the answer despite the prompt, with brackets left empty and lead-ins
- * such as "evidence IDs:"; the citations below the answer name the sources.
- */
-const EVIDENCE_IDS_IN_TEXT = new RegExp([
-  `(?<=[.!?])\\s*(?:${EVIDENCE_ID_LEAD})?\\[?${EVIDENCE_ID_LIST}\\]?\\.?`,
-  `[ \\t]*\\(\\s*(?:${EVIDENCE_ID_LEAD})?\\[?\\s*${EVIDENCE_ID_LIST}\\s*\\]?\\s*\\)`,
-  `[ \\t]*\\[\\s*(?:${EVIDENCE_ID_LEAD})?${EVIDENCE_ID_LIST}\\s*\\]`,
-  `(?:\\s*[,;])?[ \\t]*(?:${EVIDENCE_ID_LEAD})?${EVIDENCE_ID_LIST}`,
-].join("|"), "gi");
+/** A lead-in of up to three words ending with a colon, such as "Sources:" or "evidence IDs:", or "see". */
+const EVIDENCE_ID_LEAD = "(?:(?:see|siehe)\\s+|(?:[\\p{L}\\p{N}_-]+[ \\t]+){0,2}[\\p{L}\\p{N}_-]+[ \\t]*:[ \\t]*)";
+const HAS_EVIDENCE_ID = /ev_[0-9a-f]{32}/i;
+/** What a bracket may hold besides evidence IDs and still be dropped as a whole. */
+const ONLY_EVIDENCE_LEFTOVERS = new RegExp(
+  `^[\\s,;:&\\[\\]"'“”„‘’]*(?:(?:see|siehe)\\b|(?:[\\p{L}\\p{N}_-]+\\s+){0,2}[\\p{L}\\p{N}_-]+\\s*:)?[\\s,;:&\\[\\]"'“”„‘’]*$`, "iu");
+const BRACKET_WITH_TEXT = /\s*\(([^()]*)\)/g;
+/** A list with its lead-in at the start of a line or after a sentence end, with the line break before it. */
+const EVIDENCE_ID_SENTENCE = new RegExp(
+  `(?:(?<=[.!?])[ \\t]*|\\n[ \\t]*(?=(?:${EVIDENCE_ID_LEAD})?${EVIDENCE_ID_LIST}\\.?[ \\t]*(?:\\n|$))|^[ \\t]*)`
+  + `(?:${EVIDENCE_ID_LEAD})?${EVIDENCE_ID_LIST}\\.?`, "giu");
+const EVIDENCE_ID_ELSEWHERE = new RegExp(`(?:\\s*[,;])?[ \\t]*${EVIDENCE_ID_LIST}`, "giu");
 const ANSWER_REPLY_SCHEMA = {
   type: "object",
   properties: { kind: { type: "string", enum: ANSWER_KINDS }, language: { type: "string" }, answer: { type: "string" }, evidenceIds: { type: "array", items: { type: "string" } } },
@@ -257,9 +260,20 @@ function extractiveFallback(question: string, snapshotId: string, evidence: Evid
   ).join(" "), snapshotId, selected);
 }
 
-/** Only the matched IDs and what they leave behind change; the rest of the answer stays verbatim. */
+/**
+ * Evidence IDs a model wrote into the answer despite the prompt; the citations below the answer name the sources.
+ * A bracket that held one disappears with the space before it when only a lead-in such as "Sources:", "see",
+ * separators, quotes or empty square brackets remain. Only the IDs and what they leave behind change.
+ */
 export function removeEvidenceIds(answer: string): string {
-  return answer.replace(EVIDENCE_IDS_IN_TEXT, "");
+  return answer
+    .replace(BRACKET_WITH_TEXT, (bracket, inner: string) => {
+      if (!HAS_EVIDENCE_ID.test(inner)) return bracket;
+      const rest = inner.replace(EVIDENCE_ID_ELSEWHERE, "").replace(/^[\s,;]+/, "");
+      return ONLY_EVIDENCE_LEFTOVERS.test(rest) ? "" : bracket.replace(inner, () => rest);
+    })
+    .replace(EVIDENCE_ID_SENTENCE, "")
+    .replace(EVIDENCE_ID_ELSEWHERE, "");
 }
 
 function unsupportedAnswer(question: string, snapshotId: string): AnswerFromBoardOutput {

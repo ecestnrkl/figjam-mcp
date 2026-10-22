@@ -882,14 +882,15 @@ function describeFallbackReasons(reasons?: Record<string, number>): string {
   const labels: Record<string, string> = {
     time_budget: "the time for images in this run ran out", vision_budget: "the time for images in an earlier run ran out",
     timeout: "the model did not answer in time", config: "the model settings are missing or invalid",
-    auth: "Figma or the model provider denied access", rate_limit: "the model provider asked to wait (rate limit)",
+    auth: "Figma or the model provider denied access", rate_limit: "the model provider's rate limit was reached",
     invalid_reply: "the model's reply was unusable", download_budget: "the images were too large to download",
     render_failed: "Figma could not provide the images", model_failed: "the model request failed",
-    vision_failed: "an earlier run failed (cause not recorded)", unknown: "cause not recorded",
+    vision_failed: "an earlier run failed without a recorded cause", unknown: "the cause was not recorded",
   };
-  return Object.entries(reasons ?? {}).filter(([, count]) => count > 0)
-    .map(([reason, count]) => `${labels[reason] ?? labels.unknown} (${count} cluster${count === 1 ? "" : "s"})`).join("; ")
-    || "cause not recorded";
+  const counted = Object.entries(reasons ?? {}).filter(([, count]) => count > 0);
+  // The summary already names the total; a single cause needs no count of its own.
+  if (counted.length <= 1) return counted.length ? labels[counted[0]![0]] ?? labels.unknown! : labels.unknown!;
+  return counted.map(([reason, count]) => `${labels[reason] ?? labels.unknown} (${count} cluster${count === 1 ? "" : "s"})`).join("; ");
 }
 
 function describeNextSteps(report: IngestQualityReport): string {

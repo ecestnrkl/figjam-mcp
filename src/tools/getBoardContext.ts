@@ -98,13 +98,17 @@ export async function getBoardContext(input: GetBoardContextInput): Promise<Boar
   if (options.nodeIds && unknownIds.length === new Set(options.nodeIds).size) {
     throw new Error(`${unknownIds.length === 1 ? "No node with ID" : "No nodes with IDs"} ${listIds(unknownIds)} in snapshot `
       + `${retrieved.snapshotId} of board ${board.fileKey}. Valid IDs: the first page of get_board_context without parameters `
-      + "lists all sections with their IDs, and node-id in a Figma link names a node (node-id=5-87 is 5:87). "
+      + "lists sections with their IDs, and node-id in a Figma link names a node (node-id=5-87 is 5:87). "
       + "For a node added since the last ingest, run ingest_board again.");
   }
   // Known IDs without excerpts, such as shapes without text; a single ID needs no extra retrieval.
-  const textlessIds = !options.nodeIds ? [] : options.nodeIds.length === 1 ? (retrieved.evidence.length ? [] : options.nodeIds)
+  const withoutExcerpts = !options.nodeIds ? [] : options.nodeIds.length === 1 ? (retrieved.evidence.length ? [] : options.nodeIds)
     : [...new Set(options.nodeIds)].filter((id) => !unknownIds.includes(id)
       && retrieveEvidence(board, { nodeIds: [id] }).evidence.length === 0);
+  // An arrow's label is no excerpt; it is listed under connections instead.
+  const connectorIds = new Set(board.nodes.filter((node) => node.type === "CONNECTOR").map((node) => node.id));
+  const arrowIds = withoutExcerpts.filter((id) => connectorIds.has(id));
+  const textlessIds = withoutExcerpts.filter((id) => !connectorIds.has(id));
   const resultFingerprint = createHash("sha256")
     .update(retrieved.evidence.map((item) => item.evidenceId).join("\0")).digest("hex");
   if (cursor && !cursor.check && cursor.snapshot !== retrieved.snapshotId) throw new Error(CURSOR_SNAPSHOT_GONE);
@@ -337,6 +341,10 @@ export async function getBoardContext(input: GetBoardContextInput): Promise<Boar
     if (textlessIds.length) {
       orientation.push(`${textlessIds.length === 1 ? "This node contains" : "These nodes contain"} no text, for example a shape `
         + `or image without text: ${listIds(textlessIds)}.`);
+    }
+    if (arrowIds.length) {
+      orientation.push("Arrows have no excerpts; an arrow and its label are listed under connections on pages with an excerpt "
+        + `at one of its ends: ${listIds(arrowIds)}.`);
     }
     if (evidence.length === 0 && !options.nodeIds) orientation.push("No source evidence matched this request.");
     const parts = [...orientation, ...renderGroups(groups, shownRows(evidence))];

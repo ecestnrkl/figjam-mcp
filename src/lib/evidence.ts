@@ -299,6 +299,8 @@ function boardLookups(board: BoardData): { nodesById: Map<string, NormalizedNode
 /** Requested IDs that name no node, table cell or excerpt of this snapshot, in request order. */
 export function unknownNodeIds(board: BoardData, nodeIds: string[]): string[] {
   const known = new Set(board.nodes.map((node) => node.id));
+  // Empty cells of skipped empty rows are in no row excerpt but exist.
+  for (const node of board.nodes) for (const cell of node.table?.cells ?? []) known.add(cell.id);
   for (const { evidence, cellIds } of getIndex(board).entries) {
     known.add(evidence.nodeId);
     if (evidence.renderNodeId) known.add(evidence.renderNodeId);

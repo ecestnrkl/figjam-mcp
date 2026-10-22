@@ -9,12 +9,14 @@
   counted them. `isError` stays false.
 - `get_board_context` with `nodeIds` fails when none of the IDs is in the snapshot, naming them and where valid IDs
   come from; it returned an empty page. Unknown IDs among known ones are named in one line and in the new optional
-  `unknownNodeIds`; known nodes without excerpts are named as containing no text.
+  `unknownNodeIds`; known nodes without excerpts, empty table cells included, are named as containing no text, and
+  requested arrows as listed under connections.
 - Figma 401/403 errors name `FIGMA_ACCESS_TOKEN`, the scope `file_content:read` and that its account must be able to
   open the file; 404 names the file key instead of the API path.
 - Clearer wording: an invalid board URL shows an example URL instead of a pattern, `answer_from_board` without
   matching excerpts says "The board has no excerpts that answer this question." (German likewise), and
-  `ingest_board` names the causes of incomplete image interpretation in plain words with the right plural.
+  `ingest_board` names the causes of incomplete image interpretation in plain words, with a cluster count per cause
+  only when there are several.
 - `answer_from_board` removes evidence IDs (`ev_…`) that a model wrote into the answer text, with brackets and
   lead-ins such as "evidence IDs:" they leave behind; the sources are listed below the answer.
 

@@ -367,7 +367,7 @@ describe("ingestBoard", () => {
     expect(output.summary).toContain("Original extracted texts, tables and node references remain available");
     expect(output.summary).toContain("diagnose_llm_config");
     expect(output.summary).not.toContain("timed out");
-    expect(output.summary).toContain("the model settings are missing or invalid (1 cluster)");
+    expect(output.summary).toContain("incomplete for 1 cluster: the model settings are missing or invalid.");
     expect(output.summary).toContain('LLM_API_KEY is not set. Add it to "env" of this server in your MCP client configuration');
     expect(output.summary).toContain("then restart the server");
   });
@@ -385,6 +385,18 @@ describe("ingestBoard", () => {
     expect(persisted.clusters.every(cluster => !cluster.incomplete && cluster.retryAfter === undefined)).toBe(true);
   });
 
+  it("says when the cause of an incomplete cluster was not recorded", async () => {
+    const previous = cachedBoard();
+    previous.clusters = previous.clusters.map(cluster => cluster.nodeIds.includes("1:2")
+      ? { ...cluster, summarySource: "deterministic", incomplete: true, retryAfter: Date.now() + 60_000 }
+      : cluster);
+    readLatestBoardMock.mockResolvedValueOnce(previous);
+    const output = await ingestBoard({ figmaFileUrl: "https://www.figma.com/board/AbC123/Test",
+      docStructureHint: "freeform", ingestMode: "balanced" });
+    expect(output.qualityReport?.fallbackReasons).toEqual({ unknown: 1 });
+    expect(output.summary).toContain("Visual interpretation is incomplete for 1 cluster: the cause was not recorded.");
+  });
+
   it("does not invent detailed causes for older cached failures", async () => {
     const previous = cachedBoard();
     previous.clusters = previous.clusters.map(cluster => cluster.nodeIds.includes("1:2")
@@ -396,7 +408,7 @@ describe("ingestBoard", () => {
       docStructureHint: "freeform", ingestMode: "balanced" });
     expect(fetchRenderUrlsMock).not.toHaveBeenCalled();
     expect(output.qualityReport?.fallbackReasons).toEqual({ vision_failed: 1 });
-    expect(output.summary).toContain("an earlier run failed (cause not recorded) (1 cluster)");
+    expect(output.summary).toContain("Visual interpretation is incomplete for 1 cluster: an earlier run failed without a recorded cause.");
   });
 
   it.each([
@@ -441,6 +453,7 @@ describe("ingestBoard", () => {
     expect(downloadFetchMock).toHaveBeenCalledTimes(3);
     expect(refineClusterWithVisionMock).toHaveBeenCalledTimes(3);
     expect(output.qualityReport?.fallbackReasons).toEqual({ rate_limit: 8 });
+    expect(output.summary).toContain("incomplete for 8 clusters: the model provider's rate limit was reached.");
     expect(output.qualityReport?.nextRetryAt).toBeGreaterThanOrEqual(before + 90_000);
     expect(output.summary).toContain("Retry after");
   });
@@ -933,7 +946,7 @@ describe("ingestBoard", () => {
     expect(signals.every((signal) => signal.aborted)).toBe(true);
     expect(signals.every((signal) => String(signal.reason).includes("40000 ms"))).toBe(true);
     expect(output.qualityReport).toMatchObject({ fallbackCount: 2, visionClusters: 0, fallbackReasons: { timeout: 2 } });
-    expect(output.summary).toContain("Visual interpretation is incomplete for 2 clusters: the model did not answer in time (2 clusters).");
+    expect(output.summary).toContain("Visual interpretation is incomplete for 2 clusters: the model did not answer in time.");
   });
 
   it.each([
