@@ -367,6 +367,9 @@ describe("ingestBoard", () => {
     expect(output.summary).toContain("Original extracted texts, tables and node references remain available");
     expect(output.summary).toContain("diagnose_llm_config");
     expect(output.summary).not.toContain("timed out");
+    expect(output.summary).toContain("the model settings are missing or invalid (1 cluster)");
+    expect(output.summary).toContain('LLM_API_KEY is not set. Add it to "env" of this server in your MCP client configuration');
+    expect(output.summary).toContain("then restart the server");
   });
 
   it("does not carry an old vision cooldown into intentional max_speed processing", async () => {
@@ -393,7 +396,7 @@ describe("ingestBoard", () => {
       docStructureHint: "freeform", ingestMode: "balanced" });
     expect(fetchRenderUrlsMock).not.toHaveBeenCalled();
     expect(output.qualityReport?.fallbackReasons).toEqual({ vision_failed: 1 });
-    expect(output.summary).toContain("older cached failures (cause not recorded)");
+    expect(output.summary).toContain("an earlier run failed (cause not recorded) (1 cluster)");
   });
 
   it.each([
@@ -930,6 +933,7 @@ describe("ingestBoard", () => {
     expect(signals.every((signal) => signal.aborted)).toBe(true);
     expect(signals.every((signal) => String(signal.reason).includes("40000 ms"))).toBe(true);
     expect(output.qualityReport).toMatchObject({ fallbackCount: 2, visionClusters: 0, fallbackReasons: { timeout: 2 } });
+    expect(output.summary).toContain("Visual interpretation is incomplete for 2 clusters: the model did not answer in time (2 clusters).");
   });
 
   it.each([

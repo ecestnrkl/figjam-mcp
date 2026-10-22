@@ -114,6 +114,22 @@ describe("chatJson", () => {
     } finally { if (previous === undefined) delete process.env.LLM_API_KEY; else process.env.LLM_API_KEY = previous; }
   });
 
+  it("names every missing variable and where to set it", async () => {
+    const { validateLlmConfiguration } = await import("../src/lib/llmClient.js");
+    vi.stubEnv("LLM_BASE_URL", "");
+    vi.stubEnv("LLM_API_KEY", " ");
+    try {
+      const expected = 'LLM_BASE_URL and LLM_API_KEY are not set. Add them to "env" of this server in your MCP client '
+        + "configuration (see README, Quick start), then restart the server. "
+        + "In a local checkout, a .env file in the project directory works too.";
+      expect(() => validateLlmConfiguration()).toThrow(expected);
+      await expect(chatJson("test-model", MESSAGES)).rejects.toThrow(expected);
+      vi.stubEnv("LLM_BASE_URL", "http://test.local/v1");
+      expect(() => validateLlmConfiguration()).toThrow(/^LLM_API_KEY is not set\. Add it to "env"/);
+      expect(createMock).not.toHaveBeenCalled();
+    } finally { vi.unstubAllEnvs(); }
+  });
+
   it("keeps provider timeouts distinguishable from other failures", async () => {
     const error = new Error("Private provider details"); error.name = "APIConnectionTimeoutError";
     createMock.mockRejectedValueOnce(error);

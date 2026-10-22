@@ -50,15 +50,16 @@ export function extractFigmaFileKeyFromUrl(value: string): string | undefined {
   return parsedKey.success ? parsedKey.data : undefined;
 }
 
+/** An example instead of a pattern: new users copy the URL from the browser. */
+export const FIGMA_URL_HINT =
+  "Expected a Figma URL like https://www.figma.com/board/<file_key>/<name> (/board/, /design/, /file/ or /proto/)";
+
 export const figmaFileUrlSchema = z
   .string()
   .trim()
   .max(2048, "Figma URL is too long")
-  .url()
-  .refine(
-    (value) => extractFigmaFileKeyFromUrl(value) !== undefined,
-    "Expected an HTTPS figma.com URL with path /(file|design|board|proto)/<file_key>[/name]",
-  );
+  .url({ message: FIGMA_URL_HINT, abort: true })
+  .refine((value) => extractFigmaFileKeyFromUrl(value) !== undefined, FIGMA_URL_HINT);
 
 export const questionSchema = z
   .string()

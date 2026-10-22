@@ -296,6 +296,17 @@ function boardLookups(board: BoardData): { nodesById: Map<string, NormalizedNode
   return found;
 }
 
+/** Requested IDs that name no node, table cell or excerpt of this snapshot, in request order. */
+export function unknownNodeIds(board: BoardData, nodeIds: string[]): string[] {
+  const known = new Set(board.nodes.map((node) => node.id));
+  for (const { evidence, cellIds } of getIndex(board).entries) {
+    known.add(evidence.nodeId);
+    if (evidence.renderNodeId) known.add(evidence.renderNodeId);
+    for (const id of cellIds ?? []) known.add(id);
+  }
+  return [...new Set(nodeIds)].filter((id) => !known.has(id));
+}
+
 /** Requested IDs of pages, sections, frames and groups, in request order. */
 export function readableContainerIds(board: BoardData, nodeIds: string[]): string[] {
   const types = new Map(board.nodes.map((node) => [node.id, node.type]));

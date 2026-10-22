@@ -10,7 +10,7 @@ import { redactBoard } from "../lib/redact.js";
 import {
   boundedText, connectionsForEvidence, countConnectionsForEvidence,
   formatEvidenceConnection, MAX_CONTEXT_RESPONSE_BYTES, readableContainerIds,
-  firstTableRow, retrieveEvidence, snapshotIdForBoard, tableCellPositions, type Evidence,
+  firstTableRow, retrieveEvidence, snapshotIdForBoard, tableCellPositions, unknownNodeIds, type Evidence,
 } from "../lib/evidence.js";
 import { SectionIndex } from "../lib/sections.js";
 import type { BoardData, RefinedCluster } from "../types.js";
@@ -37,6 +37,8 @@ const SHORT_CURSOR = /^([1-9]\d{0,8})\.(0|[1-9]\d{0,8})\.([0-9a-f]{12})\.([0-9a-
 const CURSOR_MISMATCH = "Cursor does not match this request or was changed. Send nextCursor unchanged with the same topic, " +
   "nodeIds, outsideSections, limit and maxChars, or start again without a cursor (also after an ingest refined the board).";
 const CURSOR_SNAPSHOT_GONE = "The snapshot of this cursor is no longer available. Start again without a cursor.";
+/** Characters of requested IDs named in a message; the IDs themselves are up to 50 × 200 characters. */
+const MAX_IDS_IN_MESSAGE = 300;
 
 /** Excerpts shown on a page and how many of them advance the cursor through the result sequence. */
 interface Page {
@@ -92,6 +94,17 @@ export async function getBoardContext(input: GetBoardContextInput): Promise<Boar
     query: options.topic, nodeIds: options.nodeIds, outsideSections: options.outsideSections,
     includeNeighbors: Boolean(options.topic), neighborLimit: 6,
   });
+  const unknownIds = options.nodeIds ? unknownNodeIds(board, options.nodeIds) : [];
+  if (options.nodeIds && unknownIds.length === new Set(options.nodeIds).size) {
+    throw new Error(`${unknownIds.length === 1 ? "No node with ID" : "No nodes with IDs"} ${listIds(unknownIds)} in snapshot `
+      + `${retrieved.snapshotId} of board ${board.fileKey}. Valid IDs: the first page of get_board_context without parameters `
+      + "lists all sections with their IDs, and node-id in a Figma link names a node (node-id=5-87 is 5:87). "
+      + "For a node added since the last ingest, run ingest_board again.");
+  }
+  // Known IDs without excerpts, such as shapes without text; a single ID needs no extra retrieval.
+  const textlessIds = !options.nodeIds ? [] : options.nodeIds.length === 1 ? (retrieved.evidence.length ? [] : options.nodeIds)
+    : [...new Set(options.nodeIds)].filter((id) => !unknownIds.includes(id)
+      && retrieveEvidence(board, { nodeIds: [id] }).evidence.length === 0);
   const resultFingerprint = createHash("sha256")
     .update(retrieved.evidence.map((item) => item.evidenceId).join("\0")).digest("hex");
   if (cursor && !cursor.check && cursor.snapshot !== retrieved.snapshotId) throw new Error(CURSOR_SNAPSHOT_GONE);
@@ -320,7 +333,12 @@ export async function getBoardContext(input: GetBoardContextInput): Promise<Boar
     const orientation = [header];
     if (evidence.length > 0 && view.position) orientation.push(pagePosition(consumed, remaining));
     if (view.overview) orientation.push(overview);
-    if (evidence.length === 0) orientation.push("No source evidence matched this request.");
+    if (unknownIds.length) orientation.push(`Not in this snapshot: ${listIds(unknownIds)}.`);
+    if (textlessIds.length) {
+      orientation.push(`${textlessIds.length === 1 ? "This node contains" : "These nodes contain"} no text, for example a shape `
+        + `or image without text: ${listIds(textlessIds)}.`);
+    }
+    if (evidence.length === 0 && !options.nodeIds) orientation.push("No source evidence matched this request.");
     const parts = [...orientation, ...renderGroups(groups, shownRows(evidence))];
     if (connections.length > 0) {
       parts.push(`## Source connections (including arrows within a cluster; «text» names an end not on this page)\n${connections.map((connection) => `- ${formatEvidenceConnection(connection)}`).join("\n")}`);
@@ -356,6 +374,7 @@ export async function getBoardContext(input: GetBoardContextInput): Promise<Boar
         evidence: groups.flatMap(([clusterId, items]) => items.map((item) => compactEvidence(item, clusterLocations.get(clusterId)))),
         connections,
         totalMatched: retrieved.evidence.length,
+        ...(unknownIds.length ? { unknownNodeIds: unknownIds } : {}),
         truncated: Object.values(truncation).some((count) => count > 0) || evidence.some((item) => item.truncated),
         truncation,
         nextCursor: remaining > 0 && consumed > 0
@@ -637,4 +656,8 @@ async function cursorBoard(boardId: string, cursor: Cursor): Promise<BoardData |
 
 function responseBytes(text: string, structuredContent: GetBoardContextOutput): number {
   return Buffer.byteLength(JSON.stringify({ content: [{ type: "text", text }], structuredContent }));
+}
+
+function listIds(ids: string[]): string {
+  return boundedText(ids.join(", "), MAX_IDS_IN_MESSAGE);
 }

@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.10.4 — Unreleased
+
+- Missing `LLM_BASE_URL` or `LLM_API_KEY` gives one message in `ingest_board`, `answer_from_board` and
+  `diagnose_llm_config` that names every missing variable, points to `env` in the MCP client configuration and says
+  to restart the server; `.env` is only mentioned for a local checkout. It named only the first missing variable.
+- `diagnose_llm_config` names each failing check with its cause in the text, one line per shared cause; it only
+  counted them. `isError` stays false.
+- `get_board_context` with `nodeIds` fails when none of the IDs is in the snapshot, naming them and where valid IDs
+  come from; it returned an empty page. Unknown IDs among known ones are named in one line and in the new optional
+  `unknownNodeIds`; known nodes without excerpts are named as containing no text.
+- Figma 401/403 errors name `FIGMA_ACCESS_TOKEN`, the scope `file_content:read` and that its account must be able to
+  open the file; 404 names the file key instead of the API path.
+- Clearer wording: an invalid board URL shows an example URL instead of a pattern, `answer_from_board` without
+  matching excerpts says "The board has no excerpts that answer this question." (German likewise), and
+  `ingest_board` names the causes of incomplete image interpretation in plain words with the right plural.
+- `answer_from_board` removes evidence IDs (`ev_…`) that a model wrote into the answer text, with brackets and
+  lead-ins such as "evidence IDs:" they leave behind; the sources are listed below the answer.
+
 ## 0.10.3 — 2026-10-22
 
 - `answer_from_board` lists its citations in the text content after the answer, under "Sources (untrusted board data):",

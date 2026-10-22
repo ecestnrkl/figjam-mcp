@@ -22,7 +22,7 @@ export class FigmaTimeoutError extends Error {
 function combineSignals(timeoutMs: number, signal?: AbortSignal): AbortSignal {
   return signal ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs);
 }
-async function figmaFetch(apiPath: string, token: string, timeoutMs: number, externalSignal?: AbortSignal): Promise<Response> {
+async function figmaFetch(fileKey: string, apiPath: string, token: string, timeoutMs: number, externalSignal?: AbortSignal): Promise<Response> {
   externalSignal?.throwIfAborted();
   let response: Response;
   try {
@@ -35,8 +35,9 @@ async function figmaFetch(apiPath: string, token: string, timeoutMs: number, ext
   if (!response.ok) {
     const retryAfter = Number(response.headers.get("Retry-After"));
     const message = response.status === 401 || response.status === 403
-      ? `Figma access denied (${response.status}). Check the token, file permission and required scopes.`
-      : response.status === 404 ? `Figma file not found (404): ${apiPath}`
+      ? `Figma access denied (${response.status}). Check FIGMA_ACCESS_TOKEN: it must be a valid token with the scope `
+        + `file_content:read, and its account must be able to open the file.`
+      : response.status === 404 ? `Figma file not found (404): ${fileKey}. Check the file key in the board URL.`
       : response.status === 429 ? `Figma API rate limit exceeded (429).${retryAfter > 0 ? ` Retry after ${retryAfter} seconds.` : " Retry later."}`
       : `Figma API request failed (${response.status} ${response.statusText}): ${apiPath}`;
     await response.body?.cancel();
@@ -88,12 +89,12 @@ async function readJson<T>(response: Response, apiPath: string, timeoutMs: numbe
 }
 export async function fetchFileTree(fileKey: string, token: string, signal?: AbortSignal): Promise<unknown> {
   const apiPath = `/files/${fileKey}`;
-  return readJson(await figmaFetch(apiPath, token, FIGMA_FILE_REQUEST_TIMEOUT_MS, signal), apiPath, FIGMA_FILE_REQUEST_TIMEOUT_MS, signal);
+  return readJson(await figmaFetch(fileKey, apiPath, token, FIGMA_FILE_REQUEST_TIMEOUT_MS, signal), apiPath, FIGMA_FILE_REQUEST_TIMEOUT_MS, signal);
 }
 /** One GET /v1/files/:key/images request (Tier 2): imageRef → URL of the original image, for the whole file. */
 export async function fetchImageRefs(fileKey: string, token: string, signal?: AbortSignal): Promise<Record<string, string>> {
   const apiPath = `/files/${fileKey}/images`;
-  const data = await readJson<{ meta?: { images?: Record<string, string> }; images?: Record<string, string> }>(await figmaFetch(apiPath, token, FIGMA_REQUEST_TIMEOUT_MS, signal), apiPath, FIGMA_REQUEST_TIMEOUT_MS, signal);
+  const data = await readJson<{ meta?: { images?: Record<string, string> }; images?: Record<string, string> }>(await figmaFetch(fileKey, apiPath, token, FIGMA_REQUEST_TIMEOUT_MS, signal), apiPath, FIGMA_REQUEST_TIMEOUT_MS, signal);
   return data.meta?.images ?? data.images ?? {};
 }
 export type ImageMimeType = "image/png" | "image/jpeg" | "image/gif" | "image/webp";
@@ -169,7 +170,7 @@ export async function fetchRenderUrls(fileKey: string, nodeIds: string[], token:
   if (!nodeIds.length) throw new Error("fetchRenderUrls: nodeIds must not be empty");
   const params = new URLSearchParams({ ids: nodeIds.join(","), format: "png", scale: "1" });
   const apiPath = `/images/${fileKey}?${params}`;
-  const data = await readJson<{ images?: RenderUrls; err?: string }>(await figmaFetch(apiPath, token, FIGMA_REQUEST_TIMEOUT_MS, signal), apiPath, FIGMA_REQUEST_TIMEOUT_MS, signal);
+  const data = await readJson<{ images?: RenderUrls; err?: string }>(await figmaFetch(fileKey, apiPath, token, FIGMA_REQUEST_TIMEOUT_MS, signal), apiPath, FIGMA_REQUEST_TIMEOUT_MS, signal);
   if (data.err) throw new Error("Figma could not render the requested nodes");
   return data.images ?? {};
 }

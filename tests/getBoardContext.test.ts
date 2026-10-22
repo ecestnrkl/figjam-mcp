@@ -121,6 +121,40 @@ describe("getBoardContext", () => {
     expect(output.contextText).not.toContain("Excerpts are in evidence");
   });
 
+  it("fails with the unknown IDs and where valid IDs come from when no requested ID is in the snapshot", async () => {
+    setBoard("Unknown123", board("Unknown123"));
+    await expect(getBoardContext({ boardId: "Unknown123", nodeIds: ["999:999"] })).rejects.toThrow(
+      `No node with ID 999:999 in snapshot ${"a".repeat(64)} of board Unknown123. Valid IDs: the first page of `
+      + "get_board_context without parameters lists all sections with their IDs, and node-id in a Figma link names a node "
+      + "(node-id=5-87 is 5:87). For a node added since the last ingest, run ingest_board again.");
+    await expect(getBoardContext({ boardId: "Unknown123", nodeIds: ["999:999", "998:1"] })).rejects.toThrow(/^No nodes with IDs 999:999, 998:1 in snapshot/);
+  });
+
+  it("reads the known IDs and names the unknown ones", async () => {
+    setBoard("PartlyUnknown123", board("PartlyUnknown123"));
+    const { text, structuredContent: output } = await getBoardContext({ boardId: "PartlyUnknown123", nodeIds: ["1:2", "999:999"] });
+    expect(output.evidence.map((item) => item.nodeId)).toEqual(["1:2"]);
+    expect(output.unknownNodeIds).toEqual(["999:999"]);
+    expect(text).toContain("Not in this snapshot: 999:999.");
+    expect(getBoardContextOutputSchema.parse(output).unknownNodeIds).toEqual(["999:999"]);
+    const known = await getBoardContext({ boardId: "PartlyUnknown123", nodeIds: ["1:2"] });
+    expect(known.structuredContent.unknownNodeIds).toBeUndefined();
+    expect(known.text).not.toContain("Not in this snapshot");
+  });
+
+  it("says that a known node without excerpts contains no text", async () => {
+    const data = board("Textless123");
+    data.nodes.push({ ...textNode("1:3", ""), name: "Rectangle", type: "SHAPE_WITH_TEXT", text: undefined });
+    setBoard("Textless123", data);
+    const { text, structuredContent: output } = await getBoardContext({ boardId: "Textless123", nodeIds: ["1:3"] });
+    expect(output).toMatchObject({ evidence: [], totalMatched: 0 });
+    expect(text).toContain("This node contains no text, for example a shape or image without text: 1:3.");
+    expect(text).not.toContain("No source evidence matched");
+    const mixed = await getBoardContext({ boardId: "Textless123", nodeIds: ["1:1", "1:3"] });
+    expect(mixed.structuredContent.evidence.map((item) => item.nodeId)).toEqual(["1:1"]);
+    expect(mixed.text).toContain("This node contains no text, for example a shape or image without text: 1:3.");
+  });
+
   it("supports node lookup and rejects simultaneous topic and nodeIds", async () => {
     setBoard("Lookup123", board("Lookup123"));
     const { structuredContent: output } = await getBoardContext({ boardId: "Lookup123", nodeIds: ["1:2"] });

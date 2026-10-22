@@ -37,6 +37,19 @@ const ANSWER_SYSTEM_PROMPT =
   "Use 'unsupported' only when no provided source supports an answer. " +
   "Set language to the BCP-47 language code of the question (for example de, en, fr, tr), including short questions. " +
   'Reply with JSON only: {"kind": string, "language": string, "answer": string, "evidenceIds": string[]}. Cite the exact evidence IDs shown in the context that support your answer.';
+const EVIDENCE_ID = "ev_[0-9a-f]{32}";
+const EVIDENCE_ID_LIST = `${EVIDENCE_ID}(?:\\s*(?:,|;|&|and|und)\\s*${EVIDENCE_ID})*`;
+const EVIDENCE_ID_LEAD = "\\b(?:(?:see|siehe)\\s+)?(?:(?:evidence|source|beleg)[ _-]?(?:ids?)?|ids?)\\s*:?\\s*";
+/**
+ * Evidence IDs a model wrote into the answer despite the prompt, with brackets left empty and lead-ins
+ * such as "evidence IDs:"; the citations below the answer name the sources.
+ */
+const EVIDENCE_IDS_IN_TEXT = new RegExp([
+  `(?<=[.!?])\\s*(?:${EVIDENCE_ID_LEAD})?\\[?${EVIDENCE_ID_LIST}\\]?\\.?`,
+  `[ \\t]*\\(\\s*(?:${EVIDENCE_ID_LEAD})?\\[?\\s*${EVIDENCE_ID_LIST}\\s*\\]?\\s*\\)`,
+  `[ \\t]*\\[\\s*(?:${EVIDENCE_ID_LEAD})?${EVIDENCE_ID_LIST}\\s*\\]`,
+  `(?:\\s*[,;])?[ \\t]*(?:${EVIDENCE_ID_LEAD})?${EVIDENCE_ID_LIST}`,
+].join("|"), "gi");
 const ANSWER_REPLY_SCHEMA = {
   type: "object",
   properties: { kind: { type: "string", enum: ANSWER_KINDS }, language: { type: "string" }, answer: { type: "string" }, evidenceIds: { type: "array", items: { type: "string" } } },
@@ -116,18 +129,19 @@ export async function answerFromBoard(
       .map((id) => allowed.get(id)).filter((item): item is Evidence => Boolean(item)).slice(0, 12)
     : [];
   const kind = parsed?.kind;
+  const answer = typeof parsed?.answer === "string" ? removeEvidenceIds(parsed.answer) : undefined;
   if (typeof kind !== "string" || !ANSWER_KINDS.includes(kind as AnswerKind) ||
-      kind === "unsupported" || cited.length === 0 || typeof parsed?.answer !== "string") {
+      kind === "unsupported" || cited.length === 0 || answer === undefined) {
     return extractiveFallback(input.question, retrieved.snapshotId, primaryEvidence);
   }
   if (kind !== "answer") {
     // The model supplies the classification; the explanation always includes original
     // displayed evidence. Derived interpretations cannot establish an original task.
     if (cited.some((item) => item.modelDerived)) return extractiveFallback(input.question, retrieved.snapshotId, primaryEvidence);
-    return uncertainStatusAnswer(input.question, retrieved.snapshotId, kind as AnswerKind, cited, parsed.language, parsed.answer);
+    return uncertainStatusAnswer(input.question, retrieved.snapshotId, kind as AnswerKind, cited, parsed!.language, answer);
   }
-  if (!parsed.answer.trim()) return extractiveFallback(input.question, retrieved.snapshotId, primaryEvidence);
-  return answerWithCitations(boundedText(parsed.answer.trim(), 4000), retrieved.snapshotId, cited);
+  if (!answer.trim()) return extractiveFallback(input.question, retrieved.snapshotId, primaryEvidence);
+  return answerWithCitations(boundedText(answer.trim(), 4000), retrieved.snapshotId, cited);
 }
 
 /**
@@ -243,11 +257,16 @@ function extractiveFallback(question: string, snapshotId: string, evidence: Evid
   ).join(" "), snapshotId, selected);
 }
 
+/** Only the matched IDs and what they leave behind change; the rest of the answer stays verbatim. */
+export function removeEvidenceIds(answer: string): string {
+  return answer.replace(EVIDENCE_IDS_IN_TEXT, "");
+}
+
 function unsupportedAnswer(question: string, snapshotId: string): AnswerFromBoardOutput {
   return {
     answer: isLikelyGerman(question)
-      ? "Die Antwort ist im gecachten Board-Kontext nicht belegt."
-      : "The answer is not supported by the cached board context.",
+      ? "Das Board enthält keine Auszüge, die diese Frage beantworten."
+      : "The board has no excerpts that answer this question.",
     citedClusters: [], snapshotId, citations: [],
   };
 }

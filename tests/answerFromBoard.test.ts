@@ -8,7 +8,7 @@ const { chatJsonMock, answerReasoningMock, InvalidJsonErrorMock } = vi.hoisted((
 });
 vi.mock("../src/lib/llmClient.js", () => ({ chatJson: chatJsonMock, getAnswerReasoningEffort: answerReasoningMock, getTextModels: () => ["test-model"], LlmInvalidJsonError: InvalidJsonErrorMock }));
 const { setBoard } = await import("../src/lib/cache.js");
-const { answerFromBoard, answerText } = await import("../src/tools/answerFromBoard.js");
+const { answerFromBoard, answerText, removeEvidenceIds } = await import("../src/tools/answerFromBoard.js");
 
 beforeEach(() => { chatJsonMock.mockReset(); answerReasoningMock.mockReset(); });
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); });
@@ -119,8 +119,24 @@ describe("answerFromBoard evidence grounding", () => {
     setBoard("Absent123", evidenceBoard("Absent123"));
     const output = await answerFromBoard({ boardId: "Absent123", question: "Where is the quantum reactor?" });
     expect(chatJsonMock).not.toHaveBeenCalled();
-    expect(output.answer).toContain("not supported");
+    expect(output.answer).toBe("The board has no excerpts that answer this question.");
     expect(output.citations).toEqual([]);
+    const german = await answerFromBoard({ boardId: "Absent123", question: "Wo ist der Quantenreaktor?" });
+    expect(german.answer).toBe("Das Board enthält keine Auszüge, die diese Frage beantworten.");
+  });
+
+  it("removes evidence IDs from the answer text and keeps the citations", async () => {
+    const data = evidenceBoard("EvidenceIdText123", [textNode("1:1", "Decision: the pilot starts on Monday, 2 Nov.")]);
+    setBoard(data.boardId, data);
+    let id = "";
+    chatJsonMock.mockImplementationOnce((_models, messages) => {
+      id = firstPromptId(messages);
+      return { kind: "answer", language: "en", evidenceIds: [id],
+        answer: `The pilot starts on Monday, 2 Nov. The source states: 'Decision: the pilot starts on Monday, 2 Nov.' (evidence IDs: [${id}])` };
+    });
+    const output = await answerFromBoard({ boardId: data.boardId, question: "When does the pilot start?" });
+    expect(output.answer).toBe("The pilot starts on Monday, 2 Nov. The source states: 'Decision: the pilot starts on Monday, 2 Nov.'");
+    expect(output.citations).toEqual([expect.objectContaining({ evidenceId: id, nodeId: "1:1" })]);
   });
 
   it.each([
@@ -439,5 +455,21 @@ describe("answerText", () => {
     const output = await answerFromBoard({ boardId: "NoSources123", question: "quantum reactor" });
     expect(output.citations).toEqual([]);
     expect(answerText(output)).toBe(output.answer);
+  });
+});
+
+describe("removeEvidenceIds", () => {
+  const a = `ev_${"a".repeat(32)}`;
+  const b = `ev_${"0123456789abcdef".repeat(2)}`;
+  it.each([
+    [`Starts Monday (evidence IDs: [${a}]).`, "Starts Monday."],
+    [`Starts Monday [${a}, ${b}].`, "Starts Monday."],
+    [`Starts Monday (${a}; ${b}).`, "Starts Monday."],
+    [`Starts Monday. Evidence IDs: ${a}, ${b}.`, "Starts Monday."],
+    [`Starts Monday (see 5:87, ${a}).`, "Starts Monday (see 5:87)."],
+    [`Startet am Montag (Beleg-IDs: ${a} und ${b}).`, "Startet am Montag."],
+    ["Keeps ev_short, ids: 5:87 and  spacing  .", "Keeps ev_short, ids: 5:87 and  spacing  ."],
+  ])("%s", (answer, expected) => {
+    expect(removeEvidenceIds(answer)).toBe(expected);
   });
 });

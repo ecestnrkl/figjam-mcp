@@ -113,8 +113,22 @@ export async function diagnoseLlmConfig(options: { signal?: AbortSignal } = {}):
     checks,
     summary: (ok
       ? `LLM configuration OK (${config.preset}).`
-      : `LLM configuration has ${checks.filter((check) => !check.ok).length} failing check(s).`) + fallbackNote,
+      : `LLM configuration has ${countChecks(checks.filter((check) => !check.ok).length)} failing.`) + fallbackNote + describeFailures(checks),
   };
+}
+
+function countChecks(count: number): string {
+  return `${count} check${count === 1 ? "" : "s"}`;
+}
+
+/** One line per cause with the failed checks it explains; many clients show only the text, not structuredContent. */
+function describeFailures(checks: CheckResult[]): string {
+  const byCause = new Map<string, string[]>();
+  for (const check of checks.filter((check) => !check.ok)) {
+    const cause = check.error ?? "cause not recorded";
+    byCause.set(cause, [...(byCause.get(cause) ?? []), check.name]);
+  }
+  return [...byCause].map(([cause, names]) => `\n- ${names.join(", ")}: ${cause}`).join("");
 }
 
 async function runCheck(
