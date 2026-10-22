@@ -3,7 +3,7 @@ import { setBoard } from "../src/lib/cache.js";
 import { getBoardContext } from "../src/tools/getBoardContext.js";
 import { getBoardContextInputSchema, getBoardContextOutputSchema, type GetBoardContextInput } from "../src/schemas/getBoardContext.js";
 import { evidenceBoard, textNode } from "./fixtures/retrieval.js";
-import { largeBoard, tableBoard } from "./fixtures/largeBoard.js";
+import { largeBoard, mixedBoard, tableBoard } from "./fixtures/largeBoard.js";
 import { retrieveEvidence } from "../src/lib/evidence.js";
 import { sectionGuide } from "../src/lib/sections.js";
 import { flattenNodeTree, isGenericNodeName } from "../src/lib/nodeTree.js";
@@ -264,8 +264,8 @@ describe("getBoardContext", () => {
     expect((await getBoardContext({ boardId: "Tiny123", maxChars: 2000 })).structuredContent.evidence).toHaveLength(1);
   });
 
-  it("returns a page at the minimum maxChars for a long label, a model summary, three nested sections and a table row", async () => {
-    const page: BoardData["nodes"][number] = { id: "0:1", name: "Workshop", type: "CANVAS", x: 0, y: 0, width: 0, height: 0, rotation: 0 };
+  it("returns a page at the minimum maxChars for long page and cluster names, a model summary, three nested sections and a table row", async () => {
+    const page: BoardData["nodes"][number] = { id: "0:1", name: "Workshop page ".padEnd(160, "p"), type: "CANVAS", x: 0, y: 0, width: 0, height: 0, rotation: 0 };
     const sectionIds = ["1:1", "1:2", "1:3"];
     const worstCase = (boardId: string, inSections: boolean): BoardData => {
       const sections = sectionIds.map((id, level) => ({ id, name: `Section level ${level + 1} `.padEnd(80, "x"), type: "SECTION",
@@ -292,9 +292,13 @@ describe("getBoardContext", () => {
       expect(structuredContent.evidence[0]?.sourceType).toBe("table_row");
       expect(text.length).toBeLessThanOrEqual(2000);
       expect(JSON.stringify(structuredContent).length).toBeLessThanOrEqual(2000);
-      // The model summary yields to source text; with room it stays.
-      expect(structuredContent.clusters[0]).toMatchObject({ summary: "", summarySource: "vision_llm", modelDerived: true });
-      expect((await getBoardContext({ ...request, maxChars: 24000 })).structuredContent.clusters[0]?.summary).toBe("S".repeat(600));
+      // The model summary yields to source text and is counted; with room it stays.
+      expect(structuredContent.clusters[0]).toMatchObject({ pageName: page.name, summary: "", summarySource: "vision_llm", modelDerived: true });
+      expect(structuredContent.truncation.omittedSummaries).toBe(1);
+      expect(structuredContent.truncated).toBe(true);
+      const roomy = (await getBoardContext({ ...request, maxChars: 24000 })).structuredContent;
+      expect(roomy.clusters[0]?.summary).toBe("S".repeat(600));
+      expect(roomy.truncation.omittedSummaries).toBeUndefined();
     }
   });
 
@@ -353,7 +357,7 @@ describe("getBoardContext response size", () => {
     expect(new Set(seen).size).toBe(total);
   });
 
-  it("estimates the remaining pages from a follow-up page, not from the first page with the overview", async () => {
+  it("estimates the remaining pages from probe pages, not from the first page with the overview", async () => {
     const boards = [largeBoard("Large100", 100, 10, 12), largeBoard("Wide40", 40, 10, 24, { subsections: 1 })];
     for (const data of boards) setBoard(data.boardId, data);
     for (const { boardId } of boards) {
@@ -366,6 +370,26 @@ describe("getBoardContext response size", () => {
       }
       // 51 and 21 pages; 0.10.2 divided by the excerpts on the first page and estimated 57 and 26.
       expect(Math.abs(estimate - pages)).toBeLessThanOrEqual(Math.ceil(pages * 0.05));
+    }
+  });
+
+  it("estimates the remaining pages of mixed content from three probe pages", async () => {
+    const data = mixedBoard("Mixed12");
+    setBoard(data.boardId, data);
+    for (const maxChars of [3000, 6000]) {
+      const first = (await getBoardContext({ boardId: data.boardId, maxChars })).structuredContent;
+      const estimate = Number(/^Page 1 of about (\d+);/m.exec(first.contextText)?.[1]);
+      const second = (await getBoardContext({ boardId: data.boardId, maxChars, cursor: first.nextCursor })).structuredContent;
+      let pages = 2;
+      for (let cursor = second.nextCursor; cursor; pages++) {
+        cursor = (await getBoardContext({ boardId: data.boardId, maxChars, cursor })).structuredContent.nextCursor;
+      }
+      // 234 and 63 pages. One follow-up page is off by more than a quarter: the real second page
+      // gives 600 and 100, one without overview and position gave 301 and 100.
+      const onSecond = first.truncation.remainingEvidence - second.truncation.remainingEvidence;
+      const single = 1 + Math.ceil(first.truncation.remainingEvidence / onSecond);
+      expect(Math.abs(single - pages) / pages).toBeGreaterThan(0.25);
+      expect(Math.abs(estimate - pages) / pages).toBeLessThanOrEqual(0.25);
     }
   });
 

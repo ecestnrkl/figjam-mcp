@@ -103,6 +103,8 @@ export const getBoardContextOutputShape = {
     omittedRelations: z.number().int().nonnegative(),
     omittedTextConnections: z.number().int().nonnegative(),
     omittedTextRelations: z.number().int().nonnegative(),
+    omittedSummaries: z.number().int().positive().optional()
+      .describe("Clusters on this page whose model summary is left empty to fit maxChars"),
   }).describe("Explicit omissions from structured results and the readable text"),
   relations: z
     .array(clusterRelationContextSchema)

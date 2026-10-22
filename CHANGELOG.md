@@ -8,10 +8,11 @@
 - `get_board_context` accepts `maxChars` from 2,000 (was 512) and returns a page for every request at that size. Under a
   small budget the model summaries of the clusters on the page now yield too (`summary` is empty), after the overview
   and the page position, before the first excerpt is shortened; 512 to about 1,300 always failed with "The context
-  budget cannot fit one source excerpt".
-- `get_board_context` estimates "Page N of about M" from a follow-up page, which shows no overview, instead of from the
-  first page, whose overview leaves room for few excerpts; on large boards it reported several times the real number of
-  pages.
+  budget cannot fit one source excerpt". The new optional `truncation.omittedSummaries` counts the clusters on the page
+  whose model summary is left empty; `truncated` is then true.
+- `get_board_context` estimates "Page N of about M" from up to three probe pages built like follow-up pages, at the next
+  excerpt and after one and two thirds of the rest, instead of from the first page, whose overview leaves room for few
+  excerpts; on large boards it reported several times the real number of pages.
 - `diff_board` names the innermost section of each new, removed and modified cluster in the text output, unless its
   label starts with that name (`- "Ideas board" in "3 · Ideas": 1 edited`), and in the new optional `section` of those
   entries. A model label alone did not say where on the board the cluster is.

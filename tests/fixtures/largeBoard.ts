@@ -134,3 +134,37 @@ export function tableBoard(boardId: string, rows = 24, columns = 17): BoardData 
     }],
   };
 }
+
+/**
+ * Sections that alternate between one table of long rows (8 columns) and short stickies,
+ * so a single page of results says little about the pages after it.
+ */
+export function mixedBoard(boardId: string, sectionCount = 12, tableRows = 20, stickiesPerSection = 80): BoardData {
+  const page: NormalizedNode = { id: "0:1", name: "Workshop", type: "CANVAS", x: 0, y: 0, width: 0, height: 0, rotation: 0 };
+  const nodes: NormalizedNode[] = [page];
+  const clusters: RefinedCluster[] = [];
+  const cluster = (id: string, label: string, nodeIds: string[]): RefinedCluster => ({
+    id, label, nodeIds, confirmedNodeIds: nodeIds, boundingBox: { x: 0, y: 0, width: 1, height: 1 }, summarySource: "deterministic", summary: "",
+  });
+  for (let s = 0; s < sectionCount; s++) {
+    const placed = { pageId: page.id, sectionIds: [`1:${s}`] };
+    nodes.push({ id: `1:${s}`, name: `Theme ${s + 1}`, type: "SECTION", x: s * 5000, y: 0, width: 4000, height: 4000, rotation: 0, ...placed });
+    if (s % 2 === 0) {
+      const cells = Array.from({ length: tableRows * 8 }, (_, index) => ({
+        id: `T${s + 10}:1;6:${Math.floor(index / 8)};7:${index % 8}`, row: Math.floor(index / 8), column: index % 8,
+        text: `Measurement ${Math.floor(index / 8)}.${index % 8} for the onboarding study`,
+      }));
+      nodes.push({ id: `${s + 10}:1`, name: "Table 1", type: "TABLE", text: cells.map((cell) => cell.text).join("\n"), x: s * 5000, y: 0,
+        width: 3000, height: 2000, rotation: 0, renderNodeId: `${s + 10}:1`, table: { cells }, ...placed });
+      clusters.push(cluster(`cluster_${s}`, `Table ${s}`, [`${s + 10}:1`]));
+    } else {
+      const stickies = Array.from({ length: stickiesPerSection }, (_, k): NormalizedNode => ({
+        id: `${s + 10}:${k + 2}`, name: `Idea ${k}`, type: "STICKY", text: `Idea ${s}-${k}: faster checkout`,
+        x: s * 5000 + (k % 5) * 120, y: Math.floor(k / 5) * 120, width: 100, height: 100, rotation: 0, ...placed,
+      }));
+      nodes.push(...stickies);
+      clusters.push(cluster(`cluster_${s}`, `Ideas ${s}`, stickies.map((node) => node.id)));
+    }
+  }
+  return { boardId, fileKey: boardId, docStructureHint: "freeform", createdAt: 1, snapshotId: "f".repeat(64), nodes, clusters };
+}
