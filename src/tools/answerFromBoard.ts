@@ -38,8 +38,8 @@ const ANSWER_SYSTEM_PROMPT =
   "Set language to the BCP-47 language code of the question (for example de, en, fr, tr), including short questions. " +
   'Reply with JSON only: {"kind": string, "language": string, "answer": string, "evidenceIds": string[]}. Cite the exact evidence IDs shown in the context that support your answer.';
 const QUOTE = `["'“”„‘’]`;
-/** One evidence ID; quotes and square brackets around it belong to it. */
-const EVIDENCE_ID = `(?:\\[\\s*)?${QUOTE}?ev_[0-9a-f]{32}${QUOTE}?(?:\\s*\\])?`;
+/** One evidence ID; quotes and a pair of square brackets around it belong to it. */
+const EVIDENCE_ID = `(?:\\[\\s*${QUOTE}?ev_[0-9a-f]{32}${QUOTE}?\\s*\\]|${QUOTE}?ev_[0-9a-f]{32}${QUOTE}?)`;
 const EVIDENCE_ID_LIST = `${EVIDENCE_ID}(?:\\s*(?:,|;|&|and|und)\\s*${EVIDENCE_ID})*`;
 /** A lead-in of up to three words ending with a colon, such as "Sources:" or "evidence IDs:", or "see". */
 const EVIDENCE_ID_LEAD = "(?:(?:see|siehe)\\s+|(?:[\\p{L}\\p{N}_-]+[ \\t]+){0,2}[\\p{L}\\p{N}_-]+[ \\t]*:[ \\t]*)";
@@ -47,12 +47,16 @@ const HAS_EVIDENCE_ID = /ev_[0-9a-f]{32}/i;
 /** What a bracket may hold besides evidence IDs and still be dropped as a whole. */
 const ONLY_EVIDENCE_LEFTOVERS = new RegExp(
   `^[\\s,;:&\\[\\]"'“”„‘’]*(?:(?:see|siehe)\\b|(?:[\\p{L}\\p{N}_-]+\\s+){0,2}[\\p{L}\\p{N}_-]+\\s*:)?[\\s,;:&\\[\\]"'“”„‘’]*$`, "iu");
-const BRACKET_WITH_TEXT = /\s*\(([^()]*)\)/g;
-/** A list with its lead-in at the start of a line or after a sentence end, with the line break before it. */
-const EVIDENCE_ID_SENTENCE = new RegExp(
-  `(?:(?<=[.!?])[ \\t]*|\\n[ \\t]*(?=(?:${EVIDENCE_ID_LEAD})?${EVIDENCE_ID_LIST}\\.?[ \\t]*(?:\\n|$))|^[ \\t]*)`
-  + `(?:${EVIDENCE_ID_LEAD})?${EVIDENCE_ID_LIST}\\.?`, "giu");
-const EVIDENCE_ID_ELSEWHERE = new RegExp(`(?:\\s*[,;])?[ \\t]*${EVIDENCE_ID_LIST}`, "giu");
+const ROUND_BRACKET = /\s*\(([^()]*)\)/g;
+const SQUARE_BRACKET = /\s*\[([^[\]]*)\]/g;
+/** A line holding only a list and its lead-in, with the line breaks around it. */
+const EVIDENCE_ID_LINE = new RegExp(
+  `(^|\\n+)[ \\t]*(?:${EVIDENCE_ID_LEAD})?${EVIDENCE_ID_LIST}\\.?[ \\t]*(?=\\n|$)(\\n*)`, "giu");
+/** A list with its lead-in after a sentence end. */
+const EVIDENCE_ID_SENTENCE = new RegExp(`(?<=[.!?])[ \\t]*(?:${EVIDENCE_ID_LEAD})?${EVIDENCE_ID_LIST}\\.?`, "giu");
+/** A list elsewhere; after ",", ";" or a dash its lead-in goes with it, together with that separator. */
+const EVIDENCE_ID_ELSEWHERE = new RegExp(
+  `(?:(?:\\s*[,;]|\\s*[—–]|\\s+-)[ \\t]*(?:${EVIDENCE_ID_LEAD})?|[ \\t]*)${EVIDENCE_ID_LIST}`, "giu");
 const ANSWER_REPLY_SCHEMA = {
   type: "object",
   properties: { kind: { type: "string", enum: ANSWER_KINDS }, language: { type: "string" }, answer: { type: "string" }, evidenceIds: { type: "array", items: { type: "string" } } },
@@ -266,14 +270,20 @@ function extractiveFallback(question: string, snapshotId: string, evidence: Evid
  * separators, quotes or empty square brackets remain. Only the IDs and what they leave behind change.
  */
 export function removeEvidenceIds(answer: string): string {
-  return answer
-    .replace(BRACKET_WITH_TEXT, (bracket, inner: string) => {
-      if (!HAS_EVIDENCE_ID.test(inner)) return bracket;
-      const rest = inner.replace(EVIDENCE_ID_ELSEWHERE, "").replace(/^[\s,;]+/, "");
-      return ONLY_EVIDENCE_LEFTOVERS.test(rest) ? "" : bracket.replace(inner, () => rest);
-    })
-    .replace(EVIDENCE_ID_SENTENCE, "")
-    .replace(EVIDENCE_ID_ELSEWHERE, "");
+  const withoutBrackets = dropEvidenceBrackets(answer, ROUND_BRACKET);
+  const withoutLines = withoutBrackets.replace(EVIDENCE_ID_LINE, (line, before: string, after: string, offset: number) =>
+    // A removed line keeps the larger line break around it, none at the start or end of the answer.
+    offset === 0 || offset + line.length === withoutBrackets.length ? "" : before.length >= after.length ? before : after);
+  return dropEvidenceBrackets(withoutLines.replace(EVIDENCE_ID_SENTENCE, ""), SQUARE_BRACKET).replace(EVIDENCE_ID_ELSEWHERE, "");
+}
+
+/** Removes the IDs inside brackets; a bracket left with nothing but leftovers goes as a whole, never only one side of it. */
+function dropEvidenceBrackets(text: string, brackets: RegExp): string {
+  return text.replace(brackets, (bracket, inner: string) => {
+    if (!HAS_EVIDENCE_ID.test(inner)) return bracket;
+    const rest = dropEvidenceBrackets(inner, SQUARE_BRACKET).replace(EVIDENCE_ID_ELSEWHERE, "").replace(/^[\s,;]+/, "");
+    return ONLY_EVIDENCE_LEFTOVERS.test(rest) ? "" : bracket.replace(inner, () => rest);
+  });
 }
 
 function unsupportedAnswer(question: string, snapshotId: string): AnswerFromBoardOutput {

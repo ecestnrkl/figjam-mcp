@@ -482,6 +482,18 @@ describe("removeEvidenceIds", () => {
     [`Costs $& more (budget $1, ${a}).`, "Costs $& more (budget $1)."],
     ["Event at 10:00 (see the agenda).", "Event at 10:00 (see the agenda)."],
     [`Line one\n${a} marks line two.`, "Line one\n marks line two."],
+    [`Starts Monday. [evidence: ${a}]`, "Starts Monday."],
+    [`Starts Monday [Source: ${a}].`, "Starts Monday."],
+    [`Starts Monday [Sources: ${a}, ${b}].`, "Starts Monday."],
+    [`Startet am Montag. [Quelle: ${a}]`, "Startet am Montag."],
+    [`Starts Monday [see ${a}].`, "Starts Monday."],
+    [`Starts Monday [evidence IDs: ${a}, ${b}] and ends Friday.`, "Starts Monday and ends Friday."],
+    [`Starts Monday [2 Nov, ${a}].`, "Starts Monday [2 Nov]."],
+    [`Starts Monday; evidence: ${a}.`, "Starts Monday."],
+    [`Starts Monday — source: ${a}.`, "Starts Monday."],
+    [`Startet am Montag.\n\nQuellen: ${a}, ${b}\n\nHinweis: zweiter Termin.`, "Startet am Montag.\n\nHinweis: zweiter Termin."],
+    [`Sources: ${a}\n\nStarts Monday.`, "Starts Monday."],
+    [`Starts Monday. evidenceIds: ["${a}"]`, "Starts Monday."],
   ])("%s", (answer, expected) => {
     expect(removeEvidenceIds(answer)).toBe(expected);
   });
