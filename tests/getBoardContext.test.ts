@@ -353,6 +353,22 @@ describe("getBoardContext response size", () => {
     expect(new Set(seen).size).toBe(total);
   });
 
+  it("estimates the remaining pages from a follow-up page, not from the first page with the overview", async () => {
+    const boards = [largeBoard("Large100", 100, 10, 12), largeBoard("Wide40", 40, 10, 24, { subsections: 1 })];
+    for (const data of boards) setBoard(data.boardId, data);
+    for (const { boardId } of boards) {
+      const first = (await getBoardContext({ boardId })).structuredContent;
+      const estimate = Number(/^Page 1 of about (\d+);/m.exec(first.contextText)?.[1]);
+      expect(first.contextText).toContain("With more than 5 pages left, read sections by ID instead");
+      let pages = 1;
+      for (let cursor = first.nextCursor; cursor; pages++) {
+        cursor = (await getBoardContext({ boardId, cursor })).structuredContent.nextCursor;
+      }
+      // 51 and 21 pages; 0.10.2 divided by the excerpts on the first page and estimated 57 and 26.
+      expect(Math.abs(estimate - pages)).toBeLessThanOrEqual(Math.ceil(pages * 0.05));
+    }
+  });
+
   it("points a partial long node to a nodeIds request, which returns all parts", async () => {
     const data = evidenceBoard("LongNode123", [textNode("9:1", "Long workshop protocol sentence. ".repeat(100))]);
     setBoard(data.boardId, data);

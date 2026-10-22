@@ -9,6 +9,9 @@
   small budget the model summaries of the clusters on the page now yield too (`summary` is empty), after the overview
   and the page position, before the first excerpt is shortened; 512 to about 1,300 always failed with "The context
   budget cannot fit one source excerpt".
+- `get_board_context` estimates "Page N of about M" from a follow-up page, which shows no overview, instead of from the
+  first page, whose overview leaves room for few excerpts; on large boards it reported several times the real number of
+  pages.
 
 ## 0.10.2 — 2026-10-21
 
