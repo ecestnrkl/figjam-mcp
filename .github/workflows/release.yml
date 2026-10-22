@@ -51,7 +51,7 @@ jobs:
   registry:
     needs: npm
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     permissions:
       contents: read
       id-token: write # MCP Registry login via GitHub OIDC
@@ -60,20 +60,25 @@ jobs:
         with:
           persist-credentials: false
       - name: Wait until the npm registry serves the published version
+        env:
+          ATTEMPTS: 60
+          INTERVAL_SECONDS: 10
         run: |
           name=$(node -p 'require("./package.json").name')
           version=$(node -p 'require("./package.json").version')
           url="https://registry.npmjs.org/$name/$version"
-          for attempt in $(seq 1 30); do
-            status=$(curl -s -o /dev/null -w '%{http_code}' "$url" || true)
+          # npm's CDN can cache a 404 from before the publish: a new query and no-cache bypass it.
+          for attempt in $(seq 1 "$ATTEMPTS"); do
+            status=$(curl -s -o /dev/null -w '%{http_code}' -H 'Cache-Control: no-cache' \
+              "$url?attempt=$attempt-$(date +%s)" || true)
             if [ "$status" = "200" ]; then
               echo "$url answered 200 after $attempt attempt(s)."
               exit 0
             fi
-            echo "Attempt $attempt: $url answered $status; retrying in 10 s."
-            sleep 10
+            echo "Attempt $attempt of $ATTEMPTS: $url answered $status; retrying in $INTERVAL_SECONDS s."
+            sleep "$INTERVAL_SECONDS"
           done
-          echo "::error::$url did not answer 200 within 5 minutes."
+          echo "::error::$url did not answer 200 within $((ATTEMPTS * INTERVAL_SECONDS)) s ($ATTEMPTS attempts, $INTERVAL_SECONDS s apart)."
           exit 1
       - name: Install mcp-publisher
         env:
