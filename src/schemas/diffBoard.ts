@@ -24,6 +24,8 @@ export const diffBoardInputShape = {
 export const diffBoardInputSchema = z.object(diffBoardInputShape);
 export type DiffBoardInput = z.infer<typeof diffBoardInputSchema>;
 
+const clusterSectionSchema = z.string().optional().describe("Name of the innermost section around the cluster; absent outside sections");
+
 export const diffBoardOutputShape = {
   boardId: figmaFileKeySchema,
   baselineSnapshotId: z.string().optional(),
@@ -42,12 +44,13 @@ export const diffBoardOutputShape = {
     addedConnections: z.number().int().nonnegative(),
     removedConnections: z.number().int().nonnegative(),
   }),
-  newClusters: z.array(z.object({ label: z.string(), summary: z.string() })),
-  removedClusters: z.array(z.object({ label: z.string(), summary: z.string() })),
+  newClusters: z.array(z.object({ label: z.string(), summary: z.string(), section: clusterSectionSchema })),
+  removedClusters: z.array(z.object({ label: z.string(), summary: z.string(), section: clusterSectionSchema })),
   modifiedClusters: z.array(
     z.object({
       label: z.string(),
       previousLabel: z.string(),
+      section: clusterSectionSchema,
       addedNodeCount: z.number().int().nonnegative(),
       removedNodeCount: z.number().int().nonnegative(),
       editedNodeCount: z.number().int().nonnegative(),

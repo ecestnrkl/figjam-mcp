@@ -12,6 +12,9 @@
 - `get_board_context` estimates "Page N of about M" from a follow-up page, which shows no overview, instead of from the
   first page, whose overview leaves room for few excerpts; on large boards it reported several times the real number of
   pages.
+- `diff_board` names the innermost section of each new, removed and modified cluster in the text output, unless its
+  label starts with that name (`- "Ideas board" in "3 · Ideas": 1 edited`), and in the new optional `section` of those
+  entries. A model label alone did not say where on the board the cluster is.
 
 ## 0.10.2 — 2026-10-21
 
