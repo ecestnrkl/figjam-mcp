@@ -131,7 +131,7 @@ deferred by the budget go before clusters that failed. Raise
   Groups of more than 250 nodes are split before vision.
 - `get_board_context`: `limit` 20 (max 100) excerpts, up to 50 `nodeIds`; the section overview and
   subsection lists take at most a third of `maxChars`.
-  `maxChars` 12,000 (max 24,000) bounds both representations, the readable text
+  `maxChars` 12,000 (min 2,000, max 24,000) bounds both representations, the readable text
   `content` and `JSON.stringify(structuredContent)`, because some clients pass
   only one of them to the model; at most 128 KiB per result.
 - `answer_from_board`: 6 excerpts (20 for overview questions) plus direct

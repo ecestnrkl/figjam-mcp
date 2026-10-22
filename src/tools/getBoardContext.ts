@@ -44,6 +44,16 @@ interface Page {
   consumed: number;
 }
 
+/** Where a page starts and what it shows besides its excerpts. */
+interface View {
+  offset: number;
+  page: number;
+  candidates: Evidence[];
+  overview: boolean;
+  position: boolean;
+  summaries: boolean;
+}
+
 /** Readable text for MCP content and the structured result; maxChars bounds each of them. */
 export interface BoardContextResult {
   /** Orientation and every excerpt grouped by cluster, with links and arrows. */
@@ -113,24 +123,18 @@ export async function getBoardContext(input: GetBoardContextInput): Promise<Boar
   const hasConnections = (board.connectorEdges?.length ?? 0) > 0 || (board.clusterRelations?.length ?? 0) > 0;
   const evidenceBudget = hasConnections ? Math.floor(options.maxChars * 0.8) : options.maxChars;
   const candidates = retrieved.evidence.slice(offset, offset + options.limit);
-  let showOverview = Boolean(overview);
-  let showPosition = true;
-  let selected = selectPage();
-  // Orientation yields to source text under a small budget: overview first, then the page position.
-  if (candidates.length > 0 && selected.consumed === 0 && showOverview) {
-    showOverview = false;
-    selected = selectPage();
-  }
-  if (candidates.length > 0 && selected.consumed === 0) {
-    showPosition = false;
-    selected = selectPage();
-  }
-  if (candidates.length > 0 && selected.consumed === 0) {
-    const shortened = shortenToFit(candidates[0]!);
-    if (!shortened) {
-      throw new Error("The context budget cannot fit one source excerpt. Increase maxChars or request a smaller node.");
-    }
-    selected = { evidence: [shortened], consumed: 1 };
+  const firstView: View = { offset, page, candidates, overview: Boolean(overview), position: true, summaries: true };
+  let view = firstView;
+  /** Mean excerpts per probe page, for the page estimate; undefined until measured. */
+  let perPage: number | undefined;
+  let selected = selectWithFallbacks(firstView);
+  // The remaining pages are estimated from probe pages built like follow-up pages. The estimate
+  // changes the position line and with it what fits, so the page is selected again with it.
+  for (let round = 0; round < 3 && view.position && offset + selected.consumed < retrieved.evidence.length; round++) {
+    const nextOffset = offset + selected.consumed;
+    perPage = probePageSize(nextOffset);
+    selected = selectWithFallbacks(firstView);
+    if (offset + selected.consumed === nextOffset) break;
   }
 
   const connectionCount = maxFitting(countConnectionsForEvidence(board, selected.evidence, "either"), (count) => buildResult(selected, count, 0));
@@ -140,6 +144,57 @@ export async function getBoardContext(input: GetBoardContextInput): Promise<Boar
     throw new Error("The context budget cannot fit one source excerpt. Increase maxChars or request a smaller node.");
   }
   return result;
+
+  /**
+   * The longest page that fits. Orientation yields to source text under a small budget: overview
+   * first, then the page position, then the model summaries of the clusters on the page.
+   */
+  function selectWithFallbacks(base: View): Page {
+    view = base;
+    let selection = selectPage();
+    for (const hidden of ["overview", "position", "summaries"] as const) {
+      if (view.candidates.length === 0 || selection.consumed > 0) return selection;
+      if (!view[hidden]) continue;
+      view = { ...view, [hidden]: false };
+      selection = selectPage();
+    }
+    if (view.candidates.length === 0 || selection.consumed > 0) return selection;
+    const shortened = shortenToFit(view.candidates[0]!);
+    if (!shortened) {
+      throw new Error("The context budget cannot fit one source excerpt. Increase maxChars or request a smaller node.");
+    }
+    return { evidence: [shortened], consumed: 1 };
+  }
+
+  /**
+   * Mean excerpts per page of up to three probe pages: at nextOffset and after one and two thirds
+   * of the remaining excerpts, each built like a follow-up page. A later probe that reaches the
+   * end holds fewer excerpts than a page could, so it does not count.
+   */
+  function probePageSize(nextOffset: number): number {
+    const total = retrieved.evidence.length;
+    const starts = [...new Set([0, 1, 2].map((third) => nextOffset + Math.floor((total - nextOffset) * third / 3)))];
+    const sizes: number[] = [];
+    const current = view;
+    try {
+      for (const start of starts) {
+        const probe: View = { offset: start, page: page + 1, candidates: retrieved.evidence.slice(start, start + options.limit),
+          overview: false, position: true, summaries: true };
+        let consumed: number;
+        try {
+          consumed = selectWithFallbacks(probe).consumed;
+        } catch {
+          consumed = 1;
+        }
+        if (start + consumed >= total && sizes.length > 0) break;
+        sizes.push(consumed);
+        if (start + consumed >= total) break;
+      }
+    } finally {
+      view = current;
+    }
+    return sizes.reduce((sum, size) => sum + size, 0) / sizes.length;
+  }
 
   /** Requested IDs that share every page with their excerpt counts, then the direct subsections. */
   function focusOutline(): string {
@@ -158,7 +213,7 @@ export async function getBoardContext(input: GetBoardContextInput): Promise<Boar
     const sequence: Evidence[] = [];
     const withoutFirstRow = new Set<string>();
     let selection: Page = { evidence: [], consumed: 0 };
-    for (const item of candidates) {
+    for (const item of view.candidates) {
       // The first excerpt may use the whole budget; arrows then get what is left.
       const budget = sequence.length ? evidenceBudget : options.maxChars;
       let next = withFirstRows([...sequence, item], withoutFirstRow);
@@ -243,7 +298,7 @@ export async function getBoardContext(input: GetBoardContextInput): Promise<Boar
         phase: cluster.phase ? boundedText(cluster.phase, 80) : undefined,
         ...(pageName ? { pageName } : {}),
         ...(sectionNames?.length ? { sectionNames } : {}),
-        summary: compactSummary(cluster),
+        summary: view.summaries ? compactSummary(cluster) : "",
         summarySource: cluster.summarySource ?? "unknown" as const,
         modelDerived: cluster.summarySource !== "deterministic" || Boolean(cluster.modelId),
         sourceNodeIds: [...new Set(items.map((item) => item.nodeId))],
@@ -259,12 +314,12 @@ export async function getBoardContext(input: GetBoardContextInput): Promise<Boar
     // An arrow appears once one of its ends is on this page; the other end is named by its short text.
     const connections = connectionLimit > 0 ? connectionsForEvidence(board, evidence, "either").slice(0, connectionLimit) : [];
     // Repeated first rows of tables are context; only the result sequence advances the cursor.
-    const nextOffset = offset + consumed;
+    const nextOffset = view.offset + consumed;
     const remaining = retrieved.evidence.length - nextOffset;
 
     const orientation = [header];
-    if (evidence.length > 0 && showPosition) orientation.push(pagePosition(consumed, remaining));
-    if (showOverview) orientation.push(overview);
+    if (evidence.length > 0 && view.position) orientation.push(pagePosition(consumed, remaining));
+    if (view.overview) orientation.push(overview);
     if (evidence.length === 0) orientation.push("No source evidence matched this request.");
     const parts = [...orientation, ...renderGroups(groups, shownRows(evidence))];
     if (connections.length > 0) {
@@ -275,15 +330,21 @@ export async function getBoardContext(input: GetBoardContextInput): Promise<Boar
         `- "${relation.from}" → "${relation.to}"${relation.label ? ` — "${relation.label}"` : ""}`).join("\n")}`);
     }
     // Under a small budget the pointer yields to source text together with the page position.
-    const contextText = [...orientation, ...(evidence.length > 0 && showPosition ? [EVIDENCE_POINTER] : [])].join("\n\n");
+    const contextText = [...orientation, ...(evidence.length > 0 && view.position ? [EVIDENCE_POINTER] : [])].join("\n\n");
 
     const totalConnections = countConnectionsForEvidence(board, evidence, "either");
+    // Clusters whose model summary yields to source text under a small budget.
+    const omittedSummaries = view.summaries ? 0 : groups.filter(([clusterId]) => {
+      const cluster = clustersById.get(clusterId);
+      return cluster !== undefined && compactSummary(cluster) !== "";
+    }).length;
     const truncation = {
       remainingEvidence: remaining,
       omittedConnections: totalConnections - connections.length,
       omittedRelations: allRelations.length - relations.length,
       omittedTextConnections: totalConnections - connections.length,
       omittedTextRelations: allRelations.length - relations.length,
+      ...(omittedSummaries > 0 ? { omittedSummaries } : {}),
     };
     return {
       text: parts.join("\n\n"),
@@ -298,16 +359,16 @@ export async function getBoardContext(input: GetBoardContextInput): Promise<Boar
         truncated: Object.values(truncation).some((count) => count > 0) || evidence.some((item) => item.truncated),
         truncation,
         nextCursor: remaining > 0 && consumed > 0
-          ? encodeCursor(retrieved.snapshotId, query, resultFingerprint, nextOffset, page + 1)
+          ? encodeCursor(retrieved.snapshotId, query, resultFingerprint, nextOffset, view.page + 1)
           : undefined,
       },
     };
   }
 
   function pagePosition(shown: number, remaining: number): string {
-    if (remaining <= 0) return `Page ${page} of ${page}; no excerpts remaining.`;
-    const remainingPages = Math.ceil(remaining / shown);
-    const position = `Page ${page} of about ${page + remainingPages}; ${remaining} excerpt${remaining === 1 ? "" : "s"} remaining; pass nextCursor to continue.`;
+    if (remaining <= 0) return `Page ${view.page} of ${view.page}; no excerpts remaining.`;
+    const remainingPages = Math.ceil(remaining / (perPage ?? shown));
+    const position = `Page ${view.page} of about ${view.page + remainingPages}; ${remaining} excerpt${remaining === 1 ? "" : "s"} remaining; pass nextCursor to continue.`;
     return !options.topic && !options.nodeIds && !options.outsideSections && remainingPages > MAX_PAGES_TO_PAGE_THROUGH && sections.count > 0
       ? `${position} With more than ${MAX_PAGES_TO_PAGE_THROUGH} pages left, read sections by ID instead: pass a section ID from the first page as nodeIds.`
       : position;
@@ -417,7 +478,7 @@ export async function getBoardContext(input: GetBoardContextInput): Promise<Boar
   function partHint(item: Evidence): string {
     const total = partCount(item);
     // Only shortenToFit changes text, and only that of the first candidate.
-    const shortened = item.evidenceId === candidates[0]?.evidenceId && item.text !== candidates[0].text;
+    const shortened = item.evidenceId === view.candidates[0]?.evidenceId && item.text !== view.candidates[0].text;
     const prefix = shortened ? "Shortened to fit maxChars. " : "";
     const position = `Part ${item.chunkIndex + 1} of ${total}`;
     // A nodeIds request returns every part of each source it matches.

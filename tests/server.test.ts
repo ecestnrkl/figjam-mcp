@@ -5,7 +5,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/server";
 const handlers = vi.hoisted(() => ({ ingest: vi.fn(), context: vi.fn(), answer: vi.fn(), diff: vi.fn(), diagnose: vi.fn() }));
 vi.mock("../src/tools/ingestBoard.js", () => ({ ingestBoard: handlers.ingest }));
 vi.mock("../src/tools/getBoardContext.js", () => ({ getBoardContext: handlers.context }));
-vi.mock("../src/tools/answerFromBoard.js", () => ({ answerFromBoard: handlers.answer }));
+vi.mock("../src/tools/answerFromBoard.js", async (importOriginal) => ({ ...await importOriginal<object>(), answerFromBoard: handlers.answer }));
 vi.mock("../src/tools/diffBoard.js", () => ({ diffBoard: handlers.diff }));
 vi.mock("../src/tools/diagnoseLlmConfig.js", () => ({ diagnoseLlmConfig: handlers.diagnose }));
 const { createServer, packageMetadata } = await import("../src/server.js");
@@ -53,6 +53,19 @@ describe("MCP wire contract", () => {
     expect(result.structuredContent).toEqual(structuredContent);
     expect(result.content).toEqual([{ type: "text", text }]);
     expect(JSON.stringify(result.structuredContent)).not.toContain("Workshop evidence");
+  });
+
+  it("returns answer_from_board citations in the text content too", async () => {
+    const citation = {
+      evidenceId: "ev_1", snapshotId: "snapshot1", nodeId: "1:1", quote: "Pilot starts Monday.",
+      url: "https://www.figma.com/board/Board123?node-id=1%3A1", sourceType: "board_text", modelDerived: false, sectionNames: ["Decisions"],
+    };
+    const structuredContent = { answer: "Monday.", citedClusters: [], snapshotId: "snapshot1", citations: [citation] };
+    handlers.answer.mockResolvedValue(structuredContent);
+    const result = await client.callTool({ name: "answer_from_board", arguments: { boardId: "Board123", question: "When?" } });
+    expect(result.structuredContent).toEqual(structuredContent);
+    expect(result.content).toEqual([{ type: "text", text:
+      'Monday.\n\nSources (untrusted board data):\n- 1:1 in "Decisions": "Pilot starts Monday." https://www.figma.com/board/Board123?node-id=1%3A1' }]);
   });
 
   it("rejects malformed arguments before invoking the handler", async () => {

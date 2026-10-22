@@ -174,6 +174,37 @@ describe("diffBoards", () => {
     expect(diff.summaryText).toContain('was "Research"');
   });
 
+  it("names the innermost section of new, removed and modified clusters unless the label starts with it", () => {
+    const section = (id: string, name: string, sectionIds: string[]) => node(id, undefined, { type: "SECTION", name, sectionIds });
+    const sections = [section("3:1", "Workshop", ["3:1"]), section("3:2", "3 · Ideas", ["3:1", "3:2"]),
+      section("3:3", "4 · Decisions & next steps", ["3:1", "3:3"]), section("3:4", "A rather long section name for parking", ["3:4"])];
+    const inIdeas = { sectionIds: ["3:1", "3:2"] };
+    const inDecisions = { sectionIds: ["3:1", "3:3"] };
+    const baseline = board([
+      ...sections, node("5:1", "Order ahead", inIdeas), node("5:2", "Loyalty card", inIdeas),
+      node("6:1", "Old decision", inDecisions), node("7:1", "Parking", { sectionIds: ["3:4"] }), node("8:1", "Loose note"),
+    ], [
+      cluster("ideas", "Campus Café Order Features", ["5:1", "5:2"]), cluster("decisions", "4 · Decisions & next steps", ["6:1"]),
+      cluster("parking", "A rather long section na...: Parking", ["7:1"]), cluster("loose", "Loose note", ["8:1"]),
+    ], 1);
+    const current = board([
+      ...sections, node("5:1", "Order ahead in the app", inIdeas), node("5:2", "Loyalty card", inIdeas), node("6:2", "New decision", inDecisions),
+    ], [
+      cluster("ideas", "Campus Café Order Features", ["5:1", "5:2"]), cluster("new-decisions", "Pilot start", ["6:2"]),
+    ], 2);
+    const diff = diffBoards(baseline, current);
+    expect(diff.modifiedClusters).toEqual([expect.objectContaining({ label: "Campus Café Order Features", section: "3 · Ideas", editedNodeCount: 1 })]);
+    expect(diff.newClusters).toEqual([{ label: "Pilot start", summary: "Pilot start summary.", section: "4 · Decisions & next steps" }]);
+    expect(diff.removedClusters).toEqual([
+      { label: "4 · Decisions & next steps", summary: "4 · Decisions & next steps summary.", section: "4 · Decisions & next steps" },
+      { label: "A rather long section na...: Parking", summary: "A rather long section na...: Parking summary.", section: "A rather long section name for parking" },
+      { label: "Loose note", summary: "Loose note summary." },
+    ]);
+    expect(diff.summaryText).toContain('Modified clusters (1):\n- "Campus Café Order Features" in "3 · Ideas": 1 edited\n');
+    expect(diff.summaryText).toContain('New clusters (1):\n- "Pilot start" in "4 · Decisions & next steps": Pilot start summary.\n');
+    expect(diff.summaryText).toContain('Removed clusters (3):\n- "4 · Decisions & next steps"\n- "A rather long section na...: Parking"\n- "Loose note"\n');
+  });
+
   it("diffs connector arrows with cluster labels", () => {
     const nodes = [node("a", "Idea"), node("b", "Action")];
     const clusters = [

@@ -19,11 +19,15 @@ import { boundedText, nodeLink, tableCellPositions } from "./evidence.js";
 export interface ClusterSummaryRef {
   label: string;
   summary: string;
+  /** Innermost section shared by the members, by name; absent outside sections. */
+  section?: string;
 }
 
 export interface ModifiedClusterDiff {
   label: string;
   previousLabel: string;
+  /** Innermost section of the current cluster, by name; absent outside sections. */
+  section?: string;
   addedNodeCount: number;
   removedNodeCount: number;
   editedNodeCount: number;
@@ -501,6 +505,7 @@ function diffClusters(baseline: BoardData, current: BoardData): ClusterDiffInter
     modifiedClusters.push({
       label: cur.label,
       previousLabel: prev.label,
+      ...clusterSection(cur, currentNodesById),
       addedNodeCount: cur.nodeIds.filter((id) => !prevIds.has(id)).length,
       removedNodeCount: prev.nodeIds.filter((id) => !curIds.has(id)).length,
       editedNodeCount: sharedIds.filter((id) => {
@@ -514,13 +519,30 @@ function diffClusters(baseline: BoardData, current: BoardData): ClusterDiffInter
   return {
     newClusters: current.clusters
       .filter((cluster) => !matchedCur.has(cluster.id))
-      .map((cluster) => ({ label: cluster.label, summary: cluster.summary })),
+      .map((cluster) => ({ label: cluster.label, summary: cluster.summary, ...clusterSection(cluster, currentNodesById) })),
     removedClusters: baseline.clusters
       .filter((cluster) => !matchedPrev.has(cluster.id))
-      .map((cluster) => ({ label: cluster.label, summary: cluster.summary })),
+      .map((cluster) => ({ label: cluster.label, summary: cluster.summary, ...clusterSection(cluster, baselineNodesById) })),
     modifiedClusters,
     unchangedClusters,
   };
+}
+
+/** The named innermost section all members of a cluster share. */
+function clusterSection(cluster: RefinedCluster, nodesById: Map<string, NormalizedNode>): { section?: string } {
+  const ids = new Set(membersOf(cluster, nodesById).map((node) => node.sectionIds?.at(-1)));
+  const [id] = ids;
+  const section = ids.size === 1 && id ? collapseWhitespace(nodesById.get(id)?.name) : undefined;
+  return section ? { section: boundedText(section, NAME_CHARS) } : {};
+}
+
+/** " in "Section"" unless the label starts with the section's name, also cut short as in "Long section…: text". */
+function clusterPlace(label: string, section: string | undefined): string {
+  if (!section) return "";
+  const name = section.replace(/…$/, "");
+  const prefix = label.split(/…|\.\.\./)[0]!;
+  const named = label.startsWith(name) || (prefix.length > 0 && prefix.length < label.length && name.startsWith(prefix));
+  return named ? "" : ` in ${quote(section)}`;
 }
 
 function membersOf(
@@ -628,12 +650,12 @@ function buildSummaryText(
   if (clusters.newClusters.length > 0) {
     lines.push(`New clusters (${clusters.newClusters.length}):`);
     lines.push(
-      ...capped(clusters.newClusters, (c) => `- "${c.label}": ${firstSentence(c.summary)}`),
+      ...capped(clusters.newClusters, (c) => `- "${c.label}"${clusterPlace(c.label, c.section)}: ${firstSentence(c.summary)}`),
     );
   }
   if (clusters.removedClusters.length > 0) {
     lines.push(`Removed clusters (${clusters.removedClusters.length}):`);
-    lines.push(...capped(clusters.removedClusters, (c) => `- "${c.label}"`));
+    lines.push(...capped(clusters.removedClusters, (c) => `- "${c.label}"${clusterPlace(c.label, c.section)}`));
   }
   if (clusters.modifiedClusters.length > 0) {
     lines.push(`Modified clusters (${clusters.modifiedClusters.length}):`);
@@ -645,7 +667,7 @@ function buildSummaryText(
           c.removedNodeCount > 0 ? `-${c.removedNodeCount} nodes` : "",
           c.editedNodeCount > 0 ? `${c.editedNodeCount} edited` : "",
         ].filter(Boolean);
-        return `- "${c.label}"${renamed}: ${parts.join(", ") || "reorganized"}`;
+        return `- "${c.label}"${renamed}${clusterPlace(c.label, c.section)}: ${parts.join(", ") || "reorganized"}`;
       }),
     );
   }

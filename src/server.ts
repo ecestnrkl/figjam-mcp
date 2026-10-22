@@ -20,7 +20,7 @@ import {
 import { diffBoardInputSchema, diffBoardOutputShape } from "./schemas/diffBoard.js";
 import { ingestBoard } from "./tools/ingestBoard.js";
 import { getBoardContext } from "./tools/getBoardContext.js";
-import { answerFromBoard } from "./tools/answerFromBoard.js";
+import { answerFromBoard, answerText } from "./tools/answerFromBoard.js";
 import { diagnoseLlmConfig } from "./tools/diagnoseLlmConfig.js";
 import { diffBoard } from "./tools/diffBoard.js";
 
@@ -140,7 +140,7 @@ export function createServer(): McpServer {
     async (input, ctx) => {
       const output = await answerFromBoard(input, { signal: ctx.mcpReq.signal });
       return {
-        content: [{ type: "text" as const, text: output.answer }],
+        content: [{ type: "text" as const, text: answerText(output) }],
         structuredContent: output,
       };
     },

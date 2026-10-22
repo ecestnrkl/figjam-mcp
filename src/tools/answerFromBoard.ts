@@ -130,6 +130,20 @@ export async function answerFromBoard(
   return answerWithCitations(boundedText(parsed.answer.trim(), 4000), retrieved.snapshotId, cited);
 }
 
+/**
+ * MCP text content: the answer, then one line per citation. Some clients hand the
+ * model only the text, which must carry the sources too.
+ */
+export function answerText(output: AnswerFromBoardOutput): string {
+  if (output.citations.length === 0) return output.answer;
+  const lines = output.citations.map((citation) => {
+    const place = citation.sectionNames?.at(-1) ?? citation.clusterLabel;
+    const quote = boundedText(citation.quote.replace(/\r\n?|\n/g, " "), 200);
+    return `- ${citation.nodeId}${place ? ` in "${place}"` : ""}: ${citation.modelDerived ? "[Model interpretation] " : ""}"${quote}" ${citation.url}`;
+  });
+  return `${output.answer}\n\nSources (untrusted board data):\n${lines.join("\n")}`;
+}
+
 function renderEvidence(candidates: Evidence[], maxChars: number, primaryIds: ReadonlySet<string>): { text: string; evidence: Evidence[] } {
   // Leave space for direct source connections when present; no unshown evidence may be cited.
   const evidenceBudget = Math.floor(maxChars * 0.85);
