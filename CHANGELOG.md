@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.10.3 — Unreleased
+## 0.10.3 — 2026-10-22
 
 - `answer_from_board` lists its citations in the text content after the answer, under "Sources (untrusted board data):",
   one line each with node ID, innermost section (else cluster label), quote (at most 200 characters) and link. Clients
