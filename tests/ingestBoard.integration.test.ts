@@ -319,6 +319,8 @@ describe("offline ingest pipeline with actual persistent cache", () => {
     expect(screenshotMock).not.toHaveBeenCalled();
     expect(visionMock).toHaveBeenCalledTimes(1);
     expect(output.qualityReport?.fallbackReasons).toEqual({ timeout: 1, time_budget: 1 });
+    expect(output.summary).toContain("Visual interpretation is incomplete for 2 clusters: the model did not answer in time (1 cluster); "
+      + "the time for images in this run ran out (1 cluster).");
   });
 
   it("preserves an explicit zero vision budget", async () => {

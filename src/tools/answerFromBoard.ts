@@ -37,6 +37,26 @@ const ANSWER_SYSTEM_PROMPT =
   "Use 'unsupported' only when no provided source supports an answer. " +
   "Set language to the BCP-47 language code of the question (for example de, en, fr, tr), including short questions. " +
   'Reply with JSON only: {"kind": string, "language": string, "answer": string, "evidenceIds": string[]}. Cite the exact evidence IDs shown in the context that support your answer.';
+const QUOTE = `["'“”„‘’]`;
+/** One evidence ID; quotes and a pair of square brackets around it belong to it. */
+const EVIDENCE_ID = `(?:\\[\\s*${QUOTE}?ev_[0-9a-f]{32}${QUOTE}?\\s*\\]|${QUOTE}?ev_[0-9a-f]{32}${QUOTE}?)`;
+const EVIDENCE_ID_LIST = `${EVIDENCE_ID}(?:\\s*(?:,|;|&|and|und)\\s*${EVIDENCE_ID})*`;
+/** A lead-in of up to three words ending with a colon, such as "Sources:" or "evidence IDs:", or "see". */
+const EVIDENCE_ID_LEAD = "(?:(?:see|siehe)\\s+|(?:[\\p{L}\\p{N}_-]+[ \\t]+){0,2}[\\p{L}\\p{N}_-]+[ \\t]*:[ \\t]*)";
+const HAS_EVIDENCE_ID = /ev_[0-9a-f]{32}/i;
+/** What a bracket may hold besides evidence IDs and still be dropped as a whole. */
+const ONLY_EVIDENCE_LEFTOVERS = new RegExp(
+  `^[\\s,;:&\\[\\]"'“”„‘’]*(?:(?:see|siehe)\\b|(?:[\\p{L}\\p{N}_-]+\\s+){0,2}[\\p{L}\\p{N}_-]+\\s*:)?[\\s,;:&\\[\\]"'“”„‘’]*$`, "iu");
+const ROUND_BRACKET = /\s*\(([^()]*)\)/g;
+const SQUARE_BRACKET = /\s*\[([^[\]]*)\]/g;
+/** A line holding only a list and its lead-in, with the line breaks around it. */
+const EVIDENCE_ID_LINE = new RegExp(
+  `(^|\\n+)[ \\t]*(?:${EVIDENCE_ID_LEAD})?${EVIDENCE_ID_LIST}\\.?[ \\t]*(?=\\n|$)(\\n*)`, "giu");
+/** A list with its lead-in after a sentence end. */
+const EVIDENCE_ID_SENTENCE = new RegExp(`(?<=[.!?])[ \\t]*(?:${EVIDENCE_ID_LEAD})?${EVIDENCE_ID_LIST}\\.?`, "giu");
+/** A list elsewhere; after ",", ";" or a dash its lead-in goes with it, together with that separator. */
+const EVIDENCE_ID_ELSEWHERE = new RegExp(
+  `(?:(?:\\s*[,;]|\\s*[—–]|\\s+-)[ \\t]*(?:${EVIDENCE_ID_LEAD})?|[ \\t]*)${EVIDENCE_ID_LIST}`, "giu");
 const ANSWER_REPLY_SCHEMA = {
   type: "object",
   properties: { kind: { type: "string", enum: ANSWER_KINDS }, language: { type: "string" }, answer: { type: "string" }, evidenceIds: { type: "array", items: { type: "string" } } },
@@ -116,18 +136,19 @@ export async function answerFromBoard(
       .map((id) => allowed.get(id)).filter((item): item is Evidence => Boolean(item)).slice(0, 12)
     : [];
   const kind = parsed?.kind;
+  const answer = typeof parsed?.answer === "string" ? removeEvidenceIds(parsed.answer) : undefined;
   if (typeof kind !== "string" || !ANSWER_KINDS.includes(kind as AnswerKind) ||
-      kind === "unsupported" || cited.length === 0 || typeof parsed?.answer !== "string") {
+      kind === "unsupported" || cited.length === 0 || answer === undefined) {
     return extractiveFallback(input.question, retrieved.snapshotId, primaryEvidence);
   }
   if (kind !== "answer") {
     // The model supplies the classification; the explanation always includes original
     // displayed evidence. Derived interpretations cannot establish an original task.
     if (cited.some((item) => item.modelDerived)) return extractiveFallback(input.question, retrieved.snapshotId, primaryEvidence);
-    return uncertainStatusAnswer(input.question, retrieved.snapshotId, kind as AnswerKind, cited, parsed.language, parsed.answer);
+    return uncertainStatusAnswer(input.question, retrieved.snapshotId, kind as AnswerKind, cited, parsed!.language, answer);
   }
-  if (!parsed.answer.trim()) return extractiveFallback(input.question, retrieved.snapshotId, primaryEvidence);
-  return answerWithCitations(boundedText(parsed.answer.trim(), 4000), retrieved.snapshotId, cited);
+  if (!answer.trim()) return extractiveFallback(input.question, retrieved.snapshotId, primaryEvidence);
+  return answerWithCitations(boundedText(answer.trim(), 4000), retrieved.snapshotId, cited);
 }
 
 /**
@@ -243,11 +264,33 @@ function extractiveFallback(question: string, snapshotId: string, evidence: Evid
   ).join(" "), snapshotId, selected);
 }
 
+/**
+ * Evidence IDs a model wrote into the answer despite the prompt; the citations below the answer name the sources.
+ * A bracket that held one disappears with the space before it when only a lead-in such as "Sources:", "see",
+ * separators, quotes or empty square brackets remain. Only the IDs and what they leave behind change.
+ */
+export function removeEvidenceIds(answer: string): string {
+  const withoutBrackets = dropEvidenceBrackets(answer, ROUND_BRACKET);
+  const withoutLines = withoutBrackets.replace(EVIDENCE_ID_LINE, (line, before: string, after: string, offset: number) =>
+    // A removed line keeps the larger line break around it, none at the start or end of the answer.
+    offset === 0 || offset + line.length === withoutBrackets.length ? "" : before.length >= after.length ? before : after);
+  return dropEvidenceBrackets(withoutLines.replace(EVIDENCE_ID_SENTENCE, ""), SQUARE_BRACKET).replace(EVIDENCE_ID_ELSEWHERE, "");
+}
+
+/** Removes the IDs inside brackets; a bracket left with nothing but leftovers goes as a whole, never only one side of it. */
+function dropEvidenceBrackets(text: string, brackets: RegExp): string {
+  return text.replace(brackets, (bracket, inner: string) => {
+    if (!HAS_EVIDENCE_ID.test(inner)) return bracket;
+    const rest = dropEvidenceBrackets(inner, SQUARE_BRACKET).replace(EVIDENCE_ID_ELSEWHERE, "").replace(/^[\s,;]+/, "");
+    return ONLY_EVIDENCE_LEFTOVERS.test(rest) ? "" : bracket.replace(inner, () => rest);
+  });
+}
+
 function unsupportedAnswer(question: string, snapshotId: string): AnswerFromBoardOutput {
   return {
     answer: isLikelyGerman(question)
-      ? "Die Antwort ist im gecachten Board-Kontext nicht belegt."
-      : "The answer is not supported by the cached board context.",
+      ? "Das Board enthält keine Auszüge, die diese Frage beantworten."
+      : "The board has no excerpts that answer this question.",
     citedClusters: [], snapshotId, citations: [],
   };
 }

@@ -95,6 +95,8 @@ export const getBoardContextOutputShape = {
   connections: z.array(evidenceConnectionSchema)
     .describe("Arrows with at least one end, or a section, frame or group around one, among this page's excerpts; never arrows to a page. The label is the text on the arrow"),
   totalMatched: z.number().int().nonnegative(),
+  unknownNodeIds: z.array(z.string()).optional()
+    .describe("Requested nodeIds that are not in this snapshot; the others are read"),
   truncated: z.boolean(),
   nextCursor: z.string().optional(),
   truncation: z.object({

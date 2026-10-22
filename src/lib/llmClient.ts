@@ -88,27 +88,31 @@ function validateReasoningEffort(value: unknown, name: string): asserts value is
   }
 }
 
-/** Reads a required env var or fails with a setup hint. */
-function requireEnv(name: string): string {
-  const value = process.env[name]?.trim();
-  if (!value) {
-    throw new LLMConfigurationError(
-      `${name} is not set — configure it in your MCP client's environment, or in .env when starting from the project directory.`,
-    );
-  }
-  return value;
+const REQUIRED_LLM_ENV = ["LLM_BASE_URL", "LLM_API_KEY"] as const;
+
+/**
+ * Setup hint naming every missing required variable, shared by ingest_board, answer_from_board and
+ * diagnose_llm_config; undefined when both are set. npx users have no .env, so it comes last.
+ */
+export function missingLlmConfigurationMessage(): string | undefined {
+  const missing = REQUIRED_LLM_ENV.filter((name) => !process.env[name]?.trim());
+  if (!missing.length) return undefined;
+  return `${missing.join(" and ")} ${missing.length === 1 ? "is" : "are"} not set. Add ${missing.length === 1 ? "it" : "them"} to "env" `
+    + "of this server in your MCP client configuration (see README, Quick start), then restart the server. "
+    + "In a local checkout, a .env file in the project directory works too.";
 }
 
 /** Validate required settings before spending Figma requests on vision input. */
 export function validateLlmConfiguration(): void {
-  requireEnv("LLM_BASE_URL");
-  requireEnv("LLM_API_KEY");
+  const missing = missingLlmConfigurationMessage();
+  if (missing) throw new LLMConfigurationError(missing);
 }
 
 /** Lazily constructs (and caches) the OpenAI-compatible client. */
 export function getLlmClient(): OpenAI {
-  const baseURL = requireEnv("LLM_BASE_URL");
-  const apiKey = requireEnv("LLM_API_KEY");
+  validateLlmConfiguration();
+  const baseURL = process.env.LLM_BASE_URL!.trim();
+  const apiKey = process.env.LLM_API_KEY!.trim();
   const config = JSON.stringify([baseURL, apiKey]);
   if (!client || clientConfig !== config) client = new OpenAI({
     baseURL,

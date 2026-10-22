@@ -1,10 +1,12 @@
 import type { IngestBoardInput, IngestBoardOutput } from "../schemas/ingestBoard.js";
 import { setImmediate as yieldToRequests } from "node:timers/promises";
-import { extractFigmaFileKeyFromUrl } from "../schemas/common.js";
+import { extractFigmaFileKeyFromUrl, FIGMA_URL_HINT } from "../schemas/common.js";
 import type { Cluster, IngestFocusReport, IngestMode, IngestQualityReport, NormalizedNode, RefinedCluster, BoardData, OperationOptions } from "../types.js";
 import { fetchFileTree, fetchRenderUrls, downloadRenders, fetchImageRefs, downloadOriginals, FigmaApiError, FigmaDownloadBudgetError,
   FigmaTimeoutError, IMAGE_MAX_BYTES, INGEST_IMAGE_MAX_BYTES, type OriginalImage, type RenderUrls } from "../lib/figmaApi.js";
-import { LLMConfigurationError, LlmInvalidJsonError, LlmRequestError, LlmTimeoutError, validateLlmConfiguration } from "../lib/llmClient.js";
+import {
+  LLMConfigurationError, LlmInvalidJsonError, LlmRequestError, LlmTimeoutError, missingLlmConfigurationMessage, validateLlmConfiguration,
+} from "../lib/llmClient.js";
 import { flattenNodeTree, isGenericNodeName } from "../lib/nodeTree.js";
 import { partitionedBoardClusters } from "../lib/spatialCluster.js";
 import { refineClusterWithVision } from "../lib/visionInterpreter.js";
@@ -411,10 +413,7 @@ function retryPriority(previous?: RefinedCluster): number {
 export function parseFigmaFileKey(url: string): string {
   const fileKey = extractFigmaFileKeyFromUrl(url);
   if (!fileKey) {
-    throw new Error(
-      "Invalid Figma URL — expected an HTTPS figma.com URL with path " +
-        "/(file|design|board|proto)/<file_key>[/name] (check the Figma file URL)",
-    );
+    throw new Error(`Invalid Figma URL — ${FIGMA_URL_HINT}.`);
   }
   return fileKey;
 }
@@ -881,21 +880,23 @@ function describeFocus(focus: IngestFocusReport, ingestMode?: IngestMode): strin
 
 function describeFallbackReasons(reasons?: Record<string, number>): string {
   const labels: Record<string, string> = {
-    time_budget: "deferred by the vision time budget", vision_budget: "deferred by the previous vision budget",
-    timeout: "requests timed out", config: "blocked by missing or invalid model configuration",
-    auth: "blocked by Figma or model access permissions", rate_limit: "blocked by a provider rate limit",
-    invalid_reply: "model replies were unusable", download_budget: "exceeded image download limits",
-    render_failed: "Figma rendering or image download failed", model_failed: "model requests failed",
-    vision_failed: "older cached failures (cause not recorded)", unknown: "failures with no recorded cause",
+    time_budget: "the time for images in this run ran out", vision_budget: "the time for images in an earlier run ran out",
+    timeout: "the model did not answer in time", config: "the model settings are missing or invalid",
+    auth: "Figma or the model provider denied access", rate_limit: "the model provider's rate limit was reached",
+    invalid_reply: "the model's reply was unusable", download_budget: "the images were too large to download",
+    render_failed: "Figma could not provide the images", model_failed: "the model request failed",
+    vision_failed: "an earlier run failed without a recorded cause", unknown: "the cause was not recorded",
   };
-  return Object.entries(reasons ?? {}).filter(([, count]) => count > 0)
-    .map(([reason, count]) => `${count} ${labels[reason] ?? labels.unknown}`).join("; ") || "cause not recorded";
+  const counted = Object.entries(reasons ?? {}).filter(([, count]) => count > 0);
+  // The summary already names the total; a single cause needs no count of its own.
+  if (counted.length <= 1) return counted.length ? labels[counted[0]![0]] ?? labels.unknown! : labels.unknown!;
+  return counted.map(([reason, count]) => `${labels[reason] ?? labels.unknown} (${count} cluster${count === 1 ? "" : "s"})`).join("; ");
 }
 
 function describeNextSteps(report: IngestQualityReport): string {
   const reasons = report.fallbackReasons ?? {};
   const instructions: string[] = [];
-  if (reasons.config) instructions.push("Set LLM_API_KEY and LLM_BASE_URL in the MCP client environment, then reconnect. diagnose_llm_config can test the configured model provider.");
+  if (reasons.config) instructions.push(`${missingLlmConfigurationMessage() ?? "Check the model settings."} diagnose_llm_config can test the configured model provider.`);
   if (reasons.auth) instructions.push("Check Figma and model-provider access permissions; diagnose_llm_config can test the configured model provider.");
   if (report.nextRetryAt) instructions.push(`Retry after ${new Date(report.nextRetryAt).toISOString()} for the pending provider cooldown.`);
   instructions.push(reasons.time_budget || reasons.vision_budget

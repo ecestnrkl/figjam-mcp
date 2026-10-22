@@ -7,6 +7,19 @@ describe("bounded Figma requests", () => {
     const { fetchFileTree } = await import("../src/lib/figmaApi.js");
     await expect(fetchFileTree("AbC123", "secret")).rejects.toThrow(/response body timed out.*FIGMA_FILE_REQUEST_TIMEOUT_MS/);
   });
+  it.each([401, 403])("names FIGMA_ACCESS_TOKEN, its scope and file access on %i", async (status) => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("", { status })));
+    const { fetchFileTree } = await import("../src/lib/figmaApi.js");
+    await expect(fetchFileTree("AbC123", "secret")).rejects.toThrow(`Figma access denied (${status}). Check FIGMA_ACCESS_TOKEN: `
+      + "it must be a valid token with the scope file_content:read, and its account must be able to open the file.");
+  });
+  it("names the file key instead of the API path on 404", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("", { status: 404 })));
+    const { fetchFileTree, fetchImageRefs } = await import("../src/lib/figmaApi.js");
+    const expected = "Figma file not found (404): AbC123. Check the file key in the board URL.";
+    await expect(fetchFileTree("AbC123", "secret")).rejects.toThrow(expected);
+    await expect(fetchImageRefs("AbC123", "secret")).rejects.toThrow(expected);
+  });
   it("rejects an oversized file before reading its body", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("{}", { headers: { "Content-Length": String(65 * 1024 * 1024) } })));
     const { fetchFileTree } = await import("../src/lib/figmaApi.js");

@@ -95,6 +95,13 @@ describe("ingest_board input validation", () => {
     expect(ingestBoardInputSchema.safeParse({ figmaFileUrl }).success).toBe(false);
   });
 
+  it.each([`https://www.figma.com/bord/${FILE_KEY}/Project`, "figma board"])("explains a rejected URL with an example: %s", (figmaFileUrl) => {
+    const result = ingestBoardInputSchema.safeParse({ figmaFileUrl });
+    expect(result.error?.issues.map((issue) => issue.message)).toEqual([
+      "Expected a Figma URL like https://www.figma.com/board/<file_key>/<name> (/board/, /design/, /file/ or /proto/)",
+    ]);
+  });
+
   it("trims tokens and custom phases", () => {
     const input = ingestBoardInputSchema.parse({
       figmaFileUrl: FIGMA_URL,

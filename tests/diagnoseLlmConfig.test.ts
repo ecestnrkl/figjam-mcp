@@ -152,7 +152,17 @@ describe("diagnoseLlmConfig", () => {
 
     expect(result.ok).toBe(false);
     expect(result.checks[2]).toMatchObject({ name: "vision_json", ok: false });
-    expect(result.summary).toContain("failing");
+    expect(result.summary).toBe("LLM configuration has 1 check failing.\n- vision_json: vision failed");
+  });
+
+  it("names the failing checks with one line per shared cause", async () => {
+    const missing = 'LLM_BASE_URL and LLM_API_KEY are not set. Add them to "env" of this server in your MCP client configuration.';
+    chatJsonMock.mockRejectedValue(new Error(missing));
+
+    const result = await diagnoseLlmConfig();
+
+    expect(result.ok).toBe(false);
+    expect(result.summary).toBe(`LLM configuration has 3 checks failing.\n- text_json, fast_text_json, vision_json: ${missing}`);
   });
 
   it("names every tried candidate and reports a fallback that answers", async () => {
@@ -231,7 +241,10 @@ describe("diagnoseLlmConfig", () => {
       attempts: [{ model: "fast-model", ok: false, error: "Check did not finish within 45 s." }] });
     expect(result.checks[2]).toMatchObject({ ok: false, modelUsed: "vision-model",
       error: expect.stringMatching(/^vision-model: Vision diagnostic failed: expected dominant color blue/) });
-    expect(result.summary).toBe("LLM configuration has 3 failing check(s).");
+    expect(result.summary).toBe("LLM configuration has 3 checks failing."
+      + "\n- text_json: text-model: Provider returned error, code 404, provider Nvidia; router/free: Provider returned error, code 404, provider Nvidia"
+      + "\n- fast_text_json: fast-model: Check did not finish within 45 s."
+      + `\n- vision_json: ${result.checks[2]?.error}`);
   });
 
   it.each([{}, { ok: false }])(
