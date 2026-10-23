@@ -129,14 +129,29 @@ deferred by the budget go before clusters that failed. Raise
   up to 18 nodes (8 MiB each).
 - Vision text per cluster: 160 nodes and 24,000 characters (300 per node).
   Groups of more than 250 nodes are split before vision.
-- `get_board_context`: `limit` 20 (max 100) excerpts, up to 50 `nodeIds`; the section overview and
-  subsection lists take at most a third of `maxChars`.
+- `get_board_context`: default `detail: "auto"` uses compact source-ID lines for
+  multiple distinct `nodeIds` or one page, section, frame or group only when the
+  first full page would leave unread excerpts. `detail: "full"` always returns
+  full excerpts, with `limit` 20 (max 100); an overview ignores `limit`, including
+  an explicit value. Up to 50 `nodeIds`. Topic searches, `outsideSections`, one
+  leaf/table/cell ID and small containers keep the full view. In that view, the
+  section overview and subsection lists take at most a third of `maxChars`.
   `maxChars` 12,000 (min 2,000, max 24,000) bounds both representations, the readable text
   `content` and `JSON.stringify(structuredContent)`, because some clients pass
   only one of them to the model; at most 128 KiB per result.
 - `answer_from_board`: 15 excerpts (20 for overview questions) plus direct
   neighbours, within 40,000 prompt characters (configurable up to 60,000).
 - History: 20 snapshots per board for `diff_board`.
+
+Compact overviews group one excerpt per line by section and shorten only the text
+to a shared 50–120-character prefix, marking cuts with `…`. In structured output,
+the text appears once in `overview.text`; empty `evidence` and `clusters` then mean
+the excerpts are in that field. Follow `nextCursor` for any remaining excerpts.
+Read complete text and a Figma link with `get_board_context`, the same `boardId`
+and `snapshotId`, `nodeIds: ["<ID>"]`, and `detail: "full"`; use the table ID for
+a table row. Full excerpts inherit only `snapshotId` from the response. Missing
+`chunkIndex` means 0; missing `truncated` or `modelDerived` means false. These
+defaults are independent of the cluster's flags.
 
 ## Cache, migration and lock
 

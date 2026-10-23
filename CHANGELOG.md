@@ -2,6 +2,13 @@
 
 ## 0.11.0 — Unreleased
 
+- `get_board_context` automatically shows compact source-ID overviews for large section reads; `detail: "full"` reads complete excerpts and Figma links from the same snapshot.
+- Full `get_board_context` excerpts omit inherited `snapshotId`, zero `chunkIndex` and false `truncated`/`modelDerived` fields to fit more source text in each page.
+- `diagnose_llm_config` uses a pure blue test image to avoid ambiguous color-check failures.
+- `diagnose_llm_config` names the active models when environment variables override the preset.
+- `diff_board` returns an empty change report after an unchanged re-ingest of a board with one snapshot.
+- Unlabeled arrows with identical endpoints are omitted from context connections and their counts.
+- README adds setup per client, explicit approval behavior, registry refreshes and limits of section overviews and `max_quality` ingests.
 - Search in `answer_from_board` and `get_board_context` topics favors query-word coverage and penalizes long excerpts less.
 - `answer_from_board` defaults to 15 excerpts and 40,000 prompt characters; the prompt limit can be raised to 60,000.
 - When the model finds no supporting evidence, `answer_from_board` returns no citations and points to matching sections or text outside sections.

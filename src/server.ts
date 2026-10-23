@@ -113,7 +113,7 @@ export function createServer(): McpServer {
     {
       title: "Get Board Context",
       description:
-        "Read source-cited context from an ingested board snapshot: original text, table rows, cluster summaries and arrows with at least one end, or a section, frame or group around one, on the page, each with a Figma link. Start here for overviews, summaries and documentation with one call without topic, nodeIds, limit and maxChars: its first page names the largest sections and lists all sections with IDs. Then read sections, pages, frames or groups by passing their IDs as nodeIds (several IDs in one call share every page), read everything outside sections with outsideSections: true, search words with topic, or continue with cursor, and synthesize the answer yourself. Large pages can exceed client output limits. No network or LLM calls; does not refresh Figma content (use ingest_board).",
+        "Read source-cited context from an ingested board snapshot. Start overviews, summaries and documentation with a call without topic, nodeIds, limit and maxChars: its first page names the largest sections and lists sections with IDs. Then pass section, page, frame or group IDs as nodeIds; several IDs share each page in request order. Default detail: \"auto\" switches reads of multiple distinct IDs or one page, section, frame or group to a compact overview only when the first full page would leave unread excerpts. Overview lines contain node IDs and deterministically shortened text (50–120 characters); structuredContent puts the excerpts once in overview.text, with empty evidence and clusters. limit applies only to the full view and is ignored in an overview, even when explicit. Read the complete source and Figma link with the same boardId and snapshotId, nodeIds: [\"<ID>\"] and detail: \"full\"; table IDs read every row. Without overview, excerpts are in evidence. Read outsideSections: true, search with topic, or continue with cursor. Synthesize the answer yourself. No network or LLM calls; use ingest_board to refresh Figma content.",
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       inputSchema: getBoardContextInputSchema,
       outputSchema: z.object(getBoardContextOutputShape),
@@ -151,7 +151,7 @@ export function createServer(): McpServer {
     {
       title: "Diff Board Snapshots",
       description:
-        "Compare retained local snapshots of the same board, reporting cluster, node and connector changes. Names each changed node with its section and its old and new text, and each changed table cell with its row and column. Requires at least two distinct ingests. compareTo=1 selects the previous snapshot, 2 selects two states back. No network or LLM calls; ingest_board must capture the current Figma state first.",
+        "Compare retained local snapshots of the same board, reporting cluster, node and connector changes. Names each changed node with its section and its old and new text, and each changed table cell with its row and column. Needs two ingests; when the board did not change in between, it reports no changes since the first. compareTo=1 selects the previous snapshot, 2 selects two states back. No network or LLM calls; ingest_board must capture the current Figma state first.",
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       inputSchema: diffBoardInputSchema,
       outputSchema: z.object(diffBoardOutputShape),

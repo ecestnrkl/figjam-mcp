@@ -278,7 +278,7 @@ function displayedNodeIds(evidence: Evidence[]): Set<string> {
 }
 
 function matchingConnections(board: BoardData, selected: ReadonlySet<string>, ends: ConnectionEnds): ConnectorEdge[] {
-  const edges = board.connectorEdges ?? [];
+  const edges = (board.connectorEdges ?? []).filter((edge) => edge.fromNodeId !== edge.toNodeId || edge.label?.trim());
   if (ends === "both") return edges.filter((edge) => selected.has(edge.fromNodeId) && selected.has(edge.toNodeId));
   if (!edges.length) return [];
   const { nodesById, enclosing } = boardLookups(board);

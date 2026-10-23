@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { PNG } from "pngjs";
 
 const { chatJsonMock } = vi.hoisted(() => ({ chatJsonMock: vi.fn() }));
 
@@ -30,6 +31,18 @@ afterEach(() => {
 });
 
 describe("diagnoseLlmConfig", () => {
+  it("sends a 64x64 diagnostic PNG containing only pure opaque blue", async () => {
+    chatJsonMock.mockResolvedValue({});
+    await diagnoseLlmConfig();
+    const messages = chatJsonMock.mock.calls[2]![1];
+    const url = messages[0].content[1].image_url.url as string;
+    const png = PNG.sync.read(Buffer.from(url.split(",")[1]!, "base64"));
+    expect([png.width, png.height]).toEqual([64, 64]);
+    const colors = new Set<string>();
+    for (let i = 0; i < png.data.length; i += 4) colors.add([...png.data.subarray(i, i + 4)].join(","));
+    expect([...colors]).toEqual(["0,0,255,255"]);
+  });
+
   it("does not start diagnostics after cancellation", async () => {
     const controller = new AbortController();
     controller.abort();

@@ -237,6 +237,23 @@ try {
             }]
           } });
         }
+        if (url.pathname === '/v1/files/OverviewBoard123') {
+          record('overview_file');
+          return json({ version: '1', document: {
+            id: '0:0', name: 'Document', type: 'DOCUMENT', children: [{
+              id: '0:1', name: 'Synthetic overview', type: 'CANVAS',
+              children: Array.from({ length: 8 }, (_, section) => ({
+                id: '600:' + (section + 1), name: 'Section ' + (section + 1), type: 'SECTION',
+                absoluteBoundingBox: { x: section * 1000, y: 0, width: 900, height: 900 },
+                children: Array.from({ length: 16 }, (_, note) => ({
+                  id: '700:' + (section * 16 + note + 1), name: 'Note', type: 'STICKY',
+                  characters: 'Synthetic note ' + (section + 1) + '/' + (note + 1) + '.',
+                  absoluteBoundingBox: { x: section * 1000 + (note % 4) * 180, y: Math.floor(note / 4) * 180, width: 160, height: 120 }
+                }))
+              }))
+            }]
+          } });
+        }
         if (/^\\/v1\\/files\\/LegacyBoard(?:20251125|20250618)$/.test(url.pathname) || url.pathname === '/v1/files/LongBoard123') {
           const isLong = url.pathname.endsWith('/LongBoard123');
           assert(!isLong || process.env.SMOKE_LONG_CHECK === '1', 'Long fixture must be explicitly enabled');
@@ -366,6 +383,14 @@ try {
     assert(!context.isError, JSON.stringify(context));
     assert.match(context.content[0].text, /Workshop finding version 2/);
     assert(context.structuredContent.evidence.some(item => /Workshop finding version 2/.test(item.text)));
+    assert.equal(context.structuredContent.snapshotId, updated.structuredContent.snapshotId);
+    const sourceExcerpt = context.structuredContent.evidence.find(item => item.sourceType === "board_text");
+    assert(sourceExcerpt, "Full context must retain original source evidence");
+    assert.equal(sourceExcerpt.snapshotId, undefined, "Full excerpts inherit the response snapshotId");
+    assert.equal(sourceExcerpt.chunkIndex, undefined, "Chunk zero is omitted");
+    assert.equal(sourceExcerpt.modelDerived, undefined, "False source flags are omitted");
+    assert.equal(sourceExcerpt.truncated, undefined, "False truncation flags are omitted");
+    assert.equal(new URL(sourceExcerpt.url).searchParams.get("node-id"), sourceExcerpt.nodeId);
     assert.doesNotMatch(context.structuredContent.contextText, /Workshop finding version 2/, "Excerpt text must appear once in structuredContent");
     const outside = await client.callTool({ name: "get_board_context", arguments: { boardId: "SmokeBoard123", outsideSections: true } });
     assert(!outside.isError, JSON.stringify(outside));
@@ -389,6 +414,40 @@ try {
       currentText: "Workshop finding version 2", url: "https://www.figma.com/board/SmokeBoard123?node-id=1%3A1", changes: ["text"],
     }]);
 
+    // The production package returns compact excerpts in both MCP channels,
+    // then resolves their source IDs against the same immutable snapshot.
+    const overviewIngest = await ingestWithProgress(client, {
+      figmaFileUrl: "https://www.figma.com/board/OverviewBoard123/Smoke", ingestMode: "max_speed",
+    }, "Synthetic overview ingest");
+    const overview = await client.callTool({ name: "get_board_context", arguments: {
+      boardId: "OverviewBoard123", nodeIds: Array.from({ length: 8 }, (_, index) => `600:${index + 1}`), limit: 1,
+    } });
+    assert(!overview.isError, JSON.stringify(overview));
+    const compact = overview.structuredContent;
+    assert.equal(compact.snapshotId, overviewIngest.structuredContent.snapshotId);
+    assert.equal(compact.totalMatched, 128);
+    assert.equal(compact.overview?.shownEvidence, 128, "Overview ignores even an explicit limit of one");
+    assert.equal(compact.overview.shortenedEvidence, 0);
+    assert.deepEqual(compact.evidence, []);
+    assert.deepEqual(compact.clusters, []);
+    assert.equal(compact.truncation.remainingEvidence, 0);
+    assert.equal(compact.nextCursor, undefined);
+    assert.match(compact.overview.text, /700:1: Synthetic note 1\/1\./);
+    assert.match(overview.content[0].text, /700:1: Synthetic note 1\/1\./);
+    assert.equal(JSON.stringify(compact).match(/Synthetic note 1\/1\./g)?.length, 1, "Structured overview text is not repeated");
+    assert(overview.content[0].text.length <= 12000);
+    assert(JSON.stringify(compact).length <= 12000);
+    assert(Buffer.byteLength(JSON.stringify(overview), "utf8") <= 128 * 1024);
+    const fullReadback = await client.callTool({ name: "get_board_context", arguments: {
+      boardId: "OverviewBoard123", snapshotId: compact.snapshotId, nodeIds: ["700:1"], detail: "full",
+    } });
+    assert(!fullReadback.isError, JSON.stringify(fullReadback));
+    assert.equal(fullReadback.structuredContent.snapshotId, compact.snapshotId);
+    assert.equal(fullReadback.structuredContent.overview, undefined);
+    assert.equal(fullReadback.structuredContent.evidence[0]?.text, "Synthetic note 1/1.");
+    assert.equal(fullReadback.structuredContent.evidence[0]?.snapshotId, undefined);
+    assert.equal(new URL(fullReadback.structuredContent.evidence[0].url).searchParams.get("node-id"), "700:1");
+
     // Exercise table rows, local retrieval, immutable source snapshots and
     // the user-visible diff together through the installed stdio entry point.
     const tableArguments = { figmaFileUrl: "https://www.figma.com/board/TableBoard123/Smoke", ingestMode: "max_speed" };
@@ -399,11 +458,12 @@ try {
     assert(originalRow, "A table row must be searchable");
     assert.equal(originalRow.text, "Simulator | Budget 100");
     assert.equal(originalRow.nodeId, "2:1");
-    assert.equal(originalRow.modelDerived, false);
+    assert.equal(originalRow.modelDerived ?? false, false);
     assert.equal(originalRow.renderNodeId, "2:1");
     assert.equal(originalRow.row, 0);
     assert.equal(originalRow.column, undefined);
-    assert.equal(originalRow.snapshotId, tableBefore.structuredContent.snapshotId);
+    assert.equal(tableSearch.structuredContent.snapshotId, tableBefore.structuredContent.snapshotId);
+    assert.equal(originalRow.snapshotId, undefined, "Row evidence inherits the response snapshotId");
     assert.equal(new URL(originalRow.url).pathname, "/board/TableBoard123");
     assert.equal(new URL(originalRow.url).searchParams.get("node-id"), "2:1", "Row evidence links to its renderable table");
     assert.match(tableSearch.content[0].text, /Table 2:1 · original · 1 row × 2 columns · row 0 shown · /);
@@ -414,7 +474,8 @@ try {
     assert(!updatedTableSearch.isError, JSON.stringify(updatedTableSearch));
     const changedRow = updatedTableSearch.structuredContent.evidence.find(item => item.sourceType === "table_row");
     assert.equal(changedRow?.text, "Simulator | Budget 999");
-    assert.equal(changedRow?.snapshotId, tableAfter.structuredContent.snapshotId);
+    assert.equal(updatedTableSearch.structuredContent.snapshotId, tableAfter.structuredContent.snapshotId);
+    assert.equal(changedRow?.snapshotId, undefined);
     const historicalTable = await client.callTool({ name: "get_board_context", arguments: {
       boardId: "TableBoard123", snapshotId: tableBefore.structuredContent.snapshotId, nodeIds: ["T2:1;0;1"],
     } });
@@ -524,7 +585,7 @@ try {
   // Every ingest downloads its board; the unchanged re-ingest reuses the cached interpretation.
   const expectedRequests = { figma_file: 3, figma_render: 1, image_download: 1,
     figjam_cluster_refinement: longCheck ? 3 : 2, figjam_evidence_answer: 1, diagnose_text_json: 1, diagnose_fast_text_json: 1, diagnose_vision_json: 1, figma_denied: 1,
-    table_file: 2, legacy_file: 2, image_board_file: 1, figma_image_fills: 1, original_download: 1, bounded_original: 1,
+    table_file: 2, overview_file: 1, legacy_file: 2, image_board_file: 1, figma_image_fills: 1, original_download: 1, bounded_original: 1,
     ...(longCheck ? { long_file: 1, long_render: 1, long_image: 1, long_model_delay_started: 1, long_model_delay_completed: 1 } : {}),
   };
   for (const [kind, count] of Object.entries(expectedRequests)) {
@@ -540,4 +601,4 @@ if (artifactDir) {
   console.log(`Retained tested tarball: ${artifact.archivePath}`);
   console.log(`SHA-256: ${artifact.checksum}`);
 }
-console.log(`Verified ${metadata.name}@${metadata.version}: production-only install, executable, successful calls to all five tools, offline Figma/vision/answer/diagnostic fixtures, a large image from image fills scaled down on a worker thread without a render, table row search and single-cell edit diff, persisted cache reuse, modern/legacy ingest progress followed by final responses, error handling${longCheck ? ", and a real >60-second ingest" : ""}`);
+console.log(`Verified ${metadata.name}@${metadata.version}: production-only install, executable, successful calls to all five tools, offline Figma/vision/answer/diagnostic fixtures, compact overview and full source readback, a large image from image fills scaled down on a worker thread without a render, table row search and single-cell edit diff, persisted cache reuse, modern/legacy ingest progress followed by final responses, error handling${longCheck ? ", and a real >60-second ingest" : ""}`);
