@@ -2,6 +2,8 @@
 
 ## 0.11.0 — Unreleased
 
+- `get_board_context` automatically shows compact source-ID overviews for large section reads; `detail: "full"` reads complete excerpts and Figma links from the same snapshot.
+- Full `get_board_context` excerpts omit inherited `snapshotId`, zero `chunkIndex` and false `truncated`/`modelDerived` fields to fit more source text in each page.
 - `diagnose_llm_config` uses a pure blue test image to avoid ambiguous color-check failures.
 - `diagnose_llm_config` names the active models when environment variables override the preset.
 - `diff_board` returns an empty change report after an unchanged re-ingest of a board with one snapshot.

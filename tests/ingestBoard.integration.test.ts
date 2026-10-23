@@ -560,7 +560,7 @@ describe("offline ingest pipeline with actual persistent cache", () => {
     activeTree = boardTree(notes("before"));
     const before = await ingestBoard({ ...input, ingestMode: "max_speed" });
     const { structuredContent: first } = await getBoardContext({ boardId: fileKey, limit: 1 });
-    expect(first.nextCursor).toMatch(/^2\.1\.[0-9a-f]{12}\.[0-9a-f]{12}$/);
+    expect(first.nextCursor).toMatch(/^v2\.f\.2\.1\.[0-9a-f]{12}\.[0-9a-f]{12}$/);
     activeTree = boardTree(notes("after"), "v2");
     const after = await ingestBoard({ ...input, ingestMode: "max_speed" });
     expect(after.snapshotId).not.toBe(before.snapshotId);

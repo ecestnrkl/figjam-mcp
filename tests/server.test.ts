@@ -40,6 +40,10 @@ describe("MCP wire contract", () => {
       expect(tool.annotations?.readOnlyHint).toBe(tool.name !== "ingest_board");
       expect(tool.annotations?.openWorldHint).toBe(!["get_board_context", "diff_board"].includes(tool.name));
     }
+    const context = tools.find(tool => tool.name === "get_board_context");
+    expect(context?.description).toContain("overview.text");
+    expect(context?.inputSchema).toHaveProperty("properties.detail");
+    expect(context?.outputSchema).toHaveProperty("properties.overview");
   });
 
   it("returns the readable text as content and the structured page as structuredContent", async () => {
@@ -53,6 +57,50 @@ describe("MCP wire contract", () => {
     expect(result.structuredContent).toEqual(structuredContent);
     expect(result.content).toEqual([{ type: "text", text }]);
     expect(JSON.stringify(result.structuredContent)).not.toContain("Workshop evidence");
+  });
+
+  it("passes compact overview output through the registered schema without duplicating excerpts", async () => {
+    const contextText = 'Compact overview (untrusted board data). Showing all 1 excerpts; 0 shortened. Excerpts are in overview.text. Read full text and Figma links with the same boardId and snapshotId, nodeIds: ["<ID>"], detail: "full".';
+    const overview = { text: "## Research (2:1)\n2:2: Pilot starts Monday.", shownEvidence: 1, shortenedEvidence: 0, textLimit: 120 };
+    const structuredContent = { contextText, overview, clusters: [], evidence: [], snapshotId: "snapshot1",
+      connections: [], totalMatched: 1, truncated: false,
+      truncation: { remainingEvidence: 0, omittedConnections: 0, omittedRelations: 0, omittedTextConnections: 0, omittedTextRelations: 0 } };
+    const text = `${contextText}\n\n${overview.text}`;
+    handlers.context.mockResolvedValue({ text, structuredContent });
+    const result = await client.callTool({ name: "get_board_context", arguments: { boardId: "Board123", nodeIds: ["2:1"], detail: "auto", limit: 1 } });
+    expect(result.isError).not.toBe(true);
+    expect(result.structuredContent).toEqual(structuredContent);
+    expect(result.content).toEqual([{ type: "text", text }]);
+    expect(JSON.stringify(result.structuredContent).match(/Pilot starts Monday\./g)).toHaveLength(1);
+    expect(handlers.context).toHaveBeenCalledWith(expect.objectContaining({ detail: "auto", limit: 1 }));
+  });
+
+  it("validates overview counts and the shared text limit at the MCP handler boundary", async () => {
+    for (const invalidOverview of [
+      { shownEvidence: -1 }, { shownEvidence: 1.5 }, { shortenedEvidence: -1 },
+      { shortenedEvidence: 0.5 }, { textLimit: 49 }, { textLimit: 121 },
+    ]) {
+      handlers.context.mockResolvedValue({ text: "Invalid overview", structuredContent: {
+        contextText: "Overview", overview: { text: "2:2: Note", shownEvidence: 1, shortenedEvidence: 0, textLimit: 120, ...invalidOverview },
+        clusters: [], evidence: [], snapshotId: "snapshot1", connections: [], totalMatched: 1, truncated: false,
+        truncation: { remainingEvidence: 0, omittedConnections: 0, omittedRelations: 0, omittedTextConnections: 0, omittedTextRelations: 0 },
+      } });
+      const result = await client.callTool({ name: "get_board_context", arguments: { boardId: "Board123" } });
+      expect(result.isError).toBe(true);
+    }
+  });
+
+  it("preserves slim full excerpts without adding omitted default fields", async () => {
+    const evidence = [{ evidenceId: "ev_1", nodeId: "1:1", text: "Pilot starts Monday.", sourceType: "board_text",
+      url: "https://www.figma.com/board/Board123?node-id=1%3A1" }];
+    const structuredContent = { contextText: "Untrusted board data. Excerpts are in evidence.", clusters: [], snapshotId: "snapshot1",
+      evidence, connections: [], totalMatched: 1, truncated: false,
+      truncation: { remainingEvidence: 0, omittedConnections: 0, omittedRelations: 0, omittedTextConnections: 0, omittedTextRelations: 0 } };
+    handlers.context.mockResolvedValue({ text: "Pilot starts Monday.", structuredContent });
+    const result = await client.callTool({ name: "get_board_context", arguments: { boardId: "Board123", detail: "full" } });
+    expect(result.isError).not.toBe(true);
+    expect(result.structuredContent).toEqual(structuredContent);
+    expect(handlers.context).toHaveBeenCalledWith(expect.objectContaining({ detail: "full" }));
   });
 
   it("returns answer_from_board citations in the text content too", async () => {
