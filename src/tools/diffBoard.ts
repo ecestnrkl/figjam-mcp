@@ -60,7 +60,7 @@ export async function diffBoard(input: DiffBoardInput): Promise<DiffBoardOutput>
       ? `No changes: the board content is the same as at ${new Date(currentEntry.createdAt).toISOString()}; ` +
         `the last ingest at ${new Date(singleSnapshot!.freshnessCheckedAt!).toISOString()} found it unchanged.`
       : diff.summaryText,
-    stats: unchanged ? { ...diff.stats, unchangedClusters: 0 } : diff.stats,
+    stats: diff.stats,
     newClusters: diff.newClusters,
     removedClusters: diff.removedClusters,
     modifiedClusters: diff.modifiedClusters,

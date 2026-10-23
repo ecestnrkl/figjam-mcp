@@ -101,7 +101,8 @@ describe("diffBoard", () => {
     readBoardHistoryMock.mockResolvedValue([
       { cacheKey: "k1", refinementId: "r1", nodeHash: "h1", createdAt: 1000 },
     ]);
-    readCachedBoardMock.mockResolvedValue({ ...snapshot(1000, "Same"), freshnessCheckedAt: 2000 });
+    const current = { ...snapshot(1000, "Same"), freshnessCheckedAt: 2000 };
+    readCachedBoardMock.mockResolvedValue(current);
 
     const output = await diffBoard({ boardId: "AbC123", compareTo: 1 });
 
@@ -111,7 +112,9 @@ describe("diffBoard", () => {
     expect(output.currentSnapshotId).toBe(output.baselineSnapshotId);
     expect(output.baselineCreatedAt).toBe(new Date(1000).toISOString());
     expect(output.currentCreatedAt).toBe(output.baselineCreatedAt);
-    expect(Object.values(output.stats).every((value) => value === 0)).toBe(true);
+    const { unchangedClusters, ...changeCounts } = output.stats;
+    expect(unchangedClusters).toBe(current.clusters.length);
+    expect(Object.values(changeCounts).every((value) => value === 0)).toBe(true);
     for (const list of [output.newClusters, output.removedClusters, output.modifiedClusters,
       output.addedConnections, output.removedConnections, output.tableCellChanges, output.nodeChanges]) expect(list).toEqual([]);
     expect(output.summaryText).toBe("No changes: the board content is the same as at 1970-01-01T00:00:01.000Z; " +
