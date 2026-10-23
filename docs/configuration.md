@@ -62,8 +62,8 @@ invalid JSON or an unavailable model. Changing any model setting or
 | --- | --- | --- |
 | `LLM_ANSWER_MAX_OUTPUT_TOKENS` | `2048` | Answer tokens, including reasoning tokens. The text checks of `diagnose_llm_config` use the same budget. |
 | `LLM_VISION_MAX_OUTPUT_TOKENS` | `4096` | Tokens per image request, including reasoning tokens; also used by the image check of `diagnose_llm_config`. Minimum 256. |
-| `LLM_ANSWER_TOP_K` | `6` | Excerpts retrieved per question; at most 30. |
-| `LLM_ANSWER_PROMPT_MAX_CHARS` | `24000` | Prompt size for answers; 4096 to 24000. |
+| `LLM_ANSWER_TOP_K` | `15` | Excerpts retrieved per question; at most 30. |
+| `LLM_ANSWER_PROMPT_MAX_CHARS` | `40000` | Prompt size for answers; 4096 to 60000. |
 
 ### Concurrency and cache
 
@@ -134,8 +134,8 @@ deferred by the budget go before clusters that failed. Raise
   `maxChars` 12,000 (min 2,000, max 24,000) bounds both representations, the readable text
   `content` and `JSON.stringify(structuredContent)`, because some clients pass
   only one of them to the model; at most 128 KiB per result.
-- `answer_from_board`: 6 excerpts (20 for overview questions) plus direct
-  neighbours, within 24,000 prompt characters.
+- `answer_from_board`: 15 excerpts (20 for overview questions) plus direct
+  neighbours, within 40,000 prompt characters (configurable up to 60,000).
 - History: 20 snapshots per board for `diff_board`.
 
 ## Cache, migration and lock

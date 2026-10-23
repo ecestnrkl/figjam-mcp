@@ -53,3 +53,33 @@ duplicatedLabels.clusters.forEach((cluster) => { cluster.label = "Status"; });
 retrievalFixtures.push({ name: "duplicate cluster labels", board: duplicatedLabels, query: "provisioning", expectedNodeId: "5:2" });
 retrievalFixtures.push({ name: "unrelated topic stays empty", board: evidenceBoard("NoMatch123"), query: "quantum reactor" });
 retrievalFixtures.push({ name: "stopword-only query stays empty", board: evidenceBoard("Stopword123"), query: "the and is" });
+
+/** Long questions compete with many short lexical matches, as on a dense sticky-note board. */
+export const longQueryFixtures = [
+  {
+    name: "long English question",
+    query: "How do deployment migration rollback ownership monitoring requirements address scheduling capacity security approval documentation dependencies communication validation and readiness?",
+    terms: "deployment migration rollback ownership monitoring requirements scheduling capacity security approval documentation dependencies communication validation readiness".split(" "),
+    text: "Deployment follows a staged procedure described in the working agreement. Migration begins with a small representative batch, which the team observes before moving further records. Rollback uses the preserved copy whenever the checks reveal an unexpected difference. Ownership remains with the duty engineer throughout the transition, and monitoring continues until the next morning. The operator records each completed step in the shared log, compares totals against the saved copy and pauses whenever an unexplained difference appears. A second person checks the result before the next batch begins. The original copy remains available throughout this process so that the team can restore the previous state without reconstructing missing records.",
+  },
+  {
+    name: "long German question",
+    query: "Wie berücksichtigen Einführung Datenumzug Rückkehr Zuständigkeit Beobachtung die Anforderungen an Zeitplanung Kapazität Sicherheit Freigabe Dokumentation Abhängigkeiten Kommunikation Prüfung und Bereitschaft?",
+    terms: "Einführung Datenumzug Rückkehr Zuständigkeit Beobachtung Anforderungen Zeitplanung Kapazität Sicherheit Freigabe Dokumentation Abhängigkeiten Kommunikation Prüfung Bereitschaft".split(" "),
+    text: "Die Einführung erfolgt schrittweise gemäß der gemeinsam vereinbarten Arbeitsweise. Der Datenumzug beginnt mit einer kleinen Auswahl, deren Ergebnis das Team zunächst sorgfältig betrachtet. Eine Rückkehr erfolgt anhand der gesicherten Kopie, sobald unerwartete Unterschiede auftreten. Die Zuständigkeit bleibt während des gesamten Ablaufs beim diensthabenden Kollegen, und die Beobachtung läuft bis zum nächsten Morgen weiter. Jeder abgeschlossene Schritt wird im gemeinsamen Protokoll festgehalten und mit dem zuvor gespeicherten Stand verglichen. Bei ungeklärten Unterschieden hält das Team den Ablauf an. Eine zweite Person kontrolliert das Ergebnis vor dem nächsten Durchgang. Die ursprüngliche Kopie bleibt währenddessen verfügbar, damit fehlende Einträge jederzeit wiederhergestellt werden können.",
+  },
+].map(({ name, query, terms, text }, index) => ({
+  name, query, expectedNodeId: "target",
+  board: evidenceBoard(`LongQuestion${index}`, [
+    ...Array.from({ length: 45 }, (_, i) => textNode(`note:${i}`, `${terms[i % terms.length]} ${terms[(i + 1) % terms.length]}`)),
+    textNode("target", text),
+  ]),
+}));
+
+/** Inflection is deliberately outside lexical retrieval; excluded from recall and MRR. */
+export const retrievalLimitations = [{
+  name: "plural question versus singular source",
+  query: "sensors",
+  expectedNodeId: "singular",
+  board: evidenceBoard("WordFormBoundary", [textNode("singular", "sensor")]),
+}];

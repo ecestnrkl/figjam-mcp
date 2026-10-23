@@ -32,9 +32,10 @@ describe("retrieval evaluation CLI", () => {
         env: { ...process.env, LLM_BASE_URL: "https://synthetic-eval.invalid/v1", LLM_API_KEY: "synthetic-key" },
       });
       const result = JSON.parse(stdout);
-      expect(result).toMatchObject({ mode: "offline", fixtures: 20, recallAt1: 1, correctAbstentionRate: 1, apiCalls: 0 });
-      expect(result.baselineProxy).toMatchObject({ historicalBenchmark: false, visibleFacts: 15, totalFacts: 18 });
+      expect(result).toMatchObject({ mode: "offline", fixtures: 22, recallAt1: 1, recallAt6: 1, recallAt15: 1, meanReciprocalRank: 1, correctAbstentionRate: 1, apiCalls: 0 });
+      expect(result.baselineProxy).toMatchObject({ historicalBenchmark: false, visibleFacts: 15, totalFacts: 20 });
       expect(result.revisions).toMatchObject({ fixtures: 20, passed: 20 });
+      expect(result.knownLimitations).toEqual([{ name: "plural question versus singular source", rank: 0, excludedFromRecallAndMrr: true, reason: "Word forms are not normalized; lexical overlap is required." }]);
       expect(result.external).toBeUndefined();
       expect(result.semanticGrounding).toMatchObject({ fixtures: 5, generation: "not measured (offline; no provider calls)", semanticReview: "required" });
       expect(result.semanticGrounding.cases).toHaveLength(5);
@@ -73,10 +74,10 @@ describe("retrieval evaluation CLI", () => {
         env: { ...process.env, LLM_BASE_URL: "https://synthetic-eval.invalid/v1", LLM_API_KEY: "synthetic-key", LLM_TEXT_MODELS: "synthetic-model", LLM_TEXT_MODEL: "", LLM_MODEL_PRESET: "student-free" },
       });
       const result = JSON.parse(stdout);
-      expect(result).toMatchObject({ mode: "explicit-provider-evaluation", fixtures: 20, apiCalls: 24 });
-      expect(result.providerEvaluation).toEqual({ selection: "retrieval-and-grounding", selectedFixtures: 25, perCaseTimeoutMs: 45000 });
-      expect(result.external).toMatchObject({ completedFixtures: 20, failedFixtures: 0, structuralCitationValidity: 1, expectedSourceRecall: 1, correctAbstentionRate: 1, sdkRetries: 0 });
-      expect(result.tokenUsage).toMatchObject({ receivedCompletions: 23, totalTokens: { reportedSum: 2640, reportedCompletions: 22, missingCompletions: 1 } });
+      expect(result).toMatchObject({ mode: "explicit-provider-evaluation", fixtures: 22, apiCalls: 26 });
+      expect(result.providerEvaluation).toEqual({ selection: "retrieval-and-grounding", selectedFixtures: 27, perCaseTimeoutMs: 45000 });
+      expect(result.external).toMatchObject({ completedFixtures: 22, failedFixtures: 0, structuralCitationValidity: 1, expectedSourceRecall: 1, correctAbstentionRate: 1, sdkRetries: 0 });
+      expect(result.tokenUsage).toMatchObject({ receivedCompletions: 25, totalTokens: { reportedSum: 2880, reportedCompletions: 24, missingCompletions: 1 } });
       expect(result.externalCases.filter((item: { expectedNodeId: string | null }) => !item.expectedNodeId).every((item: { httpAttempts: number }) => item.httpAttempts === 0)).toBe(true);
       expect(result.semanticGrounding).toMatchObject({ fixtures: 5, generation: "responses collected for human review", semanticReview: "required" });
       expect(result.semanticGrounding.cases.map((item: { expectedStatus: string }) => item.expectedStatus)).toEqual(["unknown", "confirmed", "denied", "unknown", "conflicting"]);
@@ -115,7 +116,7 @@ describe("retrieval evaluation CLI", () => {
         env: { ...process.env, LLM_BASE_URL: "https://synthetic-eval.invalid/v1", LLM_API_KEY: "synthetic-key", LLM_TEXT_MODELS: "synthetic-model", LLM_TEXT_MODEL: "", LLM_MODEL_PRESET: "student-free" },
       });
       const result = JSON.parse(stdout);
-      expect(result).toMatchObject({ mode: "explicit-provider-evaluation", fixtures: 20, recallAt1: 1, correctAbstentionRate: 1, apiCalls: 5 });
+      expect(result).toMatchObject({ mode: "explicit-provider-evaluation", fixtures: 22, recallAt1: 1, correctAbstentionRate: 1, apiCalls: 5 });
       expect(result.providerEvaluation).toEqual({ selection: "grounding-only", selectedFixtures: 5, perCaseTimeoutMs: 45000 });
       expect(result.revisions).toMatchObject({ fixtures: 20, passed: 20 });
       expect(result.external).toBeUndefined();

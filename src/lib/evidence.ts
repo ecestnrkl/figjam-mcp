@@ -170,7 +170,7 @@ export function nodeLink(board: BoardData, nodeId: string): string {
   return `https://www.figma.com/board/${encodeURIComponent(board.fileKey)}?node-id=${encodeURIComponent(nodeId)}`;
 }
 
-/** Deterministic field-weighted BM25 over original chunks and source metadata. */
+/** Field-weighted BM25, scaled by squared query coverage in text, node and section. */
 export function retrieveEvidence(board: BoardData, options: EvidenceQuery = {}): EvidenceResult {
   const index = getIndex(board);
   let matches: IndexedEvidence[];
@@ -197,9 +197,15 @@ export function retrieveEvidence(board: BoardData, options: EvidenceQuery = {}):
   } else if (options.query?.trim()) {
     const queryTerms = [...new Set(evidenceTokens(options.query))];
     const scores = new Map<number, number>();
-    for (const field of ORIGINAL_FIELDS) addFieldScores(index, field, queryTerms, scores);
+    const coveredTerms = new Map<number, Set<string>>();
+    for (const field of ORIGINAL_FIELDS) {
+      addFieldScores(index, field, queryTerms, scores, undefined, field === "page" ? undefined : coveredTerms);
+    }
     // Derived cluster labels can help rank an original match, never create one.
     addFieldScores(index, "cluster", queryTerms, scores, new Set(scores.keys()));
+    for (const [entry, score] of scores) {
+      scores.set(entry, score * ((coveredTerms.get(entry)?.size ?? 0) / queryTerms.length) ** 2);
+    }
     matches = contentFirst([...scores.entries()]
       .sort(([a, aScore], [b, bScore]) => bScore - aScore || a - b)
       .map(([entry]) => index.entries[entry]!), (entry) => entry.evidence);
@@ -476,6 +482,7 @@ export function boundedText(value: string, maxChars: number): string {
 function addFieldScores(
   index: EvidenceIndex, field: EvidenceField, queryTerms: string[], scores: Map<number, number>,
   allowed?: Set<number>,
+  coveredTerms?: Map<number, Set<string>>,
 ): void {
   const fieldIndex = index.fields[field];
   for (const term of queryTerms) {
@@ -490,13 +497,20 @@ function addFieldScores(
       for (const posting of postings) {
         if (allowed && !allowed.has(posting.index)) continue;
         const length = index.entries[posting.index]!.lengths[field];
-        const normalization = 1.2 * (0.25 + 0.75 * length / fieldIndex.averageLength);
+        const normalization = 1.2 * (0.5 + 0.5 * length / fieldIndex.averageLength);
         const score = alternative.weight * FIELD_WEIGHTS[field] * idf * posting.frequency * 2.2 /
           (posting.frequency + normalization);
         termScores.set(posting.index, Math.max(termScores.get(posting.index) ?? 0, score));
       }
     }
-    for (const [entry, score] of termScores) scores.set(entry, (scores.get(entry) ?? 0) + score);
+    for (const [entry, score] of termScores) {
+      scores.set(entry, (scores.get(entry) ?? 0) + score);
+      if (coveredTerms) {
+        const terms = coveredTerms.get(entry) ?? new Set<string>();
+        terms.add(term);
+        coveredTerms.set(entry, terms);
+      }
+    }
   }
 }
 

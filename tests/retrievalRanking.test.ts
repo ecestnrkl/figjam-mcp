@@ -5,6 +5,62 @@ import { evidenceBoard, textNode } from "./fixtures/retrieval.js";
 const autoNamed = (id: string, text: string) => ({ ...textNode(id, text), name: text.replace(/\s+/g, " ") });
 
 describe("field-aware source ranking", () => {
+  it.each(["text", "node", "section", "page", "cluster"])("uses the weaker length penalty in %s", (field) => {
+    const values = ["anchorword", "anchorword anchorword detail detail detail detail", "background ".repeat(10)];
+    const board = evidenceBoard("LengthPenalty", values.map((value, i) => textNode(`n:${i}`, field === "text" ? `common ${value}` : "common")));
+    values.forEach((value, i) => {
+      const node = board.nodes[i]!;
+      if (field === "node") node.name = value;
+      if (field === "cluster") board.clusters[i]!.label = value;
+      if (field === "section" || field === "page") {
+        const id = `container:${i}`;
+        board.nodes.push({ ...textNode(id, ""), name: value, type: field === "section" ? "SECTION" : "CANVAS", sectionIds: [] });
+        if (field === "section") node.sectionIds = [id];
+        else node.pageId = id;
+      }
+    });
+    expect(retrieveEvidence(board, { query: "common anchorword" }).evidence[0]!.nodeId).toBe("n:1");
+  });
+
+  it("prefers broader coverage to repeated matches and counts each query term only once", () => {
+    const board = evidenceBoard("Coverage", [
+      textNode("narrow", "alpha ".repeat(20)),
+      textNode("broad", "alpha beta " + "detail ".repeat(6)),
+      ...Array.from({ length: 20 }, (_, i) => textNode(`noise:${i}`, "beta")),
+    ]);
+    const ids = (query: string) => retrieveEvidence(board, { query }).evidence.map((item) => item.nodeId);
+    expect(ids("alpha beta").slice(0, 2)).toEqual(["broad", "narrow"]);
+    expect(ids("alpha alpha alpha beta the and")).toEqual(ids("alpha beta"));
+    // One distinct word has full coverage for every original match.
+    expect(ids("alpha")).toEqual(["narrow", "broad"]);
+    expect(ids("alpha alpha the")).toEqual(ids("alpha"));
+  });
+
+  it("counts exact and compound matches across text, node and section once per query word", () => {
+    const board = evidenceBoard("FieldCoverage", [
+      { ...textNode("repeat", "sensor sensor sensor"), name: "sensor", sectionIds: ["s:1"] },
+      { ...textNode("broad", "sensorwartung " + "detail ".repeat(12)), name: "calibration", sectionIds: ["s:2"] },
+    ]);
+    board.nodes.push(
+      { ...textNode("s:1", ""), type: "SECTION", name: "sensor", sectionIds: [] },
+      { ...textNode("s:2", ""), type: "SECTION", name: "inspection", sectionIds: [] },
+    );
+    expect(retrieveEvidence(board, { query: "sensor calibration inspection" }).evidence[0]!.nodeId).toBe("broad");
+  });
+
+  it.each(["page", "cluster"])("does not count %s as query coverage", (field) => {
+    const board = evidenceBoard("ExcludedCoverage", [
+      textNode("narrow", "alpha"), textNode("broad", "alpha beta gamma " + "detail ".repeat(20)),
+      ...Array.from({ length: 20 }, (_, i) => textNode(`noise:${i}`, "beta gamma")),
+    ]);
+    if (field === "cluster") board.clusters[0]!.label = "beta gamma";
+    else {
+      board.nodes[0]!.pageId = "p:1";
+      board.nodes.push({ ...textNode("p:1", ""), type: "CANVAS", name: "beta gamma", sectionIds: [] });
+    }
+    expect(retrieveEvidence(board, { query: "alpha beta gamma" }).evidence[0]!.nodeId).toBe("broad");
+  });
+
   it("retrieves a compound task among long auto-named instructions without a helpful short name", () => {
     const task = autoNamed("task", "Prüfraumverfügbarkeit klären");
     const board = evidenceBoard("CompoundTask", [

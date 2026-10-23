@@ -1,7 +1,10 @@
 # Changelog
 
-## 0.10.4 — Unreleased
+## 0.11.0 — Unreleased
 
+- Search in `answer_from_board` and `get_board_context` topics favors query-word coverage and penalizes long excerpts less.
+- `answer_from_board` defaults to 15 excerpts and 40,000 prompt characters; the prompt limit can be raised to 60,000.
+- When the model finds no supporting evidence, `answer_from_board` returns no citations and points to matching sections or text outside sections.
 - Missing `LLM_BASE_URL` or `LLM_API_KEY` gives one message in `ingest_board`, `answer_from_board` and
   `diagnose_llm_config` that names every missing variable, points to `env` in the MCP client configuration and says
   to restart the server; `.env` is only mentioned for a local checkout. It named only the first missing variable.

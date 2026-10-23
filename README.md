@@ -111,7 +111,8 @@ Problems: [troubleshooting](https://github.com/ecestnrkl/figjam-mcp/blob/main/do
    however short, keep their extracted text. A cluster starts only when the time
    left fits it; unfinished clusters continue on the next ingest. With
    `focusNodeIds`, the images of the given sections, frames or nodes come first.
-5. **Serve.** The snapshot is saved to a private local cache.
+5. **Serve.** The snapshot is saved to a private local cache. Search favors
+   excerpts containing more of the question’s words.
    `get_board_context` searches it (BM25 over original text, table rows and
    names), `answer_from_board` answers with citations and `diff_board` compares
    snapshots. Its first page lists the board's sections with IDs; pass a page,

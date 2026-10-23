@@ -9,10 +9,10 @@ import {
   type Evidence,
 } from "../lib/evidence.js";
 import { ANSWER_MAX_OUTPUT_TOKENS } from "../lib/llmOutputBudgets.js";
-import type { OperationOptions } from "../types.js";
+import type { BoardData, OperationOptions } from "../types.js";
 
-const ANSWER_TOP_K = Math.min(readIntEnv("LLM_ANSWER_TOP_K", 6, 1), 30);
-const ANSWER_PROMPT_MAX_CHARS = Math.min(readIntEnv("LLM_ANSWER_PROMPT_MAX_CHARS", 24000, 4096), 24000);
+const ANSWER_TOP_K = Math.min(readIntEnv("LLM_ANSWER_TOP_K", 15, 1), 30);
+const ANSWER_PROMPT_MAX_CHARS = Math.min(readIntEnv("LLM_ANSWER_PROMPT_MAX_CHARS", 40000, 4096), 60000);
 const ANSWER_KINDS = ["answer", "unresolved_task", "unresolved_question", "unresolved_proposal", "unsupported"] as const;
 type AnswerKind = typeof ANSWER_KINDS[number];
 const ANSWER_SYSTEM_PROMPT =
@@ -136,9 +136,12 @@ export async function answerFromBoard(
       .map((id) => allowed.get(id)).filter((item): item is Evidence => Boolean(item)).slice(0, 12)
     : [];
   const kind = parsed?.kind;
+  if (kind === "unsupported") {
+    return unsupportedMatchesAnswer(input.question, retrieved.snapshotId, rendered.evidence.length, primaryEvidence, board);
+  }
   const answer = typeof parsed?.answer === "string" ? removeEvidenceIds(parsed.answer) : undefined;
   if (typeof kind !== "string" || !ANSWER_KINDS.includes(kind as AnswerKind) ||
-      kind === "unsupported" || cited.length === 0 || answer === undefined) {
+      cited.length === 0 || answer === undefined) {
     return extractiveFallback(input.question, retrieved.snapshotId, primaryEvidence);
   }
   if (kind !== "answer") {
@@ -293,6 +296,33 @@ function unsupportedAnswer(question: string, snapshotId: string): AnswerFromBoar
       : "The board has no excerpts that answer this question.",
     citedClusters: [], snapshotId, citations: [],
   };
+}
+
+function unsupportedMatchesAnswer(
+  question: string, snapshotId: string, seenCount: number, primary: Evidence[], board: BoardData,
+): AnswerFromBoardOutput {
+  const german = isLikelyGerman(question);
+  const sections = new Map<string, string>();
+  const nodes = new Map(board.nodes.map((node) => [node.id, node]));
+  for (const item of primary) {
+    const id = item.sectionIds?.at(-1);
+    const name = id ? nodes.get(id)?.name : undefined;
+    if (id && name && sections.size < 3) sections.set(id, name);
+  }
+  let answer = german
+    ? `Die ${seenCount} am besten passenden Auszüge beantworten diese Frage nicht.`
+    : `The ${seenCount} best-matching excerpts do not answer this question.`;
+  if (sections.size) {
+    answer += german ? " Lies diese Sections mit get_board_context nodeIds: " : " Read these sections with get_board_context nodeIds: ";
+    // Names are navigation hints from the board, not supporting citations.
+    answer += [...sections].map(([id, name]) => `${JSON.stringify(boundedText(name, 80))} (ID: ${id})`).join(", ") + ".";
+  }
+  if (primary.some((item) => !item.sectionIds?.length)) {
+    answer += german
+      ? " Treffer außerhalb von Sections kannst du mit get_board_context outsideSections: true lesen."
+      : " Read matches outside sections with get_board_context outsideSections: true.";
+  }
+  return { answer, snapshotId, citedClusters: [], citations: [] };
 }
 
 function isLikelyGerman(question: string): boolean {
