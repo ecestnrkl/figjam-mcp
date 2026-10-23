@@ -55,15 +55,76 @@ Requires Node.js 22.12 or later.
    [openrouter.ai/keys](https://openrouter.ai/keys). It enables image
    interpretation, `answer_from_board` and `diagnose_llm_config`. Without it, use
    `ingestMode: "max_speed"` with `get_board_context` and `diff_board`.
-3. Add the server to your MCP client. `@latest` makes npx check for a new
-   release on every start instead of reusing a cached older version:
+3. Add the server using the example for your client below. `@latest` with
+   `--prefer-online` makes npx check the registry for the latest release on every
+   start, even when package metadata is cached ([npm configuration](https://docs.npmjs.com/cli/v11/using-npm/config#prefer-online)).
+
+### Claude Code
+
+```bash
+claude mcp add figjam-context -e FIGMA_ACCESS_TOKEN=your-figma-token -e LLM_BASE_URL=https://openrouter.ai/api/v1 -e LLM_API_KEY=your-openrouter-key -- npx -y --prefer-online figjam-context-mcp@latest
+```
+
+### Codex CLI and ChatGPT desktop app
+
+Add this to `~/.codex/config.toml`; the app, CLI and IDE extension share this
+configuration ([OpenAI MCP setup](https://learn.chatgpt.com/docs/extend/mcp#configure-with-configtoml)):
+
+```toml
+[mcp_servers.figjam-context-mcp]
+enabled = true
+command = "npx"
+args = ["-y", "--prefer-online", "figjam-context-mcp@latest"]
+startup_timeout_sec = 30
+default_tools_approval_mode = "approve"
+
+[mcp_servers.figjam-context-mcp.env]
+FIGMA_ACCESS_TOKEN = "your-figma-token"
+LLM_BASE_URL = "https://openrouter.ai/api/v1"
+LLM_API_KEY = "your-openrouter-key"
+```
+
+Without `default_tools_approval_mode = "approve"`, ChatGPT may ask for approval
+or abort tools with external effects; with it, the client never asks before board
+content goes to the model provider, so use `max_speed` and avoid `answer_from_board`
+for confidential boards.
+
+### GitHub Copilot CLI
+
+Add this to `~/.copilot/mcp-config.json`
+([Copilot CLI MCP setup](https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/add-mcp-servers)):
 
 ```json
 {
   "mcpServers": {
     "figjam-context": {
+      "type": "local",
       "command": "npx",
-      "args": ["-y", "figjam-context-mcp@latest"],
+      "args": ["-y", "--prefer-online", "figjam-context-mcp@latest"],
+      "env": {
+        "FIGMA_ACCESS_TOKEN": "your-figma-token",
+        "LLM_BASE_URL": "https://openrouter.ai/api/v1",
+        "LLM_API_KEY": "your-openrouter-key"
+      },
+      "tools": ["*"]
+    }
+  }
+}
+```
+
+### VS Code
+
+Add this to `.vscode/mcp.json` in your workspace, or open **MCP: Open User
+Configuration** for your profile. VS Code uses `servers` and `type: "stdio"`
+([VS Code MCP configuration](https://code.visualstudio.com/docs/agents/reference/mcp-configuration)):
+
+```json
+{
+  "servers": {
+    "figjam-context": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "--prefer-online", "figjam-context-mcp@latest"],
       "env": {
         "FIGMA_ACCESS_TOKEN": "your-figma-token",
         "LLM_BASE_URL": "https://openrouter.ai/api/v1",
@@ -74,18 +135,33 @@ Requires Node.js 22.12 or later.
 }
 ```
 
-For Claude Code:
+### Other MCP clients
 
-```bash
-claude mcp add figjam-context -e FIGMA_ACCESS_TOKEN=your-figma-token -e LLM_BASE_URL=https://openrouter.ai/api/v1 -e LLM_API_KEY=your-openrouter-key -- npx -y figjam-context-mcp@latest
+For clients that accept `mcpServers`, add this to their MCP configuration:
+
+```json
+{
+  "mcpServers": {
+    "figjam-context": {
+      "command": "npx",
+      "args": ["-y", "--prefer-online", "figjam-context-mcp@latest"],
+      "env": {
+        "FIGMA_ACCESS_TOKEN": "your-figma-token",
+        "LLM_BASE_URL": "https://openrouter.ai/api/v1",
+        "LLM_API_KEY": "your-openrouter-key"
+      }
+    }
+  }
+}
 ```
 
 Then ask your assistant to ingest a board URL, for example *"Ingest
 https://www.figma.com/board/FILE_KEY/Name and list the open questions."*
 The `boardId` of every later call is the file key from that URL. To summarize
 a board, the assistant calls `ingest_board`, then `get_board_context` without
-parameters, whose first page names the largest sections and lists all sections
-with IDs, and then reads the largest sections by passing their IDs as `nodeIds`.
+parameters, whose first page names the largest sections and includes a section
+overview with IDs within the page's size limit, and then reads the largest sections
+by passing their IDs as `nodeIds`.
 Everything that lies in no section, such as loose notes and tables, comes with
 `outsideSections: true`.
 
@@ -111,11 +187,16 @@ Problems: [troubleshooting](https://github.com/ecestnrkl/figjam-mcp/blob/main/do
    however short, keep their extracted text. A cluster starts only when the time
    left fits it; unfinished clusters continue on the next ingest. With
    `focusNodeIds`, the images of the given sections, frames or nodes come first.
+   In `max_quality`, one ingest interprets only a few dozen clusters within the
+   40-second image budget (20–35 on a board with about 300 clusters); the next
+   ingest continues, each costs a Tier 1 file download, and `focusNodeIds` sets
+   the order.
 5. **Serve.** The snapshot is saved to a private local cache.
    `get_board_context` searches it (BM25 over original text, table rows and
    names), `answer_from_board` answers with citations and `diff_board` compares
-   snapshots. Its first page lists the board's sections with IDs; pass a page,
-   section, frame or group ID as `nodeIds` to read everything inside it; several
+   snapshots. The first `get_board_context` page includes a size-limited section
+   overview with IDs; pass a page, section, frame or group ID as `nodeIds` to read
+   everything inside it; several
    IDs in one call take turns, so each of them appears on every page. Its text
    `content` is the readable page; `structuredContent` holds the same data without
    repeating it, with excerpts in `evidence` and location per cluster in `clusters`.
@@ -141,9 +222,9 @@ larger ones are scaled down locally.
   least 5 requests per minute, in one request per ingest. Renders are left for
   drawings without an image and as a fallback for single images; one render
   request covers up to 18 nodes. `max_speed` needs neither.
-- For a team, configure your own model: `LLM_BASE_URL` takes any
-  OpenAI-compatible endpoint, and `LLM_TEXT_MODELS` / `LLM_VISION_MODELS` set
-  the model lists.
+- `LLM_BASE_URL` takes any OpenAI-compatible endpoint; for paid models, set
+  `LLM_TEXT_MODELS`, `LLM_FAST_TEXT_MODELS` and `LLM_VISION_MODELS`, for example
+  all three to `openai/gpt-4.1-mini` (provider charges apply).
 - Run `diagnose_llm_config` after every model change. It checks JSON replies
   and image understanding with synthetic inputs.
 
@@ -187,7 +268,7 @@ cp .env.example .env    # add your tokens
 npm run check           # typecheck, tests, build, package validation
 npm run package:smoke   # install the packed package and exercise all tools
 npm run eval:retrieval  # offline retrieval and diff evaluation
-npx @modelcontextprotocol/inspector --config inspector.config.json
+npx --prefer-online @modelcontextprotocol/inspector --config inspector.config.json
 ```
 
 See [CONTRIBUTING.md](https://github.com/ecestnrkl/figjam-mcp/blob/main/CONTRIBUTING.md)

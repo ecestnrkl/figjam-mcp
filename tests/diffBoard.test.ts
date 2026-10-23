@@ -97,6 +97,42 @@ describe("diffBoard", () => {
     expect(output.summaryText).toContain("changes from");
   });
 
+  it("returns a schema-valid empty diff after a later unchanged ingest", async () => {
+    readBoardHistoryMock.mockResolvedValue([
+      { cacheKey: "k1", refinementId: "r1", nodeHash: "h1", createdAt: 1000 },
+    ]);
+    const current = { ...snapshot(1000, "Same"), freshnessCheckedAt: 2000 };
+    readCachedBoardMock.mockResolvedValue(current);
+
+    const output = await diffBoard({ boardId: "AbC123", compareTo: 1 });
+
+    expect(diffBoardOutputSchema.parse(output)).toEqual(output);
+    expect(readCachedBoardMock).toHaveBeenCalledWith("r1");
+    expect(output.baselineSnapshotId).toBe("snapshot-1000");
+    expect(output.currentSnapshotId).toBe(output.baselineSnapshotId);
+    expect(output.baselineCreatedAt).toBe(new Date(1000).toISOString());
+    expect(output.currentCreatedAt).toBe(output.baselineCreatedAt);
+    const { unchangedClusters, ...changeCounts } = output.stats;
+    expect(unchangedClusters).toBe(current.clusters.length);
+    expect(Object.values(changeCounts).every((value) => value === 0)).toBe(true);
+    for (const list of [output.newClusters, output.removedClusters, output.modifiedClusters,
+      output.addedConnections, output.removedConnections, output.tableCellChanges, output.nodeChanges]) expect(list).toEqual([]);
+    expect(output.summaryText).toBe("No changes: the board content is the same as at 1970-01-01T00:00:01.000Z; " +
+      "the last ingest at 1970-01-01T00:00:02.000Z found it unchanged.");
+  });
+
+  it.each([undefined, 999, 1000])("keeps the single-snapshot error without a later ingest (%s)", async (freshnessCheckedAt) => {
+    readBoardHistoryMock.mockResolvedValue([{ cacheKey: "k1", nodeHash: "h1", createdAt: 1000 }]);
+    readCachedBoardMock.mockResolvedValue({ ...snapshot(1000, "Same"), freshnessCheckedAt });
+    await expect(diffBoard({ boardId: "AbC123", compareTo: 1 })).rejects.toThrow(/only 1 recorded snapshot/);
+  });
+
+  it("keeps the insufficient-history error for compareTo greater than one after an unchanged ingest", async () => {
+    readBoardHistoryMock.mockResolvedValue([{ cacheKey: "k1", nodeHash: "h1", createdAt: 1000 }]);
+    readCachedBoardMock.mockResolvedValue({ ...snapshot(1000, "Same"), freshnessCheckedAt: 2000 });
+    await expect(diffBoard({ boardId: "AbC123", compareTo: 2 })).rejects.toThrow(/only 1 recorded snapshot/);
+  });
+
   it("fails when a snapshot was evicted from the cache", async () => {
     readBoardHistoryMock.mockResolvedValue([
       { cacheKey: "k1", nodeHash: "h1", createdAt: 1000 },

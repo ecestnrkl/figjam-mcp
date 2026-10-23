@@ -1,7 +1,12 @@
 # Changelog
 
-## 0.10.4 — Unreleased
+## 0.11.0 — Unreleased
 
+- `diagnose_llm_config` uses a pure blue test image to avoid ambiguous color-check failures.
+- `diagnose_llm_config` names the active models when environment variables override the preset.
+- `diff_board` returns an empty change report after an unchanged re-ingest of a board with one snapshot.
+- Unlabeled arrows with identical endpoints are omitted from context connections and their counts.
+- README adds setup per client, explicit approval behavior, registry refreshes and limits of section overviews and `max_quality` ingests.
 - Missing `LLM_BASE_URL` or `LLM_API_KEY` gives one message in `ingest_board`, `answer_from_board` and
   `diagnose_llm_config` that names every missing variable, points to `env` in the MCP client configuration and says
   to restart the server; `.env` is only mentioned for a local checkout. It named only the first missing variable.
