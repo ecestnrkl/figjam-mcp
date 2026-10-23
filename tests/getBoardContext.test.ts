@@ -64,7 +64,8 @@ describe("getBoardContext", () => {
     setBoard(data.boardId, data);
     const { structuredContent: output } = await getBoardContext({ boardId: data.boardId, topic: "Tuesday" });
     expect(output.evidence).toHaveLength(1);
-    expect(output.evidence[0]).toMatchObject({ text: "The launch is Tuesday.", modelDerived: false });
+    expect(output.evidence[0]).toMatchObject({ text: "The launch is Tuesday." });
+    expect(output.evidence[0]?.modelDerived ?? false).toBe(false);
     expect(output.clusters[0]).toMatchObject({
       summary: "The launch is Friday.", summarySource: "vision_llm", modelDerived: true,
     });
@@ -192,7 +193,8 @@ describe("getBoardContext", () => {
     const data = evidenceBoard("NamedOwner123", [{ ...textNode("1:1", "Ada"), name: "Escalation owner" }]);
     setBoard(data.boardId, data);
     const { text, structuredContent: output } = await getBoardContext({ boardId: data.boardId, topic: "Escalation owner" });
-    expect(output.evidence[0]).toMatchObject({ text: "Ada", nodeName: "Escalation owner", modelDerived: false });
+    expect(output.evidence[0]).toMatchObject({ text: "Ada", nodeName: "Escalation owner" });
+    expect(output.evidence[0]?.modelDerived ?? false).toBe(false);
     expect(text).toContain("Node name: Escalation owner");
     expect(text).toContain("\nAda");
   });
@@ -260,20 +262,22 @@ describe("getBoardContext", () => {
     await expect(getBoardContext({ boardId: "Cursor123", cursor: "%%%" })).rejects.toThrow(/Cursor does not match/);
   });
 
-  it("issues short cursors of digits, a-f and dots that detect every changed character", async () => {
+  it("issues versioned short cursors that detect changes to every bound field", async () => {
     setBoard("Large300", largeBoard("Large300"));
     const { structuredContent: first } = await getBoardContext({ boardId: "Large300", limit: 5 });
     const cursor = first.nextCursor!;
-    expect(cursor).toMatch(/^2\.5\.cccccccccccc\.[0-9a-f]{12}$/);
-    expect(cursor.length).toBeLessThanOrEqual(40);
-    const hint = "Send nextCursor unchanged with the same topic, nodeIds, outsideSections, limit and maxChars, or start again without a cursor";
-    const [page, offset, snapshot, check] = cursor.split(".") as [string, string, string, string];
-    const swapped = `${page}.${offset}.${snapshot}.${check[1]}${check[0]}${check.slice(2)}`;
+    expect(cursor).toMatch(/^v2\.f\.2\.5\.cccccccccccc\.[0-9a-f]{12}$/);
+    expect(cursor.length).toBeLessThanOrEqual(48);
+    const hint = "Send nextCursor unchanged with the same topic, nodeIds, outsideSections, detail, limit and maxChars, or start again without a cursor";
+    const [version, representation, page, offset, snapshot, check] = cursor.split(".") as [string, string, string, string, string, string];
+    const swapped = `${version}.${representation}.${page}.${offset}.${snapshot}.${check[1]}${check[0]}${check.slice(2)}`;
     expect(swapped).not.toBe(cursor);
-    for (const changed of [swapped, `${page}.6.${snapshot}.${check}`, `3.${offset}.${snapshot}.${check}`]) {
+    for (const changed of [swapped, `${version}.${representation}.${page}.6.${snapshot}.${check}`,
+      `${version}.${representation}.3.${offset}.${snapshot}.${check}`, `${version}.o.${page}.${offset}.${snapshot}.${check}`,
+      `v3.${representation}.${page}.${offset}.${snapshot}.${check}`]) {
       await expect(getBoardContext({ boardId: "Large300", limit: 5, cursor: changed })).rejects.toThrow(hint);
     }
-    await expect(getBoardContext({ boardId: "Large300", limit: 5, cursor: `${page}.${offset}.${"0".repeat(12)}.${check}` }))
+    await expect(getBoardContext({ boardId: "Large300", limit: 5, cursor: `${version}.${representation}.${page}.${offset}.${"0".repeat(12)}.${check}` }))
       .rejects.toThrow("The snapshot of this cursor is no longer available. Start again without a cursor.");
   });
 
@@ -348,7 +352,7 @@ describe("getBoardContext", () => {
       { boardId: "WorstIn123", topic: "Row" }, { boardId: "WorstOut123" }, { boardId: "WorstOut123", outsideSections: true },
     ];
     for (const request of requests) {
-      const { text, structuredContent } = await getBoardContext({ ...request, maxChars: 2000 });
+      const { text, structuredContent } = await getBoardContext({ detail: "full", ...request, maxChars: 2000 });
       expect(structuredContent.evidence[0]?.sourceType).toBe("table_row");
       expect(text.length).toBeLessThanOrEqual(2000);
       expect(JSON.stringify(structuredContent).length).toBeLessThanOrEqual(2000);
@@ -356,7 +360,7 @@ describe("getBoardContext", () => {
       expect(structuredContent.clusters[0]).toMatchObject({ pageName: page.name, summary: "", summarySource: "vision_llm", modelDerived: true });
       expect(structuredContent.truncation.omittedSummaries).toBe(1);
       expect(structuredContent.truncated).toBe(true);
-      const roomy = (await getBoardContext({ ...request, maxChars: 24000 })).structuredContent;
+      const roomy = (await getBoardContext({ detail: "full", ...request, maxChars: 24000 })).structuredContent;
       expect(roomy.clusters[0]?.summary).toBe("S".repeat(600));
       expect(roomy.truncation.omittedSummaries).toBeUndefined();
     }
@@ -457,11 +461,12 @@ describe("getBoardContext response size", () => {
     const data = evidenceBoard("LongNode123", [textNode("9:1", "Long workshop protocol sentence. ".repeat(100))]);
     setBoard(data.boardId, data);
     const overview = await getBoardContext({ boardId: data.boardId, limit: 1 });
-    expect(overview.structuredContent.evidence[0]).toMatchObject({ nodeId: "9:1", chunkIndex: 0, truncated: true });
+    expect(overview.structuredContent.evidence[0]).toMatchObject({ nodeId: "9:1", truncated: true });
+    expect(overview.structuredContent.evidence[0]?.chunkIndex ?? 0).toBe(0);
     expect(overview.text).toContain('Part 1 of 3 — request get_board_context with nodeIds: ["9:1"] for all parts.');
     expect(overview.text).not.toContain("use the source link");
     const lookup = await getBoardContext({ boardId: data.boardId, nodeIds: ["9:1"] });
-    expect(lookup.structuredContent.evidence.map((item) => item.chunkIndex)).toEqual([0, 1, 2]);
+    expect(lookup.structuredContent.evidence.map((item) => item.chunkIndex ?? 0)).toEqual([0, 1, 2]);
     expect(lookup.structuredContent.evidence.map((item) => item.text).join(" ")).toContain("Long workshop protocol sentence.");
     expect(lookup.text).toContain("[Part 3 of 3.]");
   });
@@ -610,7 +615,7 @@ describe("getBoardContext text and structured content", () => {
     ];
     for (const request of requests) {
       for (const maxChars of [2000, 12000, 24000]) {
-        const { text, structuredContent } = await getBoardContext({ ...request, maxChars });
+        const { text, structuredContent } = await getBoardContext({ detail: "full", ...request, maxChars });
         expect(structuredContent.evidence.length).toBeGreaterThan(0);
         expect(text.length).toBeLessThanOrEqual(maxChars);
         expect(JSON.stringify(structuredContent).length).toBeLessThanOrEqual(maxChars);
@@ -655,7 +660,7 @@ describe("getBoardContext text and structured content", () => {
     data.connectorEdges = near.map((node, i) => ({ connectorId: `3:${i}`, fromNodeId: node.id, toNodeId: `2:${i}`, direction: "forward" as const, label: "solves" }));
     setBoard(data.boardId, data);
     for (const maxChars of [2000, 12000, 24000]) {
-      const { text, structuredContent: output } = await getBoardContext({ boardId: data.boardId, nodeIds: ["S:1"], limit: 100, maxChars });
+      const { text, structuredContent: output } = await getBoardContext({ detail: "full", boardId: data.boardId, nodeIds: ["S:1"], limit: 100, maxChars });
       expect(text.length).toBeLessThanOrEqual(maxChars);
       expect(JSON.stringify(output).length).toBeLessThanOrEqual(maxChars);
       expect(output.evidence.every((item) => item.nodeId.startsWith("1:"))).toBe(true);
@@ -675,7 +680,7 @@ describe("getBoardContext text and structured content", () => {
       [{}, 18], [{ limit: 100, maxChars: 24000 }, 39], [{ nodeIds: ["1:11"], limit: 100 }, 27],
     ];
     for (const [request, minimum] of pages) {
-      const { structuredContent } = await getBoardContext({ boardId: "Large300", ...request });
+      const { structuredContent } = await getBoardContext({ detail: "full", boardId: "Large300", ...request });
       expect(structuredContent.evidence.length).toBeGreaterThanOrEqual(minimum);
     }
   });
@@ -787,15 +792,15 @@ describe("getBoardContext by section", () => {
   });
 
   it("lists direct subsections with IDs on the first page and pages through the rest with the cursor", async () => {
-    const { structuredContent: section } = await getBoardContext({ boardId: "Sections123", nodeIds: ["1:1"] });
+    const { structuredContent: section } = await getBoardContext({ detail: "full", boardId: "Sections123", nodeIds: ["1:1"] });
     expect(section.contextText).toContain("## Sections inside (ID, name, excerpts)\n- In 1:1 Research:\n  - 1:2 (unnamed section) — 1 excerpt");
-    const first = await getBoardContext({ boardId: "Sections123", nodeIds: ["0:1"], limit: 2 });
+    const first = await getBoardContext({ detail: "full", boardId: "Sections123", nodeIds: ["0:1"], limit: 2 });
     expect(first.structuredContent.contextText).toContain("  - 1:1 Research — 3 excerpts");
     expect(first.structuredContent.contextText).not.toContain("1:2 (unnamed section)");
     const seen = texts(first);
     let cursor = first.structuredContent.nextCursor;
     while (cursor) {
-      const next = await getBoardContext({ boardId: "Sections123", nodeIds: ["0:1"], limit: 2, cursor });
+      const next = await getBoardContext({ detail: "full", boardId: "Sections123", nodeIds: ["0:1"], limit: 2, cursor });
       expect(next.text).not.toContain("## Sections inside");
       seen.push(...texts(next));
       cursor = next.structuredContent.nextCursor;
@@ -807,7 +812,7 @@ describe("getBoardContext by section", () => {
     const data = largeBoard("Theme300", 300, 10, 12, { subsections: 2 });
     setBoard(data.boardId, data);
     const sectionOf = new Map(data.nodes.map((node) => [node.id, node.sectionIds?.[0]]));
-    const { structuredContent: byId } = await getBoardContext({ boardId: data.boardId, nodeIds: ["1:5"], limit: 100, maxChars: 24000 });
+    const { structuredContent: byId } = await getBoardContext({ detail: "full", boardId: data.boardId, nodeIds: ["1:5"], limit: 100, maxChars: 24000 });
     expect(byId.evidence.length).toBeGreaterThan(0);
     expect(byId.evidence.filter((item) => sectionOf.get(item.nodeId) === "1:5")).toHaveLength(byId.evidence.length);
     expect(byId.clusters.every((cluster) => cluster.sectionNames?.[0] === "Theme 6")).toBe(true);
@@ -889,7 +894,7 @@ describe("getBoardContext with several requested IDs", () => {
     const pages: string[][] = [];
     let cursor: string | undefined;
     do {
-      const { structuredContent } = await getBoardContext({ boardId: data.boardId, nodeIds, limit: 100, maxChars: 24000, cursor });
+      const { structuredContent } = await getBoardContext({ detail: "full", boardId: data.boardId, nodeIds, limit: 100, maxChars: 24000, cursor });
       pages.push(structuredContent.evidence.map((item) => item.evidenceId));
       cursor = structuredContent.nextCursor;
     } while (cursor && pages.length < 200);
@@ -901,7 +906,7 @@ describe("getBoardContext with several requested IDs", () => {
     const page = retrieveEvidence(data, { nodeIds: ["0:1"] }).evidence.filter((item) => item.sectionIds?.length && item.sourceType !== "board_metadata");
     expect(page.at(-1)!.sectionIds![0]).toBe("1:11");
     for (const request of [{}, { limit: 100, maxChars: 24000 }]) {
-      const { structuredContent } = await getBoardContext({ boardId: data.boardId, nodeIds: EIGHT, ...request });
+      const { structuredContent } = await getBoardContext({ detail: "full", boardId: data.boardId, nodeIds: EIGHT, ...request });
       const shown = new Set(structuredContent.evidence.map((item) => all.get(item.evidenceId)!.sectionIds![0]));
       expect([...shown].sort()).toEqual([...EIGHT].sort());
       expect(structuredContent.totalMatched).toBe(EIGHT.map(total).reduce((sum, count) => sum + count));
@@ -925,7 +930,7 @@ describe("getBoardContext with several requested IDs", () => {
     setBoard(framed.boardId, framed);
     const sectionOf = new Map(retrieveEvidence(framed).evidence.map((item) => [item.evidenceId, item.sectionIds?.[0]]));
     expect(retrieveEvidence(framed, { nodeIds: ["1:5"] }).evidence.slice(0, 3).map((item) => item.nodeId)).toEqual(["6:100", "6:101", "6:102"]);
-    const { structuredContent } = await getBoardContext({ boardId: framed.boardId, nodeIds: EIGHT });
+    const { structuredContent } = await getBoardContext({ detail: "full", boardId: framed.boardId, nodeIds: EIGHT });
     for (const id of EIGHT) {
       expect(structuredContent.evidence.some((item) => sectionOf.get(item.evidenceId) === id && item.sourceType !== "board_metadata")).toBe(true);
     }
@@ -945,22 +950,22 @@ describe("getBoardContext with several requested IDs", () => {
     const inChild = (id: string) => all.get(id)!.sectionIds!.includes("2:1100");
     expect(pages[0]!.some(inChild)).toBe(true);
     expect(pages[0]!.some((id) => !inChild(id))).toBe(true);
-    const { contextText } = (await getBoardContext({ boardId: data.boardId, nodeIds: ["1:11", "2:1100"] })).structuredContent;
+    const { contextText } = (await getBoardContext({ detail: "full", boardId: data.boardId, nodeIds: ["1:11", "2:1100"] })).structuredContent;
     expect(contextText).toContain(`- 1:11 Theme 12 — ${total("1:11") - total("2:1100")} excerpts\n- 2:1100 Theme 12.1 — ${total("2:1100")} excerpts`);
   });
 
   it("takes turns in request order, which belongs to the cursor", async () => {
-    const forward = await getBoardContext({ boardId: data.boardId, nodeIds: ["1:3", "1:9"] });
-    const backward = await getBoardContext({ boardId: data.boardId, nodeIds: ["1:9", "1:3", "1:9"] });
+    const forward = await getBoardContext({ detail: "full", boardId: data.boardId, nodeIds: ["1:3", "1:9"] });
+    const backward = await getBoardContext({ detail: "full", boardId: data.boardId, nodeIds: ["1:9", "1:3", "1:9"] });
     const sectionOf = (output: typeof forward) => all.get(output.structuredContent.evidence[0]!.evidenceId)!.sectionIds![0];
     expect(retrieveEvidence(data, { nodeIds: ["1:3", "1:9"] }).evidence[0]!.sectionIds![0]).toBe("1:3");
     expect(retrieveEvidence(data, { nodeIds: ["1:9", "1:3"] }).evidence[0]!.sectionIds![0]).toBe("1:9");
     expect(forward.structuredContent.evidence[0]!.evidenceId).not.toBe(backward.structuredContent.evidence[0]!.evidenceId);
     expect(new Set([sectionOf(forward), sectionOf(backward)])).toEqual(new Set(["1:3", "1:9"]));
-    await expect(getBoardContext({ boardId: data.boardId, nodeIds: ["1:9", "1:3"], cursor: forward.structuredContent.nextCursor }))
+    await expect(getBoardContext({ detail: "full", boardId: data.boardId, nodeIds: ["1:9", "1:3"], cursor: forward.structuredContent.nextCursor }))
       .rejects.toThrow(/Cursor does not match/);
     // A repeated ID does not change the query.
-    const next = await getBoardContext({ boardId: data.boardId, nodeIds: ["1:9", "1:3"], cursor: backward.structuredContent.nextCursor });
+    const next = await getBoardContext({ detail: "full", boardId: data.boardId, nodeIds: ["1:9", "1:3"], cursor: backward.structuredContent.nextCursor });
     expect(next.structuredContent.evidence.length).toBeGreaterThan(0);
   });
 
@@ -972,7 +977,7 @@ describe("getBoardContext with several requested IDs", () => {
     expect(sequence(["1:5"])).toEqual([...stickies, ...journeyMaps]);
     expect(sequence(["12:3", "10:1", "11:0"])).toEqual(["10:1", "11:0", "12:3"]);
     expect((await readSequence(["1:5"])).flat()).toHaveLength(stickies.length + journeyMaps.length);
-    const { structuredContent } = await getBoardContext({ boardId: data.boardId, nodeIds: ["12:3", "10:1"] });
+    const { structuredContent } = await getBoardContext({ detail: "full", boardId: data.boardId, nodeIds: ["12:3", "10:1"] });
     expect(structuredContent.contextText).not.toContain("## Requested IDs");
   });
 });
@@ -1061,7 +1066,7 @@ describe("getBoardContext tables", () => {
     let cursor: string | undefined;
     let totalMatched = 0;
     do {
-      const { text, structuredContent } = await getBoardContext({ ...request, cursor });
+      const { text, structuredContent } = await getBoardContext({ ...request, detail: "full", cursor });
       const maxChars = request.maxChars ?? 12000;
       expect(text.length).toBeLessThanOrEqual(maxChars);
       expect(JSON.stringify(structuredContent).length).toBeLessThanOrEqual(maxChars);
@@ -1146,7 +1151,7 @@ describe("getBoardContext tables", () => {
     expect((await getBoardContext({ boardId: data.boardId })).text).not.toContain("for all rows");
     const section = tableBoard("TableSectionRows123", 24, 17);
     setBoard(section.boardId, section);
-    expect((await getBoardContext({ boardId: section.boardId, nodeIds: ["1:1"], limit: 5 })).text).toContain(
+    expect((await getBoardContext({ detail: "full", boardId: section.boardId, nodeIds: ["1:1"], limit: 5 })).text).toContain(
       'rows 0–4 shown · https://www.figma.com/board/TableSectionRows123?node-id=5%3A1 · request get_board_context with nodeIds: ["5:1"] for all rows');
   });
 
@@ -1161,12 +1166,12 @@ describe("getBoardContext tables", () => {
     expect(text).toMatch(/\] row 1: Column 0 note .* \[Part 1 of 2 — request get_board_context with nodeIds: \["5:1"\] for the whole table\.\]/);
     // The cell ID returns both parts of its row, under the first row as context.
     const lookup = await getBoardContext({ boardId: data.boardId, nodeIds: ["T5:1;6:1;7:0"] });
-    expect(lookup.structuredContent.evidence.map((item) => [item.row, item.chunkIndex])).toEqual([[0, 0], [1, 0], [1, 1]]);
+    expect(lookup.structuredContent.evidence.map((item) => [item.row, item.chunkIndex ?? 0])).toEqual([[0, 0], [1, 0], [1, 1]]);
     expect(lookup.structuredContent.totalMatched).toBe(2);
     expect(lookup.text).toContain("[Part 2 of 2.]");
   });
 
-  it("reads a section with a 24 × 17 table in 24 row excerpts on one page instead of 408 cells on 7 pages", async () => {
+  it("reads a section with a 24 × 17 table in one page of row excerpts instead of several pages of cells", async () => {
     const rows = tableBoard("Table24x17", 24, 17);
     // Cell IDs outside the T<table>;<row>;<column> form keep the cell excerpts of 0.7.0.
     const cells = tableBoard("Cells24x17", 24, 17);
@@ -1177,7 +1182,8 @@ describe("getBoardContext tables", () => {
     const after = await readAll(rows.boardId, ["1:1"]);
     expect(before.evidence).toHaveLength(408);
     expect(before.evidence.every((item) => item.sourceType === "table_cell")).toBe(true);
-    expect(before.pages).toBeGreaterThanOrEqual(7);
+    // Slim evidence JSON fits more cells per page, while row extraction still avoids several pages.
+    expect(before.pages).toBeGreaterThanOrEqual(5);
     expect(after.evidence).toHaveLength(24);
     expect(after.evidence.every((item) => item.sourceType === "table_row")).toBe(true);
     expect(after.pages).toBe(1);

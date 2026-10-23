@@ -34,10 +34,12 @@ export const getBoardContextInputShape = {
     .describe("Read every excerpt that lies in no section, cluster by cluster in reading order, tables row by row; on a board without sections, all excerpts. Cannot be combined with topic or nodeIds"),
   snapshotId: z.string().min(1).max(128).regex(/^[A-Za-z0-9_-]+$/).optional()
     .describe("Read a specific retained snapshot instead of the latest board"),
+  detail: z.enum(["auto", "full"]).default("auto")
+    .describe("auto uses a compact, source-marked overview when a requested container or several nodeIds need multiple full pages; full returns linked evidence objects. Overview lines may be shortened; use full to read all text"),
   limit: z.number().int().min(1).max(100).default(20)
-    .describe("Maximum evidence excerpts per page (default 20)"),
+    .describe("Maximum evidence excerpts per full page (default 20, at most 100); ignored in an automatic overview, even when explicit. Use detail: full for an excerpt limit"),
   cursor: z.string().min(1).max(2048).optional()
-    .describe("nextCursor of the previous page, unchanged; send it with the same topic, nodeIds, outsideSections, limit and maxChars"),
+    .describe("nextCursor of the previous page, unchanged; send it with the same topic, nodeIds, outsideSections, detail, limit and maxChars"),
   maxChars: z.number().int().min(2000).max(24000).default(12000)
     .describe("Character budget for each representation: the readable text content and the JSON of structuredContent (default 12000, minimum 2000)"),
 };
@@ -52,9 +54,11 @@ export const getBoardContextInputSchema = z.object(getBoardContextInputShape).re
 export type GetBoardContextInput = z.input<typeof getBoardContextInputSchema>;
 
 export const evidenceSchema = z.object({
-  evidenceId: z.string(), snapshotId: z.string(), nodeId: z.string(), text: z.string(),
+  evidenceId: z.string(),
+  snapshotId: z.string().optional().describe("Omitted when inherited from the response snapshotId; only snapshotId is inherited"),
+  nodeId: z.string(), text: z.string(),
   sourceType: z.enum(["board_text", "table_cell", "table_row", "board_metadata", "model_interpretation", "cluster_summary"]),
-  modelDerived: z.boolean(), clusterId: z.string().optional(), clusterLabel: z.string().optional(),
+  modelDerived: z.boolean().optional().describe("Absent means false, independent of the cluster's modelDerived"), clusterId: z.string().optional(), clusterLabel: z.string().optional(),
   nodeName: z.string().max(160).optional(),
   pageName: z.string().max(160).optional()
     .describe("Only for an excerpt outside the listed clusters or whose location differs from its cluster's"),
@@ -62,8 +66,12 @@ export const evidenceSchema = z.object({
     .describe("Same rule as pageName; an empty list means outside sections"),
   pageId: z.string().optional(), sectionIds: z.array(z.string()).optional(), renderNodeId: z.string().optional(),
   row: z.number().optional(), column: z.number().optional(),
-  chunkIndex: z.number().int().nonnegative(), url: z.string(), truncated: z.boolean(),
+  chunkIndex: z.number().int().nonnegative().optional().describe("Absent means 0"), url: z.string(),
+  truncated: z.boolean().optional().describe("Absent means false, independent of the cluster"),
 });
+
+/** Serialized get_board_context evidence; internal Evidence retains its required fields. */
+export type ContextEvidence = z.infer<typeof evidenceSchema>;
 
 export const evidenceConnectionSchema = z.object({
   connectorId: z.string(), fromNodeId: z.string(),
@@ -88,10 +96,17 @@ export type ClusterRelationContext = z.infer<typeof clusterRelationContextSchema
 
 export const getBoardContextOutputShape = {
   contextText: z.string()
-    .describe("Orientation: board header, page position, board overview or subsections. The excerpts are in evidence; the text content carries the readable version"),
+    .describe("Orientation and reading instructions. Excerpts are in overview.text when overview is present (evidence and clusters are then empty), otherwise in evidence; text content carries the same readable excerpts"),
   clusters: z.array(clusterContextSchema),
   snapshotId: z.string(),
-  evidence: z.array(evidenceSchema),
+  evidence: z.array(evidenceSchema)
+    .describe("Full linked excerpts; empty in overview mode, where excerpts are in overview.text instead"),
+  overview: z.object({
+    text: z.string().describe("Source-marked excerpt lines grouped by innermost section; the excerpt texts occur only here in structuredContent"),
+    shownEvidence: z.number().int().nonnegative(),
+    shortenedEvidence: z.number().int().nonnegative(),
+    textLimit: z.number().int().min(50).max(120),
+  }).optional().describe("Present only for automatic compact overview pages; evidence and clusters are empty, not a claim of no matches. Read a line's full text and Figma link with the same boardId and snapshotId, its nodeId, and detail: full"),
   connections: z.array(evidenceConnectionSchema)
     .describe("Arrows with at least one end, or a section, frame or group around one, among this page's excerpts; never arrows to a page. The label is the text on the arrow"),
   totalMatched: z.number().int().nonnegative(),

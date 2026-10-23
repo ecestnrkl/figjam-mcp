@@ -3,12 +3,13 @@ import {
   getBoardContextInputSchema,
   type GetBoardContextInput,
   type GetBoardContextOutput,
+  type ContextEvidence,
 } from "../schemas/getBoardContext.js";
 import { getBoardOrRestore } from "../lib/cache.js";
 import { readBoardHistory } from "../lib/persistentCache.js";
 import { redactBoard } from "../lib/redact.js";
 import {
-  boundedText, connectionsForEvidence, countConnectionsForEvidence,
+  boundedText, connectionsForEvidence, countConnectionsForEvidence, enclosingIdsLookup,
   formatEvidenceConnection, MAX_CONTEXT_RESPONSE_BYTES, readableContainerIds,
   firstTableRow, retrieveEvidence, snapshotIdForBoard, tableCellPositions, unknownNodeIds, type Evidence,
 } from "../lib/evidence.js";
@@ -16,11 +17,16 @@ import { SectionIndex } from "../lib/sections.js";
 import type { BoardData, RefinedCluster } from "../types.js";
 
 /**
- * nextCursor is "<page>.<offset>.<snapshot prefix>.<checksum>": short enough to copy by hand. The checksum covers
- * the snapshot, query, result sequence, offset and page, so any changed character is detected. Base64url JSON
- * cursors of 0.9.x and older carry the full snapshot ID and the query and result fingerprints instead.
+ * New cursors are "v2.<f|o>.<page>.<offset>.<snapshot prefix>.<checksum>". The query binds
+ * requested detail, and the checksum also binds the actual full/overview representation.
+ * Legacy short and Base64url JSON cursors retain their exact former query/checksum rules
+ * and always continue full evidence pages.
  */
+type ContextRepresentation = "full" | "overview";
+
 interface Cursor {
+  version?: 2;
+  representation: ContextRepresentation;
   /** 1-based number of the page this cursor opens. */
   page: number;
   offset: number;
@@ -34,8 +40,9 @@ interface Cursor {
 const SNAPSHOT_PREFIX_LENGTH = 12;
 const CHECKSUM_LENGTH = 12;
 const SHORT_CURSOR = /^([1-9]\d{0,8})\.(0|[1-9]\d{0,8})\.([0-9a-f]{12})\.([0-9a-f]{12})$/;
+const V2_CURSOR = /^v2\.(f|o)\.([1-9]\d{0,8})\.(0|[1-9]\d{0,8})\.([0-9a-f]{12})\.([0-9a-f]{12})$/;
 const CURSOR_MISMATCH = "Cursor does not match this request or was changed. Send nextCursor unchanged with the same topic, " +
-  "nodeIds, outsideSections, limit and maxChars, or start again without a cursor (also after an ingest refined the board).";
+  "nodeIds, outsideSections, detail, limit and maxChars, or start again without a cursor (also after an ingest refined the board).";
 const CURSOR_SNAPSHOT_GONE = "The snapshot of this cursor is no longer available. Start again without a cursor.";
 /** Characters of requested IDs named in a message; the IDs themselves are up to 50 × 200 characters. */
 const MAX_IDS_IN_MESSAGE = 300;
@@ -58,9 +65,9 @@ interface View {
 
 /** Readable text for MCP content and the structured result; maxChars bounds each of them. */
 export interface BoardContextResult {
-  /** Orientation and every excerpt grouped by cluster, with links and arrows. */
+  /** Orientation and excerpts for the selected full or overview representation. */
   text: string;
-  /** Orientation in contextText; excerpt text only in evidence, location and summary per cluster. */
+  /** Orientation in contextText; excerpt text once, in overview.text or evidence. */
   structuredContent: GetBoardContextOutput;
 }
 
@@ -81,7 +88,8 @@ export async function getBoardContext(input: GetBoardContextInput): Promise<Boar
   const options = getBoardContextInputSchema.parse(input);
   const cursor = options.cursor ? decodeCursor(options.cursor) : undefined;
   const query = querySignature(options);
-  if (cursor && ((cursor.query !== undefined && cursor.query !== query) ||
+  const cursorQuery = cursor?.version === 2 ? query : legacyQuerySignature(options);
+  if (cursor && ((cursor.query !== undefined && cursor.query !== cursorQuery) ||
     (options.snapshotId && !(cursor.check ? options.snapshotId.startsWith(cursor.snapshot) : options.snapshotId === cursor.snapshot)))) {
     throw new Error(CURSOR_MISMATCH);
   }
@@ -112,7 +120,7 @@ export async function getBoardContext(input: GetBoardContextInput): Promise<Boar
   const resultFingerprint = createHash("sha256")
     .update(retrieved.evidence.map((item) => item.evidenceId).join("\0")).digest("hex");
   if (cursor && !cursor.check && cursor.snapshot !== retrieved.snapshotId) throw new Error(CURSOR_SNAPSHOT_GONE);
-  if (cursor && (cursor.check ? cursor.check !== cursorChecksum(retrieved.snapshotId, query, resultFingerprint, cursor.offset, cursor.page)
+  if (cursor && (cursor.check ? cursor.check !== cursorChecksum(retrieved.snapshotId, cursorQuery, resultFingerprint, cursor.offset, cursor.page, cursor.version === 2 ? cursor.representation : undefined)
     : cursor.result !== resultFingerprint)) throw new Error(CURSOR_MISMATCH);
   const offset = cursor?.offset ?? 0;
   if (offset > retrieved.evidence.length) throw new Error(CURSOR_MISMATCH);
@@ -142,9 +150,22 @@ export async function getBoardContext(input: GetBoardContextInput): Promise<Boar
   const candidates = retrieved.evidence.slice(offset, offset + options.limit);
   const firstView: View = { offset, page, candidates, overview: Boolean(overview), position: true, summaries: true };
   let view = firstView;
+  const autoEligible = !cursor && options.detail === "auto" && options.nodeIds && !options.topic && !options.outsideSections &&
+    (new Set(options.nodeIds).size > 1 || containerIds.length > 0);
+  // A validated cursor fixes the representation for the whole sequence, including its last page.
+  if (cursor?.representation === "overview") return overviewResult();
   /** Mean excerpts per probe page, for the page estimate; undefined until measured. */
   let perPage: number | undefined;
-  let selected = selectWithFallbacks(firstView);
+  let selected: Page;
+  try {
+    selected = selectWithFallbacks(firstView);
+  } catch (error) {
+    // If even the minimum full excerpt cannot fit, all excerpts remain unread.
+    // Compact lines can still fit when long location metadata prevents a full page.
+    if (autoEligible && retrieved.evidence.length > 0 && error instanceof Error &&
+      error.message.startsWith("The context budget cannot fit one source excerpt.")) return overviewResult();
+    throw error;
+  }
   // The remaining pages are estimated from probe pages built like follow-up pages. The estimate
   // changes the position line and with it what fits, so the page is selected again with it.
   for (let round = 0; round < 3 && view.position && offset + selected.consumed < retrieved.evidence.length; round++) {
@@ -154,6 +175,10 @@ export async function getBoardContext(input: GetBoardContextInput): Promise<Boar
     if (offset + selected.consumed === nextOffset) break;
   }
 
+  // Probe the actual compacted full page, rather than its general truncated flag:
+  // arrows, summaries and shortened text alone must never activate an overview.
+  if (autoEligible && offset + selected.consumed < retrieved.evidence.length) return overviewResult();
+
   const connectionCount = maxFitting(countConnectionsForEvidence(board, selected.evidence, "either"), (count) => buildResult(selected, count, 0));
   const relationCount = maxFitting(Math.min(matchingRelations(selected.evidence).length, 50), (count) => buildResult(selected, connectionCount, count));
   const result = buildResult(selected, connectionCount, relationCount);
@@ -161,6 +186,170 @@ export async function getBoardContext(input: GetBoardContextInput): Promise<Boar
     throw new Error("The context budget cannot fit one source excerpt. Increase maxChars or request a smaller node.");
   }
   return result;
+
+  /** Compact source lines have the entire budget before optional arrows and relations. */
+  function overviewResult(): BoardContextResult {
+    const enclosing = enclosingIdsLookup(board);
+    const groupOf = new Map<string, string>();
+    const headings = new Map<string, { name: string; id: string; page?: { name: string; id: string } }>();
+    const order = new Map<string, number>();
+    const names = new Map<string, Set<string>>();
+    for (const node of board.nodes.filter((node) => node.type === "SECTION")) {
+      const name = whitespace(node.name);
+      const pages = names.get(name) ?? new Set<string>();
+      pages.add(node.pageId ?? "");
+      names.set(name, pages);
+    }
+    for (const item of retrieved.evidence) {
+      const around = [...enclosing(item.renderNodeId ?? item.nodeId)]
+        .filter((id) => nodesById.get(id)?.type === "SECTION");
+      // Recorded section paths and parent chains are both supported by retrieval.
+      const sectionId = item.sectionIds?.filter((id) => nodesById.get(id)?.type === "SECTION").at(-1)
+        ?? around.reduce<string | undefined>((inner, id) => !inner || enclosing(id).has(inner) ? id : inner, undefined);
+      const section = sectionId ? nodesById.get(sectionId) : undefined;
+      const pageId = item.pageId ?? [...enclosing(item.renderNodeId ?? item.nodeId)]
+        .find((id) => ["PAGE", "CANVAS"].includes(nodesById.get(id)?.type ?? ""));
+      const key = sectionId ?? `outside\0${pageId ?? ""}`;
+      groupOf.set(item.evidenceId, key);
+      if (headings.has(key)) continue;
+      const name = section ? whitespace(section.name) || "(unnamed section)" : "Outside sections";
+      const pageNode = pageId ? nodesById.get(pageId) : undefined;
+      headings.set(key, {
+        name, id: sectionId ?? pageId ?? "",
+        page: pageNode && (!section || (names.get(name)?.size ?? 0) > 1)
+          ? { name: whitespace(pageNode.name), id: pageNode.id } : undefined,
+      });
+      // Regroup after selection, using the existing container reading order within each group.
+      const scope = sectionId ?? pageId;
+      const read = scope ? retrieveEvidence(board, { nodeIds: [scope] }).evidence : retrieved.evidence;
+      read.forEach((entry, index) => order.set(`${key}\0${entry.evidenceId}`, index));
+    }
+    const normalized = new Map(retrieved.evidence.map((item) => [item.evidenceId, whitespace(item.text)]));
+    const line = (item: Evidence, textLimit: number): string => {
+      const parts = item.truncated || item.chunkIndex > 0 ? partCount(item) : 1;
+      const markers = [
+        item.row === undefined ? "" : ` [row ${item.row}]`,
+        item.column === undefined ? "" : ` [column ${item.column}]`,
+        parts > 1 ? ` [part ${item.chunkIndex + 1}/${parts}]` : "",
+        item.modelDerived ? " [MODEL INTERPRETATION]" : item.sourceType === "board_metadata" ? " [metadata]" : "",
+      ].join("");
+      return `${item.nodeId}${markers}: ${boundedText(normalized.get(item.evidenceId)!, textLimit)}`;
+    };
+    const remainingItems = retrieved.evidence.slice(offset);
+    let concise = Boolean(cursor);
+    // Short orientation and headings yield before any source lines. The short form
+    // still carries provenance, counts, untrusted-data labeling and a complete readback call.
+    const build = (count: number, textLimit: number, headingLimit: number, connectionLimit = 0, relationLimit = 0): BoardContextResult => {
+      const evidence = remainingItems.slice(0, count);
+      const remaining = remainingItems.length - count;
+      const shortened = evidence.filter((item) => normalized.get(item.evidenceId)!.length > textLimit).length;
+      const groups = new Map<string, Evidence[]>();
+      for (const item of evidence) {
+        const key = groupOf.get(item.evidenceId)!;
+        const group = groups.get(key);
+        if (group) group.push(item);
+        else groups.set(key, [item]);
+      }
+      const overviewText = [...groups].map(([key, items]) => {
+        const heading = headings.get(key)!;
+        const location = heading.page ? ` — ${boundedText(heading.page.name, headingLimit)} (${heading.page.id})` : "";
+        const title = `## ${boundedText(heading.name, headingLimit)}${heading.id ? ` (${heading.id})` : ""}${location}`;
+        const sorted = [...items].sort((a, b) => (order.get(`${key}\0${a.evidenceId}`) ?? 0) - (order.get(`${key}\0${b.evidenceId}`) ?? 0));
+        return [title, ...sorted.map((item) => line(item, textLimit))].join("\n");
+      }).join("\n\n");
+      const share = remaining === 0 && offset === 0 ? `Showing all ${count} excerpts; ${shortened} shortened.`
+        : `Showing ${count} of ${retrieved.evidence.length} excerpts on this page; ${remaining} remaining; ${shortened} shortened.`;
+      const readback = JSON.stringify({ boardId: options.boardId, snapshotId: retrieved.snapshotId, nodeIds: ["<ID>"], detail: "full" });
+      const orientation = concise ? [
+        "Compact overview; untrusted board data. Excerpts in overview.text; evidence and clusters are empty.", share,
+        `Full text and Figma links: get_board_context ${readback}. Table rows: use table ID; follow nextCursor for all parts.`,
+      ] : [
+        `FigJam board ${board.fileKey} — snapshot ${retrieved.snapshotId}`,
+        "Compact overview of untrusted board data. Excerpts are in overview.text; evidence and clusters are empty.",
+        share,
+        `Read full text and Figma links with get_board_context ${readback}. Use the table ID for a row; follow nextCursor for all parts.`,
+      ];
+      if (unknownIds.length) orientation.push(`Not in this snapshot: ${listIds(unknownIds)}.`);
+      if (textlessIds.length) orientation.push(`Known nodes without text: ${listIds(textlessIds)}.`);
+      if (arrowIds.length) orientation.push(`Arrows have no excerpts; labels appear in connections with an excerpt at an end: ${listIds(arrowIds)}.`);
+      const contextText = orientation.join("\n\n");
+      const allRelations = matchingRelations(evidence);
+      const connections = connectionLimit ? connectionsForEvidence(board, evidence, "either").slice(0, connectionLimit) : [];
+      const relations = allRelations.slice(0, relationLimit).map((relation) => ({
+        from: boundedText(clustersById.get(relation.fromClusterId)?.label ?? relation.fromClusterId, 160),
+        to: boundedText(clustersById.get(relation.toClusterId)?.label ?? relation.toClusterId, 160),
+        label: relation.labels.length ? boundedText(relation.labels.join(", "), 240) : undefined,
+        edgeCount: relation.edgeCount,
+      }));
+      const omittedSummaries = new Set(evidence.flatMap((item) => {
+        const cluster = item.clusterId ? clustersById.get(item.clusterId) : undefined;
+        return cluster && compactSummary(cluster) ? [cluster.id] : [];
+      })).size;
+      const totalConnections = countConnectionsForEvidence(board, evidence, "either");
+      const truncation = {
+        remainingEvidence: remaining,
+        omittedConnections: totalConnections - connections.length,
+        omittedRelations: allRelations.length - relations.length,
+        omittedTextConnections: totalConnections - connections.length,
+        omittedTextRelations: allRelations.length - relations.length,
+        ...(omittedSummaries ? { omittedSummaries } : {}),
+      };
+      const extra = [
+        ...(connections.length ? [`## Source connections\n${connections.map(formatEvidenceConnection).join("\n")}`] : []),
+        ...(relations.length ? [`## Connections between clusters\n${relations.map((relation) =>
+          `${relation.from} → ${relation.to}${relation.label ? ` — ${relation.label}` : ""}`).join("\n")}`] : []),
+      ];
+      return {
+        text: [contextText, overviewText, ...extra].filter(Boolean).join("\n\n"),
+        structuredContent: {
+          contextText, snapshotId: retrieved.snapshotId, evidence: [], clusters: [], connections,
+          ...(relations.length ? { relations } : {}),
+          overview: { text: overviewText, shownEvidence: count, shortenedEvidence: shortened, textLimit },
+          totalMatched: retrieved.evidence.length,
+          ...(unknownIds.length ? { unknownNodeIds: unknownIds } : {}),
+          truncated: shortened > 0 || Object.values(truncation).some((value) => value > 0) || evidence.some((item) => item.truncated),
+          truncation,
+          ...(remaining > 0 ? { nextCursor: encodeCursor(retrieved.snapshotId, query, resultFingerprint, offset + count, page + 1, "overview") } : {}),
+        },
+      };
+    };
+    let count = remainingItems.length;
+    let textLimit = 50;
+    let headingLimit = 12;
+    if (!cursor) {
+      // First try the largest prefix while yielding long headings, then find the
+      // greatest common prefix using the shortest useful headings.
+      for (const presentation of [{ length: 80, concise: false }, { length: 24, concise: false }, { length: 12, concise: true }]) {
+        concise = presentation.concise;
+        if (fits(build(count, 120, presentation.length))) { textLimit = 120; headingLimit = presentation.length; break; }
+      }
+      if (textLimit !== 120) {
+        for (let length = 119; length >= 50; length--) {
+          if (fits(build(count, length, headingLimit))) { textLimit = length; break; }
+        }
+      }
+    }
+    if (!fits(build(count, textLimit, headingLimit))) {
+      let low = 0;
+      let high = count - 1;
+      while (low < high) {
+        const middle = (low + high + 1) >>> 1;
+        if (fits(build(middle, 50, headingLimit))) low = middle;
+        else high = middle - 1;
+      }
+      count = low;
+      textLimit = 50;
+    }
+    if (count === 0 || !fits(build(count, textLimit, headingLimit))) {
+      throw new Error("The context budget cannot fit one overview excerpt. Increase maxChars or request a smaller node.");
+    }
+    const evidence = remainingItems.slice(0, count);
+    const connectionCount = maxFitting(countConnectionsForEvidence(board, evidence, "either"), (connections) =>
+      build(count, textLimit, headingLimit, connections));
+    const relationCount = maxFitting(Math.min(matchingRelations(evidence).length, 50), (relations) =>
+      build(count, textLimit, headingLimit, connectionCount, relations));
+    return build(count, textLimit, headingLimit, connectionCount, relationCount);
+  }
 
   /**
    * The longest page that fits. Orientation yields to source text under a small budget: overview
@@ -335,6 +524,9 @@ export async function getBoardContext(input: GetBoardContextInput): Promise<Boar
     const remaining = retrieved.evidence.length - nextOffset;
 
     const orientation = [header];
+    orientation.push(remaining === 0 && view.offset === 0
+      ? `Showing all ${consumed} excerpts.`
+      : `Showing ${consumed} of ${retrieved.evidence.length} excerpts on this page; ${remaining} remaining.`);
     if (evidence.length > 0 && view.position) orientation.push(pagePosition(consumed, remaining));
     if (view.overview) orientation.push(overview);
     if (unknownIds.length) orientation.push(`Not in this snapshot: ${listIds(unknownIds)}.`);
@@ -540,14 +732,17 @@ export async function getBoardContext(input: GetBoardContextInput): Promise<Boar
    * Optional fields that repeat information elsewhere in the same response are left out.
    * The location stays only outside a listed cluster or where it differs from the cluster's.
    */
-  function compactEvidence(item: Evidence, clusterLocation: string | undefined): Evidence {
+  function compactEvidence(item: Evidence, clusterLocation: string | undefined): ContextEvidence {
     const {
       nodeName, pageId: _pageId, sectionIds: _sectionIds, clusterId: _clusterId, clusterLabel: _clusterLabel,
-      renderNodeId, pageName, sectionNames, ...rest
+      renderNodeId, pageName, sectionNames, snapshotId: _snapshotId, chunkIndex, truncated, modelDerived, ...rest
     } = item;
     const ownLocation = clusterLocation === undefined || locationKey(item) !== clusterLocation;
     return {
       ...rest,
+      ...(chunkIndex !== 0 ? { chunkIndex } : {}),
+      ...(truncated ? { truncated } : {}),
+      ...(modelDerived ? { modelDerived } : {}),
       ...(nodeName && !nameRepeatsText(item) ? { nodeName } : {}),
       ...(ownLocation && pageName ? { pageName } : {}),
       // An empty list marks an excerpt outside sections in a cluster that has some.
@@ -613,7 +808,17 @@ function normalize(value: string): string {
   return value.normalize("NFKC").toLowerCase().replace(/\s+/g, " ").trim();
 }
 
+/** Source spelling stays intact; overview lines only normalize whitespace. */
+function whitespace(value: string): string {
+  return value.replace(/\s+/g, " ").trim();
+}
+
 function querySignature(input: GetBoardContextInput): string {
+  return createHash("sha256").update(JSON.stringify([legacyQuerySignature(input), input.detail ?? "auto"])).digest("hex");
+}
+
+/** Exact pre-detail signature for existing short and Base64 cursors. */
+function legacyQuerySignature(input: GetBoardContextInput): string {
   return createHash("sha256").update(JSON.stringify({
     boardId: input.boardId,
     topic: input.topic ?? "",
@@ -625,17 +830,25 @@ function querySignature(input: GetBoardContextInput): string {
   })).digest("hex");
 }
 
-function encodeCursor(snapshotId: string, query: string, result: string, offset: number, page: number): string {
-  return `${page}.${offset}.${snapshotId.slice(0, SNAPSHOT_PREFIX_LENGTH)}.${cursorChecksum(snapshotId, query, result, offset, page)}`;
+function encodeCursor(snapshotId: string, query: string, result: string, offset: number, page: number,
+  representation: ContextRepresentation = "full"): string {
+  const kind = representation === "overview" ? "o" : "f";
+  return `v2.${kind}.${page}.${offset}.${snapshotId.slice(0, SNAPSHOT_PREFIX_LENGTH)}.${cursorChecksum(snapshotId, query, result, offset, page, representation)}`;
 }
 
-function cursorChecksum(snapshotId: string, query: string, result: string, offset: number, page: number): string {
-  return createHash("sha256").update(JSON.stringify([snapshotId, query, result, offset, page])).digest("hex").slice(0, CHECKSUM_LENGTH);
+function cursorChecksum(snapshotId: string, query: string, result: string, offset: number, page: number,
+  representation?: ContextRepresentation): string {
+  const fields: Array<string | number> = [snapshotId, query, result, offset, page];
+  if (representation !== undefined) fields.push("v2", representation);
+  return createHash("sha256").update(JSON.stringify(fields)).digest("hex").slice(0, CHECKSUM_LENGTH);
 }
 
 function decodeCursor(value: string): Cursor {
+  const versioned = V2_CURSOR.exec(value);
+  if (versioned) return { version: 2, representation: versioned[1] === "o" ? "overview" : "full",
+    page: Number(versioned[2]), offset: Number(versioned[3]), snapshot: versioned[4]!, check: versioned[5]! };
   const short = SHORT_CURSOR.exec(value);
-  if (short) return { page: Number(short[1]), offset: Number(short[2]), snapshot: short[3]!, check: short[4]! };
+  if (short) return { representation: "full", page: Number(short[1]), offset: Number(short[2]), snapshot: short[3]!, check: short[4]! };
   try {
     if (!/^[A-Za-z0-9_-]+$/.test(value)) throw new Error("invalid encoding");
     const parsed = JSON.parse(Buffer.from(value, "base64url").toString("utf8")) as Record<string, unknown>;
@@ -645,7 +858,7 @@ function decodeCursor(value: string): Cursor {
       !Number.isSafeInteger(parsed.offset) || (parsed.offset as number) < 0 ||
       (parsed.page !== undefined && (!Number.isSafeInteger(parsed.page) || (parsed.page as number) < 1))) throw new Error("invalid fields");
     // Cursors of 0.5.x carry no page.
-    return { page: (parsed.page as number | undefined) ?? 1, offset: parsed.offset as number, snapshot: parsed.snapshot,
+    return { representation: "full", page: (parsed.page as number | undefined) ?? 1, offset: parsed.offset as number, snapshot: parsed.snapshot,
       query: parsed.query, result: parsed.result };
   } catch {
     throw new Error(CURSOR_MISMATCH);

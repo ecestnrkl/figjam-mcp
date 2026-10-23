@@ -25,7 +25,7 @@ Figma's official MCP server reads a FigJam board or node with its images
 board into context an assistant can cite and track:
 
 - large boards read section by section, with an overview, size-limited pages and search
-- a link to the source node for every excerpt and citation
+- source IDs in compact overviews, with Figma links in full excerpts and answer citations
 - tables read row by row
 - local snapshots, and `diff_board` to see what changed
 - explicit credentials redacted before they reach the cache, the output or a model
@@ -39,7 +39,7 @@ this one reports the change.
 | Tool | What it does | LLM call |
 | --- | --- | --- |
 | `ingest_board` | Reads a board, clusters it and saves a local snapshot. Re-ingests reuse unchanged clusters; `focusNodeIds` chooses which sections' images are interpreted first. | In `balanced` (default) and `max_quality` mode |
-| `get_board_context` | Returns paginated, source-linked context, optionally for a topic or exact node IDs. Use it for overviews, summaries and documentation. | No |
+| `get_board_context` | Reads saved context, automatically using compact source-ID lines for large section reads; `detail: "full"` returns complete excerpts and Figma links. Also supports topic search and pagination. | No |
 | `answer_from_board` | Answers one specific question (a number, status or decision) from the most relevant excerpts, with node-level citations or an insufficient-evidence result. Not meant for whole-board summaries. | Yes |
 | `diff_board` | Compares two snapshots: new, removed and changed clusters, nodes, table cells and arrows. | No |
 | `diagnose_llm_config` | Tests the configured models with small text and image JSON checks. | Yes |
@@ -162,6 +162,11 @@ a board, the assistant calls `ingest_board`, then `get_board_context` without
 parameters, whose first page names the largest sections and includes a section
 overview with IDs within the page's size limit, and then reads the largest sections
 by passing their IDs as `nodeIds`.
+Large `nodeIds` reads automatically use short source-ID lines, grouped by section,
+when the first full page would leave unread excerpts. `limit` applies only with
+the full view; an overview ignores it even when supplied. Read complete text and
+its Figma link with the same `boardId` and `snapshotId`, the line's ID in
+`nodeIds`, and `detail: "full"`. For a table row, use its table ID.
 Everything that lies in no section, such as loose notes and tables, comes with
 `outsideSections: true`.
 
@@ -197,9 +202,16 @@ Problems: [troubleshooting](https://github.com/ecestnrkl/figjam-mcp/blob/main/do
    snapshots. The first `get_board_context` page includes a size-limited section
    overview with IDs; pass a page, section, frame or group ID as `nodeIds` to read
    everything inside it; several
-   IDs in one call take turns, so each of them appears on every page. Its text
-   `content` is the readable page; `structuredContent` holds the same data without
-   repeating it, with excerpts in `evidence` and location per cluster in `clusters`.
+   IDs in one call take turns in request order. With default `detail: "auto"`,
+   reads of multiple distinct IDs or one container use a compact overview when
+   the first full page would leave unread excerpts. Text is shortened to a shared
+   50–120-character prefix with `…`; the host writes the summary. Topic searches,
+   `outsideSections`, single leaf/table/cell IDs and small containers stay full.
+   Text `content` is the readable page; `structuredContent` holds each excerpt
+   once, in `overview.text` (with empty `evidence` and `clusters`) or in `evidence`
+   for the full view. In full excerpts, only `snapshotId` is inherited from the
+   response: absent `chunkIndex` means 0 and absent `truncated` or `modelDerived`
+   means false, with no inheritance of these flags from a cluster.
 
 ## Models and cost
 
