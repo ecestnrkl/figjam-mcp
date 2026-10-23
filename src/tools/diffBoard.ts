@@ -21,7 +21,13 @@ export async function diffBoard(input: DiffBoardInput): Promise<DiffBoardOutput>
   }
 
   const stepsBack = input.compareTo ?? 1;
-  if (history.length <= stepsBack) {
+  const currentEntry = history.at(-1)!;
+  // Re-ingesting identical content keeps one snapshot but records a fresh check.
+  const singleSnapshot = history.length === 1 && stepsBack === 1
+    ? await readCachedBoard(currentEntry.refinementId ?? currentEntry.cacheKey)
+    : undefined;
+  const unchanged = singleSnapshot?.freshnessCheckedAt !== undefined && singleSnapshot.freshnessCheckedAt > currentEntry.createdAt;
+  if (history.length <= stepsBack && !unchanged) {
     throw new Error(
       `Board "${input.boardId}" has only ${history.length} recorded snapshot${history.length === 1 ? "" : "s"} — ` +
         "re-run ingest_board after the board changed, then diff again." +
@@ -29,12 +35,11 @@ export async function diffBoard(input: DiffBoardInput): Promise<DiffBoardOutput>
     );
   }
 
-  const currentEntry = history.at(-1)!;
-  const baselineEntry = history.at(-1 - stepsBack)!;
+  const baselineEntry = unchanged ? currentEntry : history.at(-1 - stepsBack)!;
 
   const [baseline, current] = await Promise.all([
-    readCachedBoard(baselineEntry.refinementId ?? baselineEntry.cacheKey),
-    readCachedBoard(currentEntry.refinementId ?? currentEntry.cacheKey),
+    singleSnapshot ?? readCachedBoard(baselineEntry.refinementId ?? baselineEntry.cacheKey),
+    singleSnapshot ?? readCachedBoard(currentEntry.refinementId ?? currentEntry.cacheKey),
   ]);
   if (!baseline || !current) {
     throw new Error(
@@ -51,8 +56,11 @@ export async function diffBoard(input: DiffBoardInput): Promise<DiffBoardOutput>
     currentSnapshotId: current.snapshotId,
     baselineCreatedAt: new Date(baselineEntry.createdAt).toISOString(),
     currentCreatedAt: new Date(currentEntry.createdAt).toISOString(),
-    summaryText: diff.summaryText,
-    stats: diff.stats,
+    summaryText: unchanged
+      ? `No changes: the board content is the same as at ${new Date(currentEntry.createdAt).toISOString()}; ` +
+        `the last ingest at ${new Date(singleSnapshot!.freshnessCheckedAt!).toISOString()} found it unchanged.`
+      : diff.summaryText,
+    stats: unchanged ? { ...diff.stats, unchangedClusters: 0 } : diff.stats,
     newClusters: diff.newClusters,
     removedClusters: diff.removedClusters,
     modifiedClusters: diff.modifiedClusters,

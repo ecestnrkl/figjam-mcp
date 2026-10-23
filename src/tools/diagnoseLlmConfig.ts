@@ -31,9 +31,9 @@ const VISION_DIAG_SCHEMA = {
   additionalProperties: false,
 };
 
-/** 64x64 PNG filled with #0066ff; the prompt deliberately does not reveal the answer. */
+/** 64x64 PNG filled with #0000ff; the prompt deliberately does not reveal the answer. */
 const BLUE_DIAGNOSTIC_PNG =
-  "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAAeElEQVR4nO3PQQkAMAzAwKqdfweriD2OQSACLjPn/p0XNKAFDWhBA1rQgBY0oAUNaEEDWtCAFjSgBQ1oQQNa0IAWNKAFDWhBA1rQgBY0oAUNaEEDWtCAFjSgBQ1oQQNa0IAWNKAFDWhBA1rQgBY0oAUNaEEDWvDWAst3UUt/TNtNAAAAAElFTkSuQmCC";
+  "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAAAd0lEQVR4AeXBAQEAAAiDMKR/5xuE7WAjTOIkTuIkTuIkTuIkTuIkTuIkTuIkTuIkTuIkTuIkTuIkTuIkTuIkTuIkTuIkTuIkTuIkTuIkTuIkTuIkTuIkTuIkTuIkTuIkTuIkTuIkTuIkTuIkTuIkTuIkTuIkTuIeUTcCfmRAaTcAAAAASUVORK5CYII=";
 
 type CheckResult = DiagnoseLlmConfigOutput["checks"][number];
 type ReplyValidator = (reply: unknown) => string | undefined;
@@ -112,9 +112,21 @@ export async function diagnoseLlmConfig(options: { signal?: AbortSignal } = {}):
     providerRequireParameters: config.providerRequireParameters,
     checks,
     summary: (ok
-      ? `LLM configuration OK (${config.preset}).`
+      ? `LLM configuration OK (${describeActiveModels(config, checks)}).`
       : `LLM configuration has ${countChecks(checks.filter((check) => !check.ok).length)} failing.`) + fallbackNote + describeFailures(checks),
   };
+}
+
+function describeActiveModels(config: ReturnType<typeof describeModelConfig>, checks: CheckResult[]): string {
+  const overridden = ["LLM_TEXT_MODELS", "LLM_FAST_TEXT_MODELS", "LLM_VISION_MODELS", "LLM_TEXT_MODEL", "LLM_VISION_MODEL"]
+    .some((name) => process.env[name]?.trim());
+  if (!overridden) return config.preset;
+  const used = (name: string, models: string[]) => checks.find((check) => check.name === name)?.modelUsed ?? models.join(", ");
+  const vision = used("vision_json", config.visionModels);
+  const text = used("text_json", config.textModels);
+  const fastText = used("fast_text_json", config.fastTextModels);
+  if (vision === text && text === fastText) return text;
+  return `vision: ${vision}; text: ${text}${fastText === text ? "" : `; fast text: ${fastText}`}`;
 }
 
 function countChecks(count: number): string {

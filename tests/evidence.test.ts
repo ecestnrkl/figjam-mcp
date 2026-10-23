@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { evidenceTokens, formatEvidence, retrieveEvidence, snapshotIdForBoard, tableCellPositions } from "../src/lib/evidence.js";
+import { connectionsForEvidence, countConnectionsForEvidence, evidenceTokens, formatEvidence, formatEvidenceConnection, retrieveEvidence, snapshotIdForBoard, tableCellPositions } from "../src/lib/evidence.js";
 import { evidenceBoard, textNode } from "./fixtures/retrieval.js";
 import type { NormalizedNode, TableCell } from "../src/types.js";
 
@@ -7,6 +7,36 @@ import type { NormalizedNode, TableCell } from "../src/types.js";
 const LOOSE_CELL: TableCell = { id: "cell:loose", text: "Loose note" };
 
 describe("source evidence", () => {
+  it.each(["both", "either"] as const)("omits unlabeled self-loops from connections and counts with %s ends", (ends) => {
+    const board = evidenceBoard("SelfLoops123", [textNode("1:1", "Note"), textNode("1:2", "Other note")]);
+    board.connectorEdges = [
+      { connectorId: "loop", fromNodeId: "1:1", toNodeId: "1:1" },
+      { connectorId: "empty", fromNodeId: "1:1", toNodeId: "1:1", label: "" },
+      { connectorId: "whitespace", fromNodeId: "1:1", toNodeId: "1:1", label: "  \n " },
+      { connectorId: "labeled", fromNodeId: "1:1", toNodeId: "1:1", label: "retry", direction: "undirected" },
+      { connectorId: "normal", fromNodeId: "1:1", toNodeId: "1:2" },
+    ];
+    const evidence = retrieveEvidence(board).evidence;
+    const connections = connectionsForEvidence(board, evidence, ends);
+    expect(connections.map((edge) => edge.connectorId)).toEqual(["labeled", "normal"]);
+    expect(countConnectionsForEvidence(board, evidence, ends)).toBe(2);
+    expect(formatEvidenceConnection(connections[0]!)).toBe("1:1 — 1:1 (retry)");
+  });
+
+  it("omits unlabeled section self-loops before the page limit and omitted count", () => {
+    const board = evidenceBoard();
+    board.nodes.push({ ...textNode("1:0", ""), name: "Notes", type: "SECTION", sectionIds: [] });
+    board.connectorEdges = [
+      ...Array.from({ length: 101 }, (_, i) => ({ connectorId: `loop:${i}`, fromNodeId: "1:0", toNodeId: "1:0", direction: "undirected" as const })),
+      { connectorId: "labeled", fromNodeId: "1:0", toNodeId: "1:0", label: "retry", direction: "undirected" },
+    ];
+    const evidence = retrieveEvidence(board).evidence;
+    const connections = connectionsForEvidence(board, evidence, "either");
+    expect(connections.map((edge) => edge.connectorId)).toEqual(["labeled"]);
+    expect(countConnectionsForEvidence(board, evidence, "either") - connections.length).toBe(0);
+    expect(formatEvidenceConnection(connections[0]!)).toBe("1:0 «Notes» — 1:0 «Notes» (retry)");
+  });
+
   it("does not lose raw text omitted by a cluster summary", () => {
     const board = evidenceBoard();
     const result = retrieveEvidence(board, { query: "idempotency" });
