@@ -148,15 +148,23 @@ describe("MCP wire contract", () => {
   it("reports ingest progress only when requested", async () => {
     handlers.ingest.mockImplementation(async (_input, options) => {
       expect(options.signal).toBeInstanceOf(AbortSignal);
-      await options.onProgress?.("Fetching board", 1, 5);
-      await options.onProgress?.("Persisted", 5, 5);
+      for (const [message, progress] of [
+        ["fetch", 0], ["extract", 1], ["cluster", 2], ["interpret", 3],
+        ["Interpreting images: 1 of 2", 3 + 1 / 3], ["Interpreting images: 2 of 2", 3 + 2 / 3],
+        ["persist", 4], ["complete", 5],
+      ] as const) await options.onProgress?.(message, progress, 5);
       return { boardId: "Board123", clusterCount: 0, summary: "Ingested" };
     });
-    const updates: number[] = [];
+    const updates: Array<{ message?: string; progress: number; total?: number }> = [];
     const request = { name: "ingest_board", arguments: { figmaFileUrl: "https://www.figma.com/board/Board123/Example" } };
-    await client.callTool(request, { onprogress: update => updates.push(update.progress) });
-    expect(updates).toEqual([1, 5]);
+    await client.callTool(request, { onprogress: update => updates.push(update) });
+    expect(updates.map(({ message, progress, total }) => [message, progress, total])).toEqual([
+      ["fetch", 0, 5], ["extract", 1, 5], ["cluster", 2, 5], ["interpret", 3, 5],
+      ["Interpreting images: 1 of 2", 3 + 1 / 3, 5], ["Interpreting images: 2 of 2", 3 + 2 / 3, 5],
+      ["persist", 4, 5], ["complete", 5, 5],
+    ]);
     await client.callTool(request);
+    expect(updates).toHaveLength(8);
     expect(handlers.ingest.mock.calls[1]?.[1].onProgress).toBeUndefined();
   });
 

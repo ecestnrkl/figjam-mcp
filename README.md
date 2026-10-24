@@ -65,6 +65,11 @@ Requires Node.js 22.12 or later.
 claude mcp add figjam-context -e FIGMA_ACCESS_TOKEN=your-figma-token -e LLM_BASE_URL=https://openrouter.ai/api/v1 -e LLM_API_KEY=your-openrouter-key -- npx -y --prefer-online figjam-context-mcp@latest
 ```
 
+For longer ingests, set `MCP_TOOL_TIMEOUT=300000` in the environment that launches
+Claude Code and `INGEST_BOARD_VISION_BUDGET_MS=270000` in the server environment,
+leaving about 30 seconds for the rest of the ingest ([Claude Code environment
+variables](https://code.claude.com/docs/en/env-vars)).
+
 ### Codex CLI and ChatGPT desktop app
 
 Add this to `~/.codex/config.toml`; the app, CLI and IDE extension share this
@@ -89,6 +94,11 @@ or abort tools with external effects; with it, the client never asks before boar
 content goes to the model provider, so use `max_speed` and avoid `answer_from_board`
 for confidential boards.
 
+For longer ingests, set `tool_timeout_sec = 300` under
+`[mcp_servers.figjam-context-mcp]` and `INGEST_BOARD_VISION_BUDGET_MS = "270000"` in its
+`env` table, leaving about 30 seconds for the rest of the ingest ([OpenAI timeout
+options](https://learn.chatgpt.com/docs/extend/mcp#other-configuration-options)).
+
 ### GitHub Copilot CLI
 
 Add this to `~/.copilot/mcp-config.json`
@@ -111,6 +121,11 @@ Add this to `~/.copilot/mcp-config.json`
   }
 }
 ```
+
+For longer ingests, set `"timeout": 300000` on the server in
+`~/.copilot/mcp-config.json` and `"INGEST_BOARD_VISION_BUDGET_MS": "270000"` in its
+`env`, leaving about 30 seconds for the rest of the ingest ([tested with a 600000 ms
+timeout](https://github.com/microsoft/vscode/issues/343135)).
 
 ### VS Code
 
@@ -135,6 +150,12 @@ Configuration** for your profile. VS Code uses `servers` and `type: "stdio"`
 }
 ```
 
+For longer ingests, use the Local harness with a per-server `"timeout": 300000` in
+`mcp.json` and `"INGEST_BOARD_VISION_BUDGET_MS": "270000"` in its `env` (about 30
+seconds below the timeout); [#343135](https://github.com/microsoft/vscode/issues/343135)
+reports that remote HTTP tool calls in the Copilot harness, the default in 1.142, ignore
+that timeout and stop after about 180 seconds, while the Local harness honors it.
+
 ### Other MCP clients
 
 For clients that accept `mcpServers`, add this to their MCP configuration:
@@ -154,6 +175,14 @@ For clients that accept `mcpServers`, add this to their MCP configuration:
   }
 }
 ```
+
+Where the client supports a configurable tool timeout, raise it to about 300 seconds
+using its documented setting and set `INGEST_BOARD_VISION_BUDGET_MS=270000` in the
+server environment, about 30 seconds below it.
+Cursor has no configurable timeout: its IDE allows about 60 minutes, while ACP/CLI calls
+stop at 60 seconds even with progress, so keep the default image budget on that path
+([Cursor
+support](https://forum.cursor.com/t/agent-acp-mcp-tools-call-times-out-at-60s-with-no-way-to-configure-it/163925/5)).
 
 Then ask your assistant to ingest a board URL, for example *"Ingest
 https://www.figma.com/board/FILE_KEY/Name and list the open questions."*
@@ -193,9 +222,9 @@ Problems: [troubleshooting](https://github.com/ecestnrkl/figjam-mcp/blob/main/do
    left fits it; unfinished clusters continue on the next ingest. With
    `focusNodeIds`, the images of the given sections, frames or nodes come first.
    In `max_quality`, one ingest interprets only a few dozen clusters within the
-   40-second image budget (20–35 on a board with about 300 clusters); the next
-   ingest continues, each costs a Tier 1 file download, and `focusNodeIds` sets
-   the order.
+   40-second image budget (20–35 on a board with about 300 clusters, measured
+   with 3 parallel requests); the next ingest continues, each costs a Tier 1 file
+   download, and `focusNodeIds` sets the order.
 5. **Serve.** The snapshot is saved to a private local cache. Search favors
    excerpts containing more of the question’s words.
    `get_board_context` searches it (BM25 over original text, table rows and

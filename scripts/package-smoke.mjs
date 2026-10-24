@@ -55,12 +55,21 @@ async function ingestWithProgress(client, arguments_, label) {
     assert.notEqual(requests[0].progressToken, undefined, `${label}: progress must be requested`);
     const events = received.filter(message => message.kind === "progress").map(message => message.params);
     assert(events.every(event => event.progressToken === requests[0].progressToken), `${label}: progress token must match the ingest request`);
-    assert.deepEqual(events.map(event => event.message), ["fetch", "extract", "cluster", "interpret", "persist", "complete"],
+    const phases = events.filter(event => !event.message.startsWith("Interpreting images: "));
+    const clusters = events.slice(4, -2);
+    assert.deepEqual(phases.map(event => event.message), ["fetch", "extract", "cluster", "interpret", "persist", "complete"],
       `${label}: a final response must arrive after all ingest progress phases`);
-    assert.deepEqual(events.map(event => event.progress), [0, 1, 2, 3, 4, 5]);
+    assert.deepEqual(phases.map(event => event.progress), [0, 1, 2, 3, 4, 5]);
+    assert.equal(clusters.length, result.structuredContent.qualityReport.visionClusters,
+      `${label}: every interpreted image cluster must report progress`);
+    clusters.forEach((event, index) => {
+      assert.equal(event.message, `Interpreting images: ${index + 1} of ${clusters.length}`);
+      assert.equal(event.progress, 3 + (index + 1) / (clusters.length + 1));
+    });
+    assert(events.every((event, index) => index === 0 || event.progress > events[index - 1].progress));
     assert(events.every(event => event.total === 5));
-    assert.deepEqual(received.map(message => message.kind), ["progress", "progress", "progress", "progress", "progress", "progress", "response"],
-      `${label}: all six progress notifications must precede the final response`);
+    assert.deepEqual(received.map(message => message.kind), [...events.map(() => "progress"), "response"],
+      `${label}: all progress notifications must precede the final response`);
     assert.equal(received.at(-1).id, requests[0].id, `${label}: final response must match the ingest request`);
     return result;
   } finally {
