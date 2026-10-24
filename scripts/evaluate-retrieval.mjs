@@ -1,7 +1,7 @@
 /** npm run eval:retrieval [-- --with-llm [--grounding-only]]. Offline by default; only synthetic boards. */
 import { performance } from "node:perf_hooks";
 import { retrieveEvidence, evidenceTokens } from "../src/lib/evidence.ts";
-import { retrievalFixtures } from "../tests/fixtures/retrieval.ts";
+import { longQueryFixtures, retrievalFixtures, retrievalLimitations } from "../tests/fixtures/retrieval.ts";
 import { changeFixtures } from "../tests/fixtures/changes.ts";
 import { answerGroundingFixtures } from "../tests/fixtures/answerGrounding.ts";
 import { diffBoards } from "../src/lib/boardDiff.ts";
@@ -29,11 +29,11 @@ const cacheModule = withLlm ? await import("../src/lib/cache.ts") : undefined;
 const timings = [];
 const cases = [];
 const externalCases = [];
-for (const fixture of retrievalFixtures) {
+for (const fixture of [...retrievalFixtures, ...longQueryFixtures]) {
   // A fresh immutable board includes index construction in each measurement.
   const board = structuredClone(fixture.board);
   const start = performance.now();
-  const result = retrieveEvidence(board, { query: fixture.query, limit: 3 });
+  const result = retrieveEvidence(board, { query: fixture.query });
   timings.push(performance.now() - start);
   const expected = expectedEvidenceIds(board, fixture.expectedNodeId);
   const rank = fixture.expectedNodeId ? result.evidence.findIndex((item) => expected.has(item.evidenceId)) + 1 : 0;
@@ -77,7 +77,7 @@ const changeCases = changeFixtures.map((fixture) => {
   };
 });
 const result = {
-  evaluation: "20 synthetic lexical source-retrieval fixtures; not a real-board benchmark",
+  evaluation: "22 synthetic lexical source-retrieval fixtures and one known word-form limitation; not a real-board benchmark",
   mode: withLlm ? "explicit-provider-evaluation" : "offline",
   ...(withLlm ? { providerEvaluation: {
     selection: groundingOnly ? "grounding-only" : "retrieval-and-grounding",
@@ -89,7 +89,16 @@ const result = {
   unanswerableFixtures: negative.length,
   recallAt1: positive.filter((item) => item.rank === 1).length / positive.length,
   recallAt3: positive.filter((item) => item.rank > 0 && item.rank <= 3).length / positive.length,
-  meanReciprocalRankAt3: positive.reduce((sum, item) => sum + (item.rank ? 1 / item.rank : 0), 0) / positive.length,
+  recallAt6: positive.filter((item) => item.rank > 0 && item.rank <= 6).length / positive.length,
+  recallAt15: positive.filter((item) => item.rank > 0 && item.rank <= 15).length / positive.length,
+  meanReciprocalRank: positive.reduce((sum, item) => sum + (item.rank ? 1 / item.rank : 0), 0) / positive.length,
+  meanReciprocalRankAt3: positive.reduce((sum, item) => sum + (item.rank > 0 && item.rank <= 3 ? 1 / item.rank : 0), 0) / positive.length,
+  knownLimitations: retrievalLimitations.map((fixture) => {
+    const expected = expectedEvidenceIds(fixture.board, fixture.expectedNodeId);
+    const evidence = retrieveEvidence(fixture.board, { query: fixture.query }).evidence;
+    return { name: fixture.name, rank: evidence.findIndex((item) => expected.has(item.evidenceId)) + 1,
+      excludedFromRecallAndMrr: true, reason: "Word forms are not normalized; lexical overlap is required." };
+  }),
   correctAbstentionRate: negative.filter((item) => item.correctAbstention).length / negative.length,
   coldRetrievalMs: distribution(timings),
   baselineProxy: {
@@ -116,7 +125,8 @@ const result = {
   ...(withLlm && !groundingOnly ? { external: summarizeExternal(externalCases), externalCases } : {}),
 };
 console.log(JSON.stringify(result, null, 2));
-if (result.recallAt1 < 1 || result.correctAbstentionRate < 1 || result.fixtures !== 20 ||
+if (cases.slice(0, retrievalFixtures.length).some((item) => item.answerable && item.rank !== 1) ||
+    result.recallAt6 < 1 || result.correctAbstentionRate < 1 || result.fixtures !== 22 ||
     changeCases.some((item) => !item.passed || !item.namedInText) ||
     externalCases.some((item) => item.error || item.validCitationCount !== item.citationCount ||
       (item.expectedNodeId ? !item.citesExpectedNode : !item.abstained)) ||

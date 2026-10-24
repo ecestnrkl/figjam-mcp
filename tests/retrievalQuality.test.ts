@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { retrieveEvidence } from "../src/lib/evidence.js";
-import { retrievalFixtures } from "./fixtures/retrieval.js";
+import { evidenceTokens, retrieveEvidence } from "../src/lib/evidence.js";
+import { longQueryFixtures, retrievalFixtures, retrievalLimitations } from "./fixtures/retrieval.js";
 import { changeFixtures } from "./fixtures/changes.js";
 import { diffBoards } from "../src/lib/boardDiff.js";
 
@@ -18,6 +18,31 @@ describe("synthetic retrieval quality gate (20 fixtures)", () => {
       expect(result.evidence).toEqual([]);
       expect(result.totalMatched).toBe(0);
     }
+  });
+});
+
+describe("long-question retrieval", () => {
+  it.each(longQueryFixtures)("finds $name in the first six excerpts", ({ board, query, expectedNodeId }) => {
+    const terms = new Set(evidenceTokens(query));
+    expect(terms.size).toBeGreaterThanOrEqual(12);
+    const target = board.nodes.find((node) => node.id === expectedNodeId)!;
+    expect(target.text!.length).toBeGreaterThanOrEqual(600);
+    expect(new Set(evidenceTokens(target.text!).filter((term) => terms.has(term))).size).toBe(5);
+    const notes = board.nodes.filter((node) => node.id !== expectedNodeId);
+    expect(notes.length).toBeGreaterThanOrEqual(30);
+    for (const note of notes) {
+      expect(note.text!.length).toBeLessThanOrEqual(60);
+      const matches = new Set(evidenceTokens(note.text!).filter((term) => terms.has(term))).size;
+      expect(matches).toBeGreaterThanOrEqual(1);
+      expect(matches).toBeLessThanOrEqual(2);
+    }
+    expect(retrieveEvidence(board, { query, limit: 6 }).evidence.map((item) => item.nodeId)).toContain(expectedNodeId);
+  });
+
+  it.each(retrievalLimitations)("records the known word-form boundary: $name", ({ board, query }) => {
+    // This is a lexical boundary, not a failed answerable case or a recall gate.
+    expect(evidenceTokens(query)).toEqual(["sensors"]);
+    expect(evidenceTokens(board.nodes[0]!.text!)).toEqual(["sensor"]);
   });
 });
 

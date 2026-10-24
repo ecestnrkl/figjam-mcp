@@ -196,7 +196,8 @@ Problems: [troubleshooting](https://github.com/ecestnrkl/figjam-mcp/blob/main/do
    40-second image budget (20–35 on a board with about 300 clusters); the next
    ingest continues, each costs a Tier 1 file download, and `focusNodeIds` sets
    the order.
-5. **Serve.** The snapshot is saved to a private local cache.
+5. **Serve.** The snapshot is saved to a private local cache. Search favors
+   excerpts containing more of the question’s words.
    `get_board_context` searches it (BM25 over original text, table rows and
    names), `answer_from_board` answers with citations and `diff_board` compares
    snapshots. The first `get_board_context` page includes a size-limited section

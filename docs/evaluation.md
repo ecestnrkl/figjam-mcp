@@ -5,15 +5,20 @@ not a release gate; the model checks below are smoke tests.
 
 ## Retrieval and change detection (offline)
 
-`npm run eval:retrieval` runs 20 synthetic board cases without provider calls.
+`npm run eval:retrieval` runs 22 synthetic board cases and one known word-form
+limitation without provider calls.
 CI runs it on every push (Linux, Node 24).
 
 | Check | Result |
 | --- | --- |
-| Expected source ranked first | 18/18 |
+| Original expected source ranked first | 18/18 |
+| Long English/German question: source in first six | 2/2 |
 | Correct empty result for an unrelated topic | 2/2 |
 | Expected board changes found by `diff_board` | 20/20 |
 | Changes named in the text output | 20/20 |
+
+Recall@6, Recall@15 and MRR cover all 20 answerable cases. The plural/singular
+case is reported separately and excluded from those metrics.
 
 The corpus is small and synthetic. It measures ranking, source traceability and
 diffs, not answers on real boards.
@@ -55,8 +60,8 @@ server. Three arrows anchored to the page canvas did not become connections.
 - A cancelled ingest, for example after a client timeout, saves nothing.
 - Few free models accept images with structured outputs, so free image
   interpretation is the least reliable part of the default preset.
-- Search is lexical (BM25 over original text, table rows and names); synonyms
-  without shared words do not match.
+- Search is lexical (field-weighted BM25 with squared query-word coverage and
+  a weaker length penalty); synonyms and word forms without shared words do not match.
 - Citations show where an answer comes from, not that its conclusion is right.
 - In the Inspector web UI with Safari, a finished ingest was once displayed
   late; the Inspector CLI was not affected.

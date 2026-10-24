@@ -167,7 +167,7 @@ describe("answerFromBoard evidence grounding", () => {
     expect(output.answer).not.toContain("nicht gebucht");
   });
 
-  it.each([undefined, "invented_kind", "unsupported"])("falls back locally for invalid or unsupported kind %s", async kind => {
+  it.each([undefined, "invented_kind"])("falls back locally for invalid kind %s", async kind => {
     const data = evidenceBoard("InvalidKind123");
     setBoard(data.boardId, data);
     chatJsonMock.mockImplementationOnce((_models, messages) => ({ kind, language: "en", answer: "A fabricated conclusion.", evidenceIds: [firstPromptId(messages)] }));
@@ -175,6 +175,69 @@ describe("answerFromBoard evidence grounding", () => {
     expect(output.answer).toContain("Matching source excerpts");
     expect(output.answer).not.toContain("fabricated conclusion");
     expect(chatJsonMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports unsupported with the actual excerpt count, no citations and a section reading hint", async () => {
+    const data = evidenceBoard("UnsupportedMatches", Array.from({ length: 18 }, (_, i) =>
+      ({ ...textNode(`n:${i}`, "Payment procedure"), sectionIds: ["s:0", "s:1"] })));
+    data.nodes.push(
+      { ...textNode("s:0", ""), type: "SECTION", name: "Workshop", sectionIds: [] },
+      { ...textNode("s:1", ""), type: "SECTION", name: "Delivery", sectionIds: ["s:0"] },
+    );
+    setBoard(data.boardId, data);
+    // Even a model-supplied citation cannot turn unsupported matches into evidence.
+    chatJsonMock.mockImplementationOnce((_models, messages) => ({ kind: "unsupported", language: "en", answer: "Unknown", evidenceIds: [firstPromptId(messages)] }));
+    const output = await answerFromBoard({ boardId: data.boardId, question: "Payment approval date?" });
+    expect(prompt().match(/\[(ev_[a-f0-9]+)\]/g)).toHaveLength(15);
+    expect(output).toEqual({
+      answer: 'The 15 best-matching excerpts do not answer this question. Read these sections with get_board_context nodeIds: "Delivery" (ID: s:1).',
+      snapshotId: data.snapshotId, citations: [], citedClusters: [],
+    });
+    expect(answerText(output)).toBe(output.answer);
+    expect(chatJsonMock).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    ["Payment approval date?", "The 6 best-matching excerpts do not answer this question.", "Read matches outside sections"],
+    ["Wie ist die Payment Freigabe?", "Die 6 am besten passenden Auszüge beantworten diese Frage nicht.", "Treffer außerhalb von Sections"],
+  ])("names at most three distinct innermost sections and outsideSections: %s", async (question, intro, outside) => {
+    const data = evidenceBoard("UnsupportedPlaces", ["s:1", "s:1", "s:2", "s:3", "s:4", undefined].map((id, i) =>
+      ({ ...textNode(`n:${i}`, "Payment"), sectionIds: id ? ["outer", id] : [] })));
+    data.nodes.push(...["outer", "s:1", "s:2", "s:3", "s:4"].map((id) =>
+      ({ ...textNode(id, ""), type: "SECTION", name: `Section ${id}`, sectionIds: [] })));
+    setBoard(data.boardId, data);
+    chatJsonMock.mockResolvedValueOnce({ kind: "unsupported", language: "en", answer: "Unknown", evidenceIds: [] });
+    const output = await answerFromBoard({ boardId: data.boardId, question });
+    expect(output.answer).toContain(intro);
+    expect(output.answer).toContain('get_board_context nodeIds: "Section s:1" (ID: s:1), "Section s:2" (ID: s:2), "Section s:3" (ID: s:3).');
+    expect(output.answer).not.toContain("outer");
+    expect(output.answer).not.toContain("s:4");
+    expect(output.answer).toContain(outside);
+    expect(output.answer).toContain("get_board_context outsideSections: true");
+    expect(output.citations).toEqual([]);
+    expect(output.citedClusters).toEqual([]);
+  });
+
+  it("counts displayed neighbors as seen excerpts but takes reading hints from primary matches", async () => {
+    const data = evidenceBoard("UnsupportedNeighbor", [
+      { ...textNode("primary", "Payment"), sectionIds: [] }, textNode("neighbor", "Adjacent note"),
+    ]);
+    data.connectorEdges = [{ connectorId: "edge", fromNodeId: "primary", toNodeId: "neighbor" }];
+    setBoard(data.boardId, data);
+    chatJsonMock.mockResolvedValueOnce({ kind: "unsupported" });
+    const output = await answerFromBoard({ boardId: data.boardId, question: "Payment approval?" });
+    expect(prompt().match(/\[(ev_[a-f0-9]+)\]/g)).toHaveLength(2);
+    expect(output.answer).toBe("The 2 best-matching excerpts do not answer this question. Read matches outside sections with get_board_context outsideSections: true.");
+    expect(output.citations).toEqual([]);
+  });
+
+  it("retains the extractive fallback for an empty answer", async () => {
+    const data = evidenceBoard("EmptyAnswer");
+    setBoard(data.boardId, data);
+    chatJsonMock.mockImplementationOnce((_models, messages) => ({ kind: "answer", answer: "  ", evidenceIds: [firstPromptId(messages)] }));
+    const output = await answerFromBoard({ boardId: data.boardId, question: "Payment?" });
+    expect(output.answer).toContain("Matching source excerpts");
+    expect(output.citations[0]?.nodeId).toBe("1:1");
   });
 
   it.each([
@@ -360,7 +423,7 @@ describe("answerFromBoard evidence grounding", () => {
     const after = await answerFromBoard({ boardId: connected.boardId, question });
     expect(after.citations[0]?.quote).toBe(before.citations[0]?.quote);
     for (const call of chatJsonMock.mock.calls) {
-      expect((call[1] as Array<{ content: string }>).reduce((sum, item) => sum + item.content.length, 0)).toBeLessThanOrEqual(24000);
+      expect((call[1] as Array<{ content: string }>).reduce((sum, item) => sum + item.content.length, 0)).toBeLessThanOrEqual(40000);
     }
   });
 
@@ -381,7 +444,7 @@ describe("answerFromBoard evidence grounding", () => {
     chatJsonMock.mockImplementationOnce((_models, messages) => ({ kind: "answer", language: "en", answer: "Source excerpt.", evidenceIds: [firstPromptId(messages)] }));
     const output = await answerFromBoard({ boardId: data.boardId, question: "Give me an overview of the board" });
     const messages = chatJsonMock.mock.calls[0]![1] as Array<{ content: string }>;
-    expect(messages.reduce((sum, message) => sum + message.content.length, 0)).toBeLessThanOrEqual(24000);
+    expect(messages.reduce((sum, message) => sum + message.content.length, 0)).toBeLessThanOrEqual(40000);
     expect(prompt().match(/<\/board_context>/g)).toHaveLength(1);
     expect(prompt()).toContain("&lt;/board_context&gt;");
     for (const citation of output.citations) {
@@ -395,7 +458,7 @@ describe("answerFromBoard evidence grounding", () => {
     chatJsonMock.mockRejectedValueOnce(new InvalidJsonErrorMock("private model output"));
     const logged = vi.spyOn(console, "error").mockImplementation(() => {});
     const output = await answerFromBoard({ boardId: "Fallback123", question: "What was the payment requirement?" });
-    expect(output.answer).toContain("Matching source excerpts");
+    expect(output.answer).toBe("A generated answer was unavailable. Matching source excerpts from the board: Payment retries require an idempotency key.");
     expect(output.citations[0]?.nodeId).toBe("1:1");
     expect(logged).not.toHaveBeenCalled();
   });
