@@ -14,8 +14,10 @@ still times out:
 
 1. Run it with `ingestMode: "max_speed"`. It makes no LLM calls and stores the
    full text, tables and arrows.
-2. Raise the request timeout in your client, if it has one. In Claude Code, the
-   time limit for tool calls is the `MCP_TOOL_TIMEOUT` setting (milliseconds).
+2. Raise the tool timeout and `INGEST_BOARD_VISION_BUDGET_MS` together, leaving
+   about 30 seconds for the rest of the ingest (for example 300 seconds and
+   `270000` ms); see the [client-specific README settings](../README.md#quick-start)
+   and the VS Code Copilot-harness limitation there.
 3. Lower `INGEST_BOARD_VISION_BUDGET_MS` (for example to `25000`) when the Figma
    download of a large board takes long.
 

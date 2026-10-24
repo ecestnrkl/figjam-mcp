@@ -52,12 +52,19 @@ const VISION_BUDGET_MS = readIntEnv("INGEST_BOARD_VISION_BUDGET_MS", 40_000, 0);
 const MIN_VISION_SLOT_MS = readIntEnv("INGEST_BOARD_MIN_VISION_SLOT_MS", 10000, 0);
 
 /**
- * How many clusters are refined with vision concurrently. Screenshot
- * download and the LLM call dominate wall-clock time, so 2–3 in flight cuts
- * ingest latency roughly proportionally while staying inside free-tier
- * provider rate limits.
+ * Resolve once per ingest, for both workers and render planning. Paid
+ * OpenRouter candidates use eight slots; free candidates and other providers
+ * keep three slots for their limits. An explicit environment value wins.
  */
-const VISION_CONCURRENCY = readIntEnv("INGEST_BOARD_VISION_CONCURRENCY", 3, 1);
+export function getVisionConcurrency(): number {
+  if (process.env.INGEST_BOARD_VISION_CONCURRENCY?.trim()) {
+    return readIntEnv("INGEST_BOARD_VISION_CONCURRENCY", 3, 1);
+  }
+  try {
+    if (new URL(process.env.LLM_BASE_URL ?? "").hostname !== "openrouter.ai") return 3;
+  } catch { return 3; }
+  return describeModelConfig().visionModels.some(model => model === "openrouter/free" || model.endsWith(":free")) ? 3 : 8;
+}
 
 /**
  * Figma's image render endpoint is Tier 1 (View/Collab seats: 20 requests per
@@ -94,6 +101,7 @@ export async function ingestBoard(input: IngestBoardInput, options: OperationOpt
 
 async function performIngest(input: IngestBoardInput, options: OperationOptions): Promise<IngestBoardOutput> {
   const { signal } = options;
+  const concurrency = getVisionConcurrency();
   const progress = async (phase: string, completed: number) => {
     // Let stdio cancellation notifications run between bounded CPU phases.
     await yieldToRequests(undefined, { signal });
@@ -130,6 +138,8 @@ async function performIngest(input: IngestBoardInput, options: OperationOptions)
   const cacheCandidate = input.forceFullIngest ? undefined : await readCachedBoard(cacheKey, fileKey);
   const cached = cacheCandidate?.extractionVersion === EXTRACTION_VERSION ? cacheCandidate : undefined;
   if (cached && !cached.clusters.some(cluster => cluster.incomplete)) {
+    await progress("cluster", 2);
+    await progress("interpret", 3);
     const clusterNodes = clusterMembers(cached.clusters, nodes);
     // Phases follow the recomputed labels, as on a full ingest.
     const clusters = mapClustersToPhases(labelDeterministicClusters(cached.clusters, clusterNodes, nodes),
@@ -194,7 +204,7 @@ async function performIngest(input: IngestBoardInput, options: OperationOptions)
   const screenshotNodes = new Map(visionQueue.filter(index => !imageNodes.has(index))
     .map(index => [index, pickScreenshotNodes(clusterNodesByIndex[index]!)]));
   // Only clusters the budget can realistically reach share the first batches.
-  const plannedClusters = MIN_VISION_SLOT_MS > 0 ? Math.floor(VISION_CONCURRENCY * VISION_BUDGET_MS / MIN_VISION_SLOT_MS) : Infinity;
+  const plannedClusters = MIN_VISION_SLOT_MS > 0 ? Math.floor(concurrency * VISION_BUDGET_MS / MIN_VISION_SLOT_MS) : Infinity;
   const { batches: renderBatches, plannedBatches } = planRenderBatches(visionQueue, screenshotNodes, plannedClusters);
   const figmaRequests = { imageFills: 0, renders: 0 };
   const batchOfCluster = new Map(renderBatches.flatMap((batch, number) => batch.map(index => [index, number] as const)));
@@ -234,6 +244,20 @@ async function performIngest(input: IngestBoardInput, options: OperationOptions)
     return imageFillsRequest;
   };
   let queueCursor = 0;
+  let finishedClusters = 0;
+  let clusterProgress = Promise.resolve();
+  const reportCluster = () => {
+    const completed = ++finishedClusters;
+    // Serialize asynchronous consumers so progress remains strictly increasing.
+    clusterProgress = clusterProgress.then(async () => {
+      signal?.throwIfAborted();
+      try {
+        await options.onProgress?.(`Interpreting images: ${completed} of ${visionQueue.length}`,
+          3 + completed / (visionQueue.length + 1), 5);
+      } catch { signal?.throwIfAborted(); /* A disconnected client does not fail a cluster. */ }
+    });
+    return clusterProgress;
+  };
   let sharedFailure: { reason: VisionFallbackReason; retryAfter?: number } | undefined;
   const currentSharedFailure = (): typeof sharedFailure => sharedFailure;
   if (visionQueue.length) {
@@ -309,10 +333,12 @@ async function performIngest(input: IngestBoardInput, options: OperationOptions)
         if (reason === "rate_limit" || reason === "config" || reason === "auth") sharedFailure = { reason, retryAfter };
         fallback(index, reason, retryAfter);
         console.error(`Vision refinement incomplete (${reason}); original sources are retained.`);
+      } finally {
+        if (options.onProgress) await reportCluster();
       }
     }
   }
-  try { await Promise.all(Array.from({ length: Math.min(VISION_CONCURRENCY, visionQueue.length) }, worker)); }
+  try { await Promise.all(Array.from({ length: Math.min(concurrency, visionQueue.length) }, worker)); }
   finally { clearTimeout(renderPhaseTimer); renderPhase.abort(); }
   signal?.throwIfAborted();
   const finalClusters = mapClustersToPhases(labelDeterministicClusters(refined, clusterNodesByIndex, nodes),
