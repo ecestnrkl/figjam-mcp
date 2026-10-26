@@ -192,6 +192,44 @@ describe("LLM requests through real local HTTP and the OpenAI SDK", () => {
     expect(requests.map(request => request.model)).toEqual(["longer/vision", "ordinary/text"]);
   });
 
+  it.each([undefined, "", "   ", "Synthetic provider needs more credits"])(
+    "shows actionable HTTP 402 without provider text, or preserves its message in diagnose (%j)", async message => {
+      for (const name of ["LLM_TEXT_MODELS", "LLM_FAST_TEXT_MODELS", "LLM_VISION_MODELS"]) vi.stubEnv(name, "paid/first,paid/second");
+      vi.stubEnv("LLM_TEXT_MODEL", "");
+      vi.stubEnv("LLM_VISION_MODEL", "");
+      await localClient((_request, response) => json(response, 402, { error: { code: 402, message } }));
+      const { diagnoseLlmConfig } = await import("../src/tools/diagnoseLlmConfig.js");
+      const diagnosis = await diagnoseLlmConfig();
+      const expected = message?.trim() ? `${message}, code 402`
+        : "LLM request failed (HTTP 402): the model provider requires payment or more credits for this model. "
+          + "Add credits or raise the API key's credit limit, or use a free model.";
+      expect(diagnosis.ok).toBe(false);
+      for (const check of diagnosis.checks) {
+        expect(check).toMatchObject({ ok: false, error: `paid/first: ${expected}`,
+          attempts: [{ model: "paid/first", ok: false, error: expected }] });
+      }
+      expect(diagnosis.summary).toBe(`LLM configuration has 3 checks failing.\n- text_json, fast_text_json, vision_json: paid/first: ${expected}`);
+      expect(requests.map(request => request.model)).toEqual(["paid/first", "paid/first", "paid/first"]);
+    },
+  );
+
+  it("gives answer_from_board the actionable HTTP 402 error without exposing provider details", async () => {
+    vi.stubEnv("LLM_TEXT_MODELS", "paid/first,paid/second");
+    vi.stubEnv("LLM_TEXT_MODEL", "");
+    await localClient((_request, response) => json(response, 402, { error: { code: 402,
+      message: "Provider returned error: synthetic private account detail" } }));
+    const { answerFromBoard } = await import("../src/tools/answerFromBoard.js");
+    const { setBoard } = await import("../src/lib/cache.js");
+    const { evidenceBoard } = await import("./fixtures/retrieval.js");
+    const board = evidenceBoard("PaymentError123");
+    setBoard(board.boardId, board);
+    await expect(answerFromBoard({ boardId: board.boardId, question: "What is required for payment retries?" }))
+      .rejects.toMatchObject({ status: 402,
+        message: "LLM request failed (HTTP 402): the model provider requires payment or more credits for this model. "
+          + "Add credits or raise the API key's credit limit, or use a free model." });
+    expect(requests.map(request => request.model)).toEqual(["paid/first"]);
+  });
+
   it("names the provider's message in diagnose_llm_config only, without metadata.raw", async () => {
     const raw = "raw provider body that must stay hidden";
     for (const [name, value] of [["LLM_TEXT_MODELS", "text/first,text/second"], ["LLM_FAST_TEXT_MODELS", "text/first,text/second"],

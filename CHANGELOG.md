@@ -2,6 +2,7 @@
 
 ## 0.11.0 — Unreleased
 
+- Model-provider HTTP 402 errors explain how to add credits, raise the API key's credit limit or choose a free model; `ingest_board` stops starting image requests after the first payment failure and keeps affected clusters pending.
 - `ingest_board` defaults to 8 parallel image requests for paid OpenRouter candidates, retaining 3 for free candidates and other providers; an explicit concurrency setting overrides both.
 - `ingest_board` reports progress after each started image cluster when the client supplies a progress token.
 - README documents client-specific tool timeout settings and raising the image budget alongside them.

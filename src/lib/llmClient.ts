@@ -375,6 +375,9 @@ function isProviderReturnedError(error: unknown): boolean {
 function describeProviderError(error: unknown): string | undefined {
   const body = providerErrorBody(error);
   if (!body) return undefined;
+  // A bare payment code has no provider explanation; use our actionable message.
+  if ((error instanceof OpenAI.APIError || error instanceof LlmRequestError) && error.status === 402 &&
+    (typeof body.message !== "string" || !body.message.trim())) return undefined;
   const metadata = body.metadata && typeof body.metadata === "object" ? body.metadata as Record<string, unknown> : {};
   const parts = [
     typeof body.message === "string" ? body.message : undefined,
@@ -386,10 +389,11 @@ function describeProviderError(error: unknown): string | undefined {
 
 /**
  * A missing or failing model goes to the next candidate: 404, 410, OpenRouter's "Provider returned error",
- * timeouts, rate limits and server errors. Other 4xx (400, 401, 402, 403, 422) stay with the request unless
- * they name an unavailable model or an unsupported format.
+ * timeouts, rate limits and server errors. Payment failures (402) never switch candidates.
+ * Other 4xx (400, 401, 403, 422) stay unless they name an unavailable model or an unsupported format.
  */
 function shouldTryNextModel(error: unknown): boolean {
+  if ((error instanceof LlmRequestError || error instanceof OpenAI.APIError) && error.status === 402) return false;
   if (error instanceof LlmRequestError) {
     return [404, 410, 429].includes(error.status ?? 0) || (error.status ?? 0) >= 500 || isProviderReturnedError(error);
   }
@@ -420,7 +424,11 @@ function isRateLimitError(error: unknown): boolean {
 function normalizeLlmError(error: unknown): unknown {
   if (!(error instanceof OpenAI.APIError)) return error;
   const retryAfter = Number(error.headers?.get("retry-after"));
-  return new LlmRequestError(`LLM request failed (HTTP ${error.status ?? "unknown"}). Check provider availability and configuration.`, error.status,
+  const message = error.status === 402
+    ? "LLM request failed (HTTP 402): the model provider requires payment or more credits for this model. "
+      + "Add credits or raise the API key's credit limit, or use a free model."
+    : `LLM request failed (HTTP ${error.status ?? "unknown"}). Check provider availability and configuration.`;
+  return new LlmRequestError(message, error.status,
     Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter : undefined);
 }
 
