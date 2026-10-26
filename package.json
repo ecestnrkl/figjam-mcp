@@ -1,6 +1,6 @@
 {
   "name": "figjam-context-mcp",
-  "version": "0.10.3",
+  "version": "0.11.0",
   "description": "MCP server that turns a FigJam board into queryable context for LLMs",
   "type": "module",
   "main": "dist/index.js",

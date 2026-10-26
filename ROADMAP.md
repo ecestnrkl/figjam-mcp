@@ -45,9 +45,15 @@ installable in two minutes, documented, and used on real boards.
 - [x] `forceFullIngest` and text model changes keep image interpretations; `student-free` text uses `openrouter/free` only
 - [x] `diagnose_llm_config` names every model it tried; short cursors; the ingest summary says whether the board changed
 
+## 0.11.0 — ready for user tests
+
+- [x] Search handles long questions, includes more excerpts in the prompt and answers honestly when evidence is missing
+- [x] Read large sections as compact overviews; `detail: "full"` reads complete excerpts
+- [x] Ingest uses 8 parallel image requests with paid OpenRouter models, reports progress per image cluster, documents client-specific timeouts and clearly explains HTTP 402
+
 ## 1.0.0 — proven in real use
 
-- [ ] Public demo board and a screen recording
+- [x] Public demo board and a screen recording
 - [ ] Real workshops
 - [ ] Stable tool contract
 
