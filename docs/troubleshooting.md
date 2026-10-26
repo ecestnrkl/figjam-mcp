@@ -38,6 +38,7 @@ cause. Original text and table rows stay searchable in every case.
 | `rate_limit` | Figma or the provider returned 429 | Wait until `qualityReport.nextRetryAt` |
 | `config` | `LLM_BASE_URL` or `LLM_API_KEY` missing | Set both, then restart the server |
 | `auth` | Figma or the provider rejected the credentials | Check the token, scopes and file access |
+| `payment` | The model provider returned HTTP 402 (payment or more credits required) | Add credits, raise the API key's credit limit, or choose a free model |
 | `invalid_reply` | The model returned no usable JSON | Choose another model |
 | `render_failed`, `download_budget` | Figma could not list the image fills or render the nodes, or images exceeded 64 MiB per ingest | Ingest again later or split the board |
 | `model_failed` | Any other model error | Run `diagnose_llm_config` |

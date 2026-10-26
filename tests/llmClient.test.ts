@@ -330,6 +330,24 @@ describe("chatJson", () => {
     expect(createMock).toHaveBeenCalledTimes(1);
   });
 
+  it.each(["Insufficient credits", "Provider returned error", "No endpoints found; response_format unsupported"])(
+    "explains HTTP 402 and keeps status/retryAfter without retrying or switching candidates (%s)", async message => {
+      createMock.mockRejectedValueOnce(new OpenAI.APIError(402, { message }, message, new Headers({ "retry-after": "90" })));
+      const pending = chatJson(["openrouter/free", "second-model"], MESSAGES, SCHEMA_OPTIONS);
+      await expect(pending).rejects.toMatchObject({ status: 402, retryAfter: 90,
+        message: "LLM request failed (HTTP 402): the model provider requires payment or more credits for this model. "
+          + "Add credits or raise the API key's credit limit, or use a free model." });
+      expect(createMock).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it.each([400, 401, 403, 422, 429, 503])("keeps the existing generic message for HTTP %s", async status => {
+    vi.stubEnv("LLM_RATE_LIMIT_RETRIES", "0");
+    createMock.mockRejectedValue(providerError(status, "Synthetic failure"));
+    await expect(chatJson("only-model", MESSAGES, SCHEMA_OPTIONS)).rejects.toMatchObject({ status,
+      message: `LLM request failed (HTTP ${status}). Check provider availability and configuration.` });
+  });
+
   it.each([
     '{"message":"response_format unsupported"',
     JSON.stringify({ message: "response_format unsupported", padding: "x".repeat(16_384) }),

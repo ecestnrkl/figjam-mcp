@@ -420,6 +420,9 @@ describe("ingestBoard", () => {
     ["model", new LlmTimeoutError("private provider body"), "timeout"],
     ["model", new LLMConfigurationError("private provider body"), "config"],
     ["model", new LlmRequestError("private provider body", 401), "auth"],
+    ["model", new LlmRequestError("private provider body", 402), "payment"],
+    ["model", new LlmRequestError("private provider body", 403), "auth"],
+    ["render", new FigmaApiError("private provider body", 402), "render_failed"],
     ["render", new FigmaApiError("private provider body", 403), "auth"],
     ["render", new FigmaApiError("private provider body", 429), "rate_limit"],
     ["model", new LlmRequestError("private provider body", 429), "rate_limit"],
@@ -467,6 +470,58 @@ describe("ingestBoard", () => {
     }));
     return tree;
   }
+
+  it("stops new image requests at the first payment failure, lets eight in-flight workers finish and retries pending clusters", async () => {
+    vi.stubEnv("LLM_BASE_URL", "https://openrouter.ai/api/v1");
+    vi.stubEnv("LLM_VISION_MODELS", "openai/gpt-4.1-mini");
+    vi.stubEnv("LLM_VISION_MODEL", "");
+    vi.stubEnv("INGEST_BOARD_VISION_CONCURRENCY", "");
+    fetchFileTreeMock.mockResolvedValue(imageClusterTree(17));
+    const refine = refineClusterWithVisionMock.getMockImplementation()!;
+    let started = 0;
+    let allStarted!: () => void, releaseInFlight!: () => void, failureReported!: () => void;
+    const firstWave = new Promise<void>(resolve => { allStarted = resolve; });
+    const pending = new Promise<void>(resolve => { releaseInFlight = resolve; });
+    const reported = new Promise<void>(resolve => { failureReported = resolve; });
+    refineClusterWithVisionMock.mockImplementation(async (...args) => {
+      const first = ++started === 1;
+      if (started === 8) allStarted();
+      await firstWave;
+      if (first) throw new LlmRequestError("private provider body", 402, 90);
+      await pending;
+      return refine(...args);
+    });
+    const onProgress = vi.fn((message: string) => {
+      if (message === "Interpreting images: 1 of 17") failureReported();
+    });
+    const input = { figmaFileUrl: "https://www.figma.com/board/AbC123/Test", docStructureHint: "freeform", ingestMode: "balanced" } as const;
+    const ingest = ingestBoard(input, { onProgress });
+    await reported;
+    await new Promise(resolve => setImmediate(resolve));
+    const startedAfterFailure = refineClusterWithVisionMock.mock.calls.length;
+    releaseInFlight();
+    const output = await ingest;
+    expect(startedAfterFailure).toBe(8);
+    expect(refineClusterWithVisionMock).toHaveBeenCalledTimes(8);
+    expect(output.qualityReport).toMatchObject({ fallbackReasons: { payment: 10 }, visionClusters: 7, incompleteClusters: 10 });
+    expect(output.qualityReport?.nextRetryAt).toBeUndefined();
+    expect(output.summary).toContain("Visual interpretation is incomplete for 10 clusters: the model provider requires payment or more credits.");
+    expect(output.summary).toContain("Add credits or raise the API key's credit limit at the model provider, or choose a free model; diagnose_llm_config can test the configured model provider.");
+    expect(output.summary).toContain("Run ingest_board again to retry pending work; successful interpretations are kept.");
+    expect(output.summary).not.toContain("Retry after");
+    expect(output.summary).not.toContain("private provider body");
+    // Eight workers began; the nine untouched clusters emit no cluster progress.
+    expect(onProgress.mock.calls.filter(([message]) => message.startsWith("Interpreting images:"))).toHaveLength(8);
+    const previous = persistBoardMock.mock.calls.at(-1)![0] as BoardData;
+    expect(previous.clusters.filter(cluster => cluster.incomplete)).toHaveLength(10);
+    expect(previous.clusters.every(cluster => cluster.retryAfter === undefined)).toBe(true);
+
+    readLatestBoardMock.mockResolvedValueOnce(previous);
+    refineClusterWithVisionMock.mockClear().mockImplementation(refine);
+    const retried = await ingestBoard(input);
+    expect(refineClusterWithVisionMock).toHaveBeenCalledTimes(10);
+    expect(retried.qualityReport).toMatchObject({ reusedClusters: 7, visionClusters: 17, incompleteClusters: 0 });
+  });
 
   /** Clusters of drawings without text and without images, which are rendered. */
   function drawingClusterTree(count: number) {

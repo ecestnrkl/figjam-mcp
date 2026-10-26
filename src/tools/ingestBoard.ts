@@ -327,10 +327,10 @@ async function performIngest(input: IngestBoardInput, options: OperationOptions)
       } catch (error) {
         signal?.throwIfAborted();
         const reason = classifyVisionFailure(error, stage);
-        const retryDelay = error instanceof FigmaApiError || error instanceof LlmRequestError ? error.retryAfter : undefined;
+        const retryDelay = reason !== "payment" && (error instanceof FigmaApiError || error instanceof LlmRequestError) ? error.retryAfter : undefined;
         const retryAfter = retryDelay && Number.isFinite(retryDelay) && retryDelay > 0
           ? Date.now() + retryDelay * 1000 : reason === "rate_limit" ? Date.now() + 60_000 : undefined;
-        if (reason === "rate_limit" || reason === "config" || reason === "auth") sharedFailure = { reason, retryAfter };
+        if (reason === "rate_limit" || reason === "config" || reason === "auth" || reason === "payment") sharedFailure = { reason, retryAfter };
         fallback(index, reason, retryAfter);
         console.error(`Vision refinement incomplete (${reason}); original sources are retained.`);
       } finally {
@@ -380,7 +380,7 @@ function ingestResult(board: BoardData, contentChanged?: boolean): IngestBoardOu
 }
 
 type VisionStage = "render" | "model";
-type VisionFallbackReason = "config" | "auth" | "rate_limit" | "timeout" | "invalid_reply"
+type VisionFallbackReason = "config" | "auth" | "payment" | "rate_limit" | "timeout" | "invalid_reply"
   | "download_budget" | "render_failed" | "model_failed" | "time_budget";
 
 function classifyVisionFailure(error: unknown, stage: VisionStage): VisionFallbackReason {
@@ -388,6 +388,7 @@ function classifyVisionFailure(error: unknown, stage: VisionStage): VisionFallba
   if (error instanceof FigmaDownloadBudgetError) return "download_budget";
   if (error instanceof VisionDeadlineExceededError || error instanceof FigmaTimeoutError || error instanceof LlmTimeoutError) return "timeout";
   if (error instanceof LlmInvalidJsonError) return "invalid_reply";
+  if (error instanceof LlmRequestError && error.status === 402) return "payment";
   if (error instanceof FigmaApiError || error instanceof LlmRequestError) {
     if (error.status === 429) return "rate_limit";
     if (error.status === 401 || error.status === 403) return "auth";
@@ -909,6 +910,7 @@ function describeFallbackReasons(reasons?: Record<string, number>): string {
     time_budget: "the time for images in this run ran out", vision_budget: "the time for images in an earlier run ran out",
     timeout: "the model did not answer in time", config: "the model settings are missing or invalid",
     auth: "Figma or the model provider denied access", rate_limit: "the model provider's rate limit was reached",
+    payment: "the model provider requires payment or more credits",
     invalid_reply: "the model's reply was unusable", download_budget: "the images were too large to download",
     render_failed: "Figma could not provide the images", model_failed: "the model request failed",
     vision_failed: "an earlier run failed without a recorded cause", unknown: "the cause was not recorded",
@@ -924,6 +926,7 @@ function describeNextSteps(report: IngestQualityReport): string {
   const instructions: string[] = [];
   if (reasons.config) instructions.push(`${missingLlmConfigurationMessage() ?? "Check the model settings."} diagnose_llm_config can test the configured model provider.`);
   if (reasons.auth) instructions.push("Check Figma and model-provider access permissions; diagnose_llm_config can test the configured model provider.");
+  if (reasons.payment) instructions.push("Add credits or raise the API key's credit limit at the model provider, or choose a free model; diagnose_llm_config can test the configured model provider.");
   if (report.nextRetryAt) instructions.push(`Retry after ${new Date(report.nextRetryAt).toISOString()} for the pending provider cooldown.`);
   instructions.push(reasons.time_budget || reasons.vision_budget
     ? "Run ingest_board again to continue the remaining visual interpretation; finished clusters are reused."
