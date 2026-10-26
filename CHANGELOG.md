@@ -2,6 +2,9 @@
 
 ## 0.11.0 — Unreleased
 
+- `ingest_board` defaults to 8 parallel image requests for paid OpenRouter candidates, retaining 3 for free candidates and other providers; an explicit concurrency setting overrides both.
+- `ingest_board` reports progress after each started image cluster when the client supplies a progress token.
+- README documents client-specific tool timeout settings and raising the image budget alongside them.
 - `get_board_context` automatically shows compact source-ID overviews for large section reads; `detail: "full"` reads complete excerpts and Figma links from the same snapshot.
 - Full `get_board_context` excerpts omit inherited `snapshotId`, zero `chunkIndex` and false `truncated`/`modelDerived` fields to fit more source text in each page.
 - `diagnose_llm_config` uses a pure blue test image to avoid ambiguous color-check failures.

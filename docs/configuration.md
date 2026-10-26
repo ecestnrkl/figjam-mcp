@@ -46,7 +46,7 @@ invalid JSON or an unavailable model. Changing any model setting or
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `INGEST_BOARD_VISION_BUDGET_MS` | `40000` | Time for the vision phase of one ingest. `0` starts no vision work; use `max_speed` for text-only ingests. |
-| `INGEST_BOARD_MIN_VISION_SLOT_MS` | `10000` | A cluster (rendering included) or its model step starts only if the budget left is at least this value and 1.25 × the median duration of that step among clusters finished in the same ingest. Concurrency × budget ÷ slot (12 by default) is how many clusters are planned for rendering. |
+| `INGEST_BOARD_MIN_VISION_SLOT_MS` | `10000` | A cluster (rendering included) or its model step starts only if the budget left is at least this value and 1.25 × the median duration of that step among clusters finished in the same ingest. Concurrency × budget ÷ slot (12 with 3 parallel requests, 32 with 8) is how many clusters are planned for rendering. |
 | `FIGMA_FILE_REQUEST_TIMEOUT_MS` | `60000` | Download of the board's file tree. |
 | `FIGMA_REQUEST_TIMEOUT_MS` | `15000` | Each other Figma request: version check, image fills, image render, image download. |
 | `LLM_REQUEST_TIMEOUT_MS` | — | When set, each LLM request whose role has no value of its own. |
@@ -69,7 +69,7 @@ invalid JSON or an unavailable model. Changing any model setting or
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `INGEST_BOARD_VISION_CONCURRENCY` | `3` | Clusters interpreted in parallel. |
+| `INGEST_BOARD_VISION_CONCURRENCY` | `8` or `3` | Resolved per ingest for workers and render planning: `8` when `LLM_BASE_URL` has host `openrouter.ai` and no vision candidate (`LLM_VISION_MODELS`, legacy `LLM_VISION_MODEL`, preset) is `openrouter/free` or ends in `:free`; otherwise `3`, including the free preset, GitHub Models and missing or invalid URLs. An explicit integer ≥ 1 overrides either default. |
 | `FIGMA_SCREENSHOT_DOWNLOAD_CONCURRENCY` | `3` | Parallel render downloads per cluster; the originals of a cluster download together. |
 | `FIGJAM_MCP_MEMORY_CACHE_MAX_BOARDS` | `10` | Boards kept in memory; others are reloaded from disk. |
 | `FIGJAM_MCP_CACHE_DIR` | OS cache directory | Cache root. Use an absolute, dedicated directory. |
@@ -105,6 +105,10 @@ download, clustering, the vision phase and saving; only the vision phase has a
 budget. With the 40-second default, 20 seconds of a 60-second client timeout
 remain for everything else. For very large boards or a slow Figma API, see
 [troubleshooting](troubleshooting.md#client-timeouts).
+
+When the client supplies a progress token, `ingest_board` reports each started image
+cluster as it finishes between the interpret and persist phases; client support
+determines whether these updates are displayed.
 
 `diagnose_llm_config` runs its three checks in parallel and stops each after 45
 seconds, so it answers within a 60-second client timeout even if a provider hangs.

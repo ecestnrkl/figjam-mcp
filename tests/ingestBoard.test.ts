@@ -65,7 +65,7 @@ vi.mock("../src/lib/persistentCache.js", () => ({
 
 const { flattenNodeTree } = await import("../src/lib/nodeTree.js");
 const { partitionedBoardClusters } = await import("../src/lib/spatialCluster.js");
-const { ingestBoard, parseFigmaFileKey } = await import("../src/tools/ingestBoard.js");
+const { ingestBoard, parseFigmaFileKey, getVisionConcurrency } = await import("../src/tools/ingestBoard.js");
 const { getBoardContext } = await import("../src/tools/getBoardContext.js");
 const { getBoard } = await import("../src/lib/cache.js");
 const { redactBoard } = await import("../src/lib/redact.js");
@@ -477,6 +477,149 @@ describe("ingestBoard", () => {
     })) as typeof tree.document.children[0]["children"];
     return tree;
   }
+
+  describe("vision concurrency per ingest", () => {
+    it.each([
+      { name: "free preset", base: "https://openrouter.ai/api/v1", models: "", legacy: "", override: "", expected: 3 },
+      { name: "paid candidates", base: "https://openrouter.ai/api/v1", models: "openai/gpt-4.1-mini,openai/gpt-4.1", legacy: "", override: "", expected: 8 },
+      { name: "free candidate after paid", base: "https://openrouter.ai/api/v1", models: "openai/gpt-4.1-mini,example/model:free", legacy: "", override: "", expected: 3 },
+      { name: "free router after paid", base: "https://openrouter.ai/api/v1", models: "openai/gpt-4.1-mini,openrouter/free", legacy: "", override: "", expected: 3 },
+      { name: "GitHub Models", base: "https://models.github.ai/inference", models: "openai/gpt-4.1-mini", legacy: "", override: "", expected: 3 },
+      { name: "missing URL", base: "", models: "openai/gpt-4.1-mini", legacy: "", override: "", expected: 3 },
+      { name: "invalid URL", base: "invalid", models: "openai/gpt-4.1-mini", legacy: "", override: "", expected: 3 },
+      { name: "lookalike host", base: "https://openrouter.ai.example/v1", models: "openai/gpt-4.1-mini", legacy: "", override: "", expected: 3 },
+      { name: "lower paid override", base: "https://openrouter.ai/api/v1", models: "openai/gpt-4.1-mini", legacy: "", override: "2", expected: 2 },
+      { name: "higher free override", base: "https://openrouter.ai/api/v1", models: "", legacy: "", override: "6", expected: 6 },
+      { name: "paid legacy candidate", base: "https://openrouter.ai/api/v1", models: "openai/gpt-4.1-mini", legacy: "openai/gpt-4.1", override: "", expected: 8 },
+      { name: "free legacy candidate", base: "https://openrouter.ai/api/v1", models: "openai/gpt-4.1-mini", legacy: "example/model:free", override: "", expected: 3 },
+      { name: "legacy retains free preset fallback", base: "https://openrouter.ai/api/v1", models: "", legacy: "openai/gpt-4.1-mini", override: "", expected: 3 },
+    ])("uses $expected workers for $name without reloading the module", async ({ base, models, legacy, override, expected }) => {
+      vi.stubEnv("LLM_BASE_URL", base);
+      vi.stubEnv("LLM_VISION_MODELS", models);
+      vi.stubEnv("LLM_VISION_MODEL", legacy);
+      vi.stubEnv("INGEST_BOARD_VISION_CONCURRENCY", override);
+      // Invalid provider configuration cannot start image requests.
+      if (!base || base === "invalid") { expect(getVisionConcurrency()).toBe(expected); return; }
+      fetchFileTreeMock.mockResolvedValue(imageClusterTree(17));
+      const refine = refineClusterWithVisionMock.getMockImplementation()!;
+      let active = 0, peak = 0;
+      refineClusterWithVisionMock.mockImplementation(async (...args) => {
+        peak = Math.max(peak, ++active);
+        await new Promise(resolve => setTimeout(resolve, 10));
+        try { return await refine(...args); } finally { active--; }
+      });
+      const output = await ingestBoard({ figmaFileUrl: "https://www.figma.com/board/AbC123/Test", docStructureHint: "freeform", ingestMode: "max_quality" });
+      expect(peak).toBe(expected);
+      expect(active).toBe(0);
+      expect(refineClusterWithVisionMock).toHaveBeenCalledTimes(17);
+      expect(output.qualityReport).toMatchObject({ visionClusters: 17, fallbackCount: 0 });
+    });
+
+    it.each(["0", "-1", "1.5", "invalid"])("rejects invalid concurrency %s at ingest time", async value => {
+      vi.stubEnv("INGEST_BOARD_VISION_CONCURRENCY", value);
+      await expect(ingestBoard({ figmaFileUrl: "https://www.figma.com/board/AbC123/Test", docStructureHint: "freeform", ingestMode: "balanced" }))
+        .rejects.toThrow("INGEST_BOARD_VISION_CONCURRENCY must be an integer >= 1");
+      expect(fetchFileTreeMock).not.toHaveBeenCalled();
+    });
+
+    it("plans 32 paid clusters for rendering with the same eight workers", async () => {
+      vi.stubEnv("LLM_BASE_URL", "https://openrouter.ai/api/v1");
+      vi.stubEnv("LLM_VISION_MODELS", "openai/gpt-4.1-mini");
+      fetchFileTreeMock.mockResolvedValue(drawingClusterTree(40));
+      await ingestBoard({ figmaFileUrl: "https://www.figma.com/board/AbC123/Test", docStructureHint: "freeform", ingestMode: "max_quality" });
+      expect(fetchRenderUrlsMock.mock.calls.map(call => (call[1] as string[]).length)).toEqual([18, 14, 8]);
+    });
+  });
+
+  describe("image cluster progress", () => {
+    const input = { figmaFileUrl: "https://www.figma.com/board/AbC123/Test", docStructureHint: "freeform", ingestMode: "max_quality" } as const;
+    const phases = [["fetch", 0, 5], ["extract", 1, 5], ["cluster", 2, 5], ["interpret", 3, 5], ["persist", 4, 5], ["complete", 5, 5]];
+
+    it("serializes one completion per started cluster between interpret and persist", async () => {
+      fetchFileTreeMock.mockResolvedValue(imageClusterTree(3));
+      const updates: Array<[string, number, number | undefined]> = [];
+      let pending = 0;
+      const onProgress = vi.fn(async (message: string, progress: number, total?: number) => {
+        expect(pending++).toBe(0);
+        await new Promise(resolve => setImmediate(resolve));
+        updates.push([message, progress, total]);
+        pending--;
+      });
+      await ingestBoard(input, { onProgress });
+      expect(updates).toEqual([...phases.slice(0, 4),
+        ["Interpreting images: 1 of 3", 3.25, 5],
+        ["Interpreting images: 2 of 3", 3.5, 5],
+        ["Interpreting images: 3 of 3", 3.75, 5], ...phases.slice(4)]);
+      expect(updates.every((update, index) => index === 0 || update[1] > updates[index - 1]![1])).toBe(true);
+      await new Promise(resolve => setImmediate(resolve));
+      expect(onProgress).toHaveBeenCalledTimes(9);
+    });
+
+    it.each(["success", "model error", "render error", "budget after render", "rate limit"])("reports started work after %s and omits unstarted work", async outcome => {
+      vi.stubEnv("INGEST_BOARD_VISION_CONCURRENCY", "1");
+      fetchFileTreeMock.mockResolvedValue(imageClusterTree(4));
+      vi.useFakeTimers({ toFake: ["Date"] });
+      if (outcome === "model error") refineClusterWithVisionMock.mockRejectedValue(new Error("Synthetic model failure"));
+      if (outcome === "render error") {
+        fetchFileTreeMock.mockResolvedValue(drawingClusterTree(4));
+        fetchRenderUrlsMock.mockRejectedValue(new Error("Synthetic render failure"));
+      }
+      if (outcome === "rate limit") refineClusterWithVisionMock.mockRejectedValue(new LlmRequestError("Synthetic rate limit", 429, 30));
+      if (outcome === "budget after render") {
+        fetchFileTreeMock.mockResolvedValue(drawingClusterTree(4));
+        downloadRendersMock.mockImplementation(async () => {
+          vi.setSystemTime(Date.now() + 35_000);
+          return [render("https://cdn.example/synthetic")];
+        });
+      }
+      const onProgress = vi.fn();
+      const output = await ingestBoard(input, { onProgress });
+      const count = outcome === "budget after render" || outcome === "rate limit" ? 1 : 4;
+      const clusterUpdates = onProgress.mock.calls.slice(4, -2);
+      expect(clusterUpdates).toEqual(Array.from({ length: count }, (_, i) => [`Interpreting images: ${i + 1} of 4`, 3 + (i + 1) / 5, 5]));
+      expect(output.qualityReport?.visionClusters).toBe(outcome === "success" ? 4 : 0);
+      expect(onProgress.mock.calls.slice(-2)).toEqual(phases.slice(-2));
+    });
+
+    it.each(["max_speed", "cache hit", "reused clusters", "missing configuration", "exhausted budget"])("keeps six phases with %s", async scenario => {
+      if (scenario === "cache hit") readCachedBoardMock.mockResolvedValue(cachedBoard());
+      if (scenario === "reused clusters") {
+        await ingestBoard(input);
+        readLatestBoardMock.mockResolvedValue(persistBoardMock.mock.calls.at(-1)![0]);
+      }
+      if (scenario === "missing configuration") vi.stubEnv("LLM_API_KEY", "");
+      const onProgress = vi.fn();
+      if (scenario === "exhausted budget") {
+        // The interpret notification starts the budget; spend it on image fills
+        // before a worker passes its initial budget check.
+        vi.useFakeTimers({ toFake: ["Date"] });
+        fetchImageRefsMock.mockImplementation(async () => { vi.setSystemTime(Date.now() + 40_001); return {}; });
+      }
+      await ingestBoard({ ...input, ...(scenario === "max_speed" ? { ingestMode: "max_speed" as const } : {}) }, { onProgress });
+      expect(onProgress.mock.calls).toEqual(phases);
+    });
+
+    it("keeps a successful cluster when its progress consumer rejects", async () => {
+      const onProgress = vi.fn(async (message: string) => {
+        if (message.startsWith("Interpreting images:")) throw new Error("Synthetic client disconnected");
+      });
+      const output = await ingestBoard(input, { onProgress });
+      expect(output.qualityReport).toMatchObject({ visionClusters: 2, fallbackCount: 0 });
+      expect(onProgress.mock.calls.at(-1)).toEqual(["complete", 5, 5]);
+    });
+
+    it("still cancels when the signal aborts during cluster progress", async () => {
+      vi.stubEnv("INGEST_BOARD_VISION_CONCURRENCY", "1");
+      const controller = new AbortController();
+      const reason = new Error("Synthetic cancellation");
+      const onProgress = vi.fn(async (message: string) => {
+        if (message.startsWith("Interpreting images:")) { controller.abort(reason); throw reason; }
+      });
+      await expect(ingestBoard(input, { signal: controller.signal, onProgress })).rejects.toBe(reason);
+      expect(persistBoardMock).not.toHaveBeenCalled();
+      expect(onProgress.mock.calls.some(([message]) => message === "persist" || message === "complete")).toBe(false);
+    });
+  });
 
   it("renders the screenshots of many vision clusters in few requests and hands each cluster its own images", async () => {
     fetchFileTreeMock.mockResolvedValueOnce(drawingClusterTree(25));
