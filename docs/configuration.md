@@ -27,8 +27,10 @@ line, and later errors about missing credentials also include the load failure.
 | --- | --- | --- |
 | `FIGJAM_MCP_REDACT_CREDENTIALS` | `true` | Replaces explicit credentials with `[redacted]` before they reach the cache, tool output or an LLM provider: labelled values such as `Passwort: …`, `PIN: …` or `API key: …` up to the end of the line, and known key formats (GitHub, OpenAI/OpenRouter, Figma, AWS, Slack, private key blocks). Set `false` to turn it off. |
 
-Messages always replace the exact configured Figma and LLM credentials, including
-a `figmaAccessToken` argument, with `[redacted]`, even when board redaction is off.
+Messages replace exact configured Figma and LLM credentials, including a
+`figmaAccessToken` argument, with `[redacted]` when their trimmed value has at
+least 16 characters, even when board redaction is off. Shorter values are treated
+as placeholders.
 Tokens with characters that cannot be sent in an HTTP header are rejected before
 any request, with a message naming their source.
 

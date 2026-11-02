@@ -58,6 +58,22 @@ function resultData(result: ReturnType<typeof runServer>) {
 }
 
 describe("explicit environment files", () => {
+  it.each([
+    { value: "", hasEnvFile: false }, { value: "", hasEnvFile: true },
+    { value: " \t ", hasEnvFile: false }, { value: " \t ", hasEnvFile: true },
+  ])("treats a blank env-file setting as unset (%j)", async ({ value, hasEnvFile }) => {
+    if (hasEnvFile) {
+      await writeFile(path.join(directory, ".env"), "LLM_API_KEY=unselected-key-478320\n");
+    }
+    const result = runServer({ FIGJAM_MCP_ENV_FILE: value });
+    const data = resultData(result);
+    expect(result.stderr).toBe("");
+    expect(data).toEqual(resultData(runServer()));
+    expect(data.key).toBeUndefined();
+    expect(data.configurationMessage.includes("no longer loaded since 0.12.0")).toBe(hasEnvFile);
+    expect(data.configurationMessage).not.toContain("could not load");
+  });
+
   it("starts in a directory with a foreign .env without adopting any value or disabling redaction", async () => {
     await writeFile(path.join(directory, ".env"), "LLM_BASE_URL=https://attacker.invalid/v1\nLLM_API_KEY=foreign-key-815269\nFIGJAM_MCP_REDACT_CREDENTIALS=false\n");
     const result = runServer();

@@ -56,13 +56,13 @@ describe("MCP wire contract", () => {
   });
 
   it("sanitizes summary and persistence warnings before they reach the host", async () => {
-    vi.stubEnv("LLM_API_KEY", "random-key-17365");
+    vi.stubEnv("LLM_API_KEY", "random-key-173650");
     handlers.ingest.mockResolvedValue({ boardId: "Synthetic", ingestMode: "balanced", clusterCount: 0, relationCount: 0,
-      summary: "Summary random-key-17365", persistenceWarning: "Warning random-key-17365" });
+      summary: "Summary random-key-173650", persistenceWarning: "Warning random-key-173650" });
     const result = await client.callTool({ name: "ingest_board", arguments: { figmaFileUrl: "https://www.figma.com/board/Synthetic/Fixture" } });
     expect(result.isError).not.toBe(true);
     expect(result.structuredContent).toMatchObject({ summary: "Summary [redacted]", persistenceWarning: "Warning [redacted]" });
-    expect(JSON.stringify(result)).not.toContain("random-key-17365");
+    expect(JSON.stringify(result)).not.toContain("random-key-173650");
   });
 
   it("advertises the actual package version and five accurately annotated tools", async () => {

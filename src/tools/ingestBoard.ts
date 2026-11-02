@@ -104,6 +104,16 @@ async function performIngest(input: IngestBoardInput, options: OperationOptions)
   // timeout; clusters beyond this budget retain deterministic text summaries.
   const visionBudgetMs = ingestMode === "max_speed" ? 0 : readIntEnv("INGEST_BOARD_VISION_BUDGET_MS", 40_000, 0);
   const minVisionSlotMs = ingestMode === "max_speed" ? 0 : readIntEnv("INGEST_BOARD_MIN_VISION_SLOT_MS", 10000, 0);
+  // Validate the mode's configuration before spending a Figma file request,
+  // even when the downloaded board would contain no vision clusters.
+  readIntEnv("FIGMA_FILE_REQUEST_TIMEOUT_MS", 60000, 1000);
+  if (ingestMode !== "max_speed") {
+    getVisionMaxOutputTokens();
+    getVisionRequestTimeoutMs();
+    readIntEnv("FIGMA_REQUEST_TIMEOUT_MS", 15000, 1000);
+    readIntEnv("FIGMA_SCREENSHOT_DOWNLOAD_CONCURRENCY", 3, 1);
+    if (!missingLlmConfigurationMessage()) validateLlmRuntimeConfiguration();
+  }
   const progress = async (phase: string, completed: number) => {
     // Let stdio cancellation notifications run between bounded CPU phases.
     await yieldToRequests(undefined, { signal });
@@ -118,7 +128,6 @@ async function performIngest(input: IngestBoardInput, options: OperationOptions)
   const token = input.figmaAccessToken?.trim() || process.env.FIGMA_ACCESS_TOKEN?.trim();
   if (!token) throw new Error("No Figma access token — set FIGMA_ACCESS_TOKEN in your MCP client's environment" + missingEnvironmentHint());
   validateHeaderSecret(token, input.figmaAccessToken?.trim() ? "figmaAccessToken" : "FIGMA_ACCESS_TOKEN");
-  if (ingestMode !== "max_speed" && !missingLlmConfigurationMessage()) validateLlmConfiguration();
   const previousBoard = await readLatestBoard(fileKey);
   // Every ingest downloads the board: /meta reports edits only with Figma's next
   // autosave or after a content read, minutes later, so it cannot confirm freshness.
@@ -203,13 +212,6 @@ async function performIngest(input: IngestBoardInput, options: OperationOptions)
     || compareVisionPriority(priorities[left]!, priorities[right]!));
   let sharedFailure: { reason: VisionFallbackReason; retryAfter?: number } | undefined;
   if (visionQueue.length) {
-    // Configuration mistakes must reach the tool caller, rather than becoming
-    // per-cluster provider or image-download fallbacks.
-    getVisionMaxOutputTokens();
-    getVisionRequestTimeoutMs();
-    readIntEnv("FIGMA_REQUEST_TIMEOUT_MS", 15000, 1000);
-    readIntEnv("FIGMA_SCREENSHOT_DOWNLOAD_CONCURRENCY", 3, 1);
-    if (!missingLlmConfigurationMessage()) validateLlmRuntimeConfiguration();
     try { validateLlmConfiguration(); }
     catch (error) { sharedFailure = { reason: classifyVisionFailure(error, "model") }; }
   }

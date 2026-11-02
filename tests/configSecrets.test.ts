@@ -137,7 +137,7 @@ describe("configured secrets at external error boundaries", () => {
   });
 
   it("redacts before diagnostic whitespace folding and truncation", async () => {
-    const key = "unusual\tkey";
+    const key = "unusual\tkey-extra";
     vi.stubEnv("LLM_API_KEY", "valid-header-key");
     vi.stubEnv("FIGMA_ACCESS_TOKEN", key);
     fetchMock.mockResolvedValue(json({ error: { message: `${"x".repeat(190)} ${key}`, code: "invalid" } }, 401));

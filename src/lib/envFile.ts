@@ -14,7 +14,7 @@ export function expandHomePath(value: string): string {
 export function loadConfiguredEnvFile(): void {
   loadError = undefined;
   const configuredPath = process.env.FIGJAM_MCP_ENV_FILE;
-  if (configuredPath === undefined) return;
+  if (!configuredPath?.trim()) return;
   const filename = expandHomePath(configuredPath);
   try {
     const values = parseEnv(readFileSync(filename, "utf8"));
@@ -36,7 +36,7 @@ export function loadConfiguredEnvFile(): void {
 /** Extra context only for errors about missing required credentials or endpoint. */
 export function missingEnvironmentHint(): string {
   if (loadError) return ` ${redactMessage(loadError)}`;
-  if (process.env.FIGJAM_MCP_ENV_FILE === undefined && hasWorkingDirectoryEnvFile()) {
+  if (!process.env.FIGJAM_MCP_ENV_FILE?.trim() && hasWorkingDirectoryEnvFile()) {
     return " A .env file in the working directory is no longer loaded since 0.12.0; set variables in the MCP client configuration or set FIGJAM_MCP_ENV_FILE to its absolute path.";
   }
   return "";

@@ -11,7 +11,8 @@ export function withSecretScope<T>(secrets: string[], run: () => T): T {
 /** Exact configured secrets are hidden even when board credential redaction is disabled. */
 export function redactConfiguredSecrets(text: string, additionalSecrets: string[] = []): string {
   const secrets = [process.env.LLM_API_KEY, process.env.FIGMA_ACCESS_TOKEN, ...(scopedSecrets.getStore() ?? []), ...additionalSecrets]
-    .flatMap(value => value?.trim() ? [value, value.trim()] : [])
+    // Local providers accept short placeholders; replacing them would corrupt board text and IDs.
+    .flatMap(value => value && value.trim().length >= 16 ? [value, value.trim()] : [])
     .filter(Boolean)
     .sort((a, b) => b.length - a.length);
   for (const secret of new Set(secrets)) text = text.replaceAll(secret, REDACTED);
