@@ -46,7 +46,8 @@ cause. Original text and table rows stay searchable in every case.
 ## MCP Inspector
 
 `inspector.config.json` starts the local source with `requestTimeout: 180000`
-and loads `.env` from the repository:
+and explicitly loads `.env` from the repository with Node's
+`--env-file-if-exists=.env` (existing environment values win):
 
 ```bash
 npx @modelcontextprotocol/inspector --config inspector.config.json
@@ -85,6 +86,10 @@ configuration, then restart the server in the client.
 | Message | Fix |
 | --- | --- |
 | `No Figma access token — set FIGMA_ACCESS_TOKEN …` | Add the token to the client's `env` and restart the server. |
+| `FIGMA_ACCESS_TOKEN contains characters that cannot be sent in an HTTP header, such as smart quotes or a line break. Copy the token again.` | Copy the token again without smart quotes, line breaks, zero-width or other non-ASCII characters. The message names `figmaAccessToken` or `LLM_API_KEY` instead when that is the source; no request is sent. |
+| `INGEST_BOARD_VISION_BUDGET_MS must be an integer >= 0` | Set the named variable to a whole number in the stated range (milliseconds here, e.g. `270000`, not `270s`) and restart. Validation happens only when a tool needs the value; other tools remain usable. For boolean errors, use `true` or `false`. |
+| `A .env file in the working directory is no longer loaded since 0.12.0; …` | Put the missing variables in the MCP client configuration, use VS Code `mcp.json`'s `envFile`, or set `FIGJAM_MCP_ENV_FILE` to the absolute path. This hint appears only when a working-directory `.env` exists and no explicit env file is configured. |
+| `FIGJAM_MCP_ENV_FILE could not load "/path": ENOENT.` | Check the configured path and file permissions (`EACCES` means access denied). The server keeps running; missing-credential errors include this load failure. |
 | `Invalid Figma URL — Expected a Figma URL like https://www.figma.com/board/<file_key>/<name> …` | Pass the board URL from the browser, e.g. `https://www.figma.com/board/FILE_KEY/Name`. |
 | `Figma access denied (403). Check FIGMA_ACCESS_TOKEN: …` | The token is invalid or expired, lacks `file_content:read`, or its account cannot open the file. The same applies to 401. |
 | `Figma file not found (404): …` | Check the file key; the token's account must have access. |

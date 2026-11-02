@@ -2,7 +2,8 @@ import OpenAI from "openai";
 import { readIntEnv } from "./env.js";
 import { getModelConfig, getModelsForRole } from "./modelRegistry.js";
 import { getLlmRequestTimeoutMs } from "./llmTimeouts.js";
-import { redactCredentials } from "./redact.js";
+import { redactError, redactMessage, redactOutputSecrets, validateHeaderSecret } from "./secrets.js";
+import { missingEnvironmentHint } from "./envFile.js";
 
 /**
  * Shared LLM access for visionInterpreter.ts and answerFromBoard.ts.
@@ -92,25 +93,27 @@ const REQUIRED_LLM_ENV = ["LLM_BASE_URL", "LLM_API_KEY"] as const;
 
 /**
  * Setup hint naming every missing required variable, shared by ingest_board, answer_from_board and
- * diagnose_llm_config; undefined when both are set. npx users have no .env, so it comes last.
+ * diagnose_llm_config; undefined when both are set.
  */
 export function missingLlmConfigurationMessage(): string | undefined {
   const missing = REQUIRED_LLM_ENV.filter((name) => !process.env[name]?.trim());
   if (!missing.length) return undefined;
   return `${missing.join(" and ")} ${missing.length === 1 ? "is" : "are"} not set. Add ${missing.length === 1 ? "it" : "them"} to "env" `
-    + "of this server in your MCP client configuration (see README, Quick start), then restart the server. "
-    + "In a local checkout, a .env file in the project directory works too.";
+    + "of this server in your MCP client configuration (see README, Quick start), then restart the server."
+    + missingEnvironmentHint();
 }
 
 /** Validate required settings before spending Figma requests on vision input. */
 export function validateLlmConfiguration(): void {
   const missing = missingLlmConfigurationMessage();
-  if (missing) throw new LLMConfigurationError(missing);
+  if (missing) throw new LLMConfigurationError(redactMessage(missing));
+  try { validateHeaderSecret(process.env.LLM_API_KEY!, "LLM_API_KEY"); }
+  catch (error) { throw new LLMConfigurationError((error as Error).message); }
 }
 
 /** Lazily constructs (and caches) the OpenAI-compatible client. */
 export function getLlmClient(): OpenAI {
-  validateLlmConfiguration();
+  validateLlmRuntimeConfiguration();
   const baseURL = process.env.LLM_BASE_URL!.trim();
   const apiKey = process.env.LLM_API_KEY!.trim();
   const config = JSON.stringify([baseURL, apiKey]);
@@ -118,10 +121,17 @@ export function getLlmClient(): OpenAI {
     baseURL,
     apiKey,
     timeout: getLlmRequestTimeoutMs(),
-    maxRetries: LLM_SDK_MAX_RETRIES,
+    maxRetries: readIntEnv("LLM_SDK_MAX_RETRIES", 0, 0),
+    logger: { error: logSdkMessage, warn: logSdkMessage, info: logSdkMessage, debug: logSdkMessage },
   });
   clientConfig = config;
   return client;
+}
+
+/** SDK diagnostics must use stderr and the same secret boundary as provider errors. */
+function logSdkMessage(message: string, ...details: unknown[]): void {
+  console.error(redactMessage(message), ...details.map(detail =>
+    detail instanceof Error ? redactMessage(detail.message) : redactOutputSecrets(detail)));
 }
 
 export function getVisionModel(): string {
@@ -144,28 +154,18 @@ export function getFastTextModels(): string[] {
   return getModelsForRole("fastText");
 }
 
-/** Max extra attempts after a 429 before giving up (free-tier limits reset per minute). */
-const MAX_RATE_LIMIT_RETRIES = readIntEnv("LLM_RATE_LIMIT_RETRIES", 1, 0);
+/** Validate transport settings before any provider or image requests are started. */
+export function validateLlmRuntimeConfiguration(): void {
+  validateLlmConfiguration();
+  validateLlmTransportConfiguration();
+}
 
-/** Cap provider Retry-After delays so MCP clients receive a response before their own timeout. */
-const MAX_RATE_LIMIT_BACKOFF_MS = readIntEnv("LLM_RATE_LIMIT_MAX_BACKOFF_MS", 5000, 0);
-
-/**
- * The OpenAI SDK defaults to 10 minutes and retries timeouts twice. MCP UI
- * clients usually give up much earlier, so keep LLM calls bounded here.
- */
-const LLM_SDK_MAX_RETRIES = readIntEnv("LLM_SDK_MAX_RETRIES", 0, 0);
-
-/**
- * Output token budget. This must cover BOTH the JSON answer AND any hidden
- * reasoning tokens: the free router often serves reasoning models (e.g.
- * nemotron-nano) that spend 500–1000+ tokens "thinking" before emitting the
- * JSON, and those reasoning tokens count against this budget. Set too low, the
- * reply is truncated mid-reasoning (finish_reason "length") and no JSON is ever
- * produced — surfacing as a confusing "did not return valid JSON" on a reply
- * that starts with prose like "The user wants me to analyze…".
- */
-const MAX_OUTPUT_TOKENS = readIntEnv("LLM_MAX_OUTPUT_TOKENS", 14096, 1);
+export function validateLlmTransportConfiguration(): void {
+  getLlmRequestTimeoutMs();
+  readIntEnv("LLM_RATE_LIMIT_RETRIES", 1, 0);
+  readIntEnv("LLM_RATE_LIMIT_MAX_BACKOFF_MS", 5000, 0);
+  readIntEnv("LLM_SDK_MAX_RETRIES", 0, 0);
+}
 
 /**
  * Runs a chat completion that must yield a JSON object.
@@ -212,12 +212,12 @@ export async function chatJson(
         // A router picks a model per request, so one more request can reach a working one.
         // Rate limits have their own backoff in createCompletion.
         if (recoverable && attempt === 1 && ROUTER_MODELS.has(candidate) && !isRateLimitError(error)) {
-          console.error(`LLM router ${candidate} failed; trying it once more.`);
+          console.error(redactMessage(`LLM router ${candidate} failed; trying it once more.`));
           continue;
         }
         if (recoverable && candidate !== models.at(-1)) {
           console.error(
-            `LLM model ${candidate} failed; trying the next explicitly configured candidate.`,
+            redactMessage(`LLM model ${candidate} failed; trying the next explicitly configured candidate.`),
           );
           break;
         }
@@ -239,7 +239,7 @@ async function createJsonCompletion(
     model,
     messages,
     temperature: 0.2,
-    max_tokens: options.maxOutputTokens ?? MAX_OUTPUT_TOKENS,
+    max_tokens: options.maxOutputTokens,
   };
   const openRouter = isOpenRouter(llm);
   if (options.reasoningEffort !== undefined) {
@@ -384,7 +384,7 @@ function describeProviderError(error: unknown): string | undefined {
     typeof body.code === "string" || typeof body.code === "number" ? `code ${body.code}` : undefined,
     typeof metadata.provider_name === "string" ? `provider ${metadata.provider_name}` : undefined,
   ].filter((part): part is string => Boolean(part?.trim()));
-  return parts.length ? redactCredentials(parts.join(", ").replace(/\s+/g, " ").trim()).slice(0, 200) : undefined;
+  return parts.length ? redactMessage(parts.join(", ")).replace(/\s+/g, " ").trim().slice(0, 200) : undefined;
 }
 
 /**
@@ -422,13 +422,13 @@ function isRateLimitError(error: unknown): boolean {
 }
 
 function normalizeLlmError(error: unknown): unknown {
-  if (!(error instanceof OpenAI.APIError)) return error;
+  if (!(error instanceof OpenAI.APIError)) return redactError(error);
   const retryAfter = Number(error.headers?.get("retry-after"));
   const message = error.status === 402
     ? "LLM request failed (HTTP 402): the model provider requires payment or more credits for this model. "
       + "Add credits or raise the API key's credit limit, or use a free model."
     : `LLM request failed (HTTP ${error.status ?? "unknown"}). Check provider availability and configuration.`;
-  return new LlmRequestError(message, error.status,
+  return new LlmRequestError(redactMessage(message), error.status,
     Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter : undefined);
 }
 
@@ -495,7 +495,7 @@ async function createCompletion(
             `Check the model, output-token budget and caller deadline, or adjust ${setting}.`,
         );
       }
-      if (!(error instanceof OpenAI.RateLimitError) || attempt >= MAX_RATE_LIMIT_RETRIES) {
+      if (!(error instanceof OpenAI.RateLimitError) || attempt >= readIntEnv("LLM_RATE_LIMIT_RETRIES", 1, 0)) {
         throw error;
       }
       await backoff(retryDelayMs(error, attempt), attempt, signal);
@@ -508,7 +508,7 @@ async function createCompletion(
     if (!embedded) {
       return completion;
     }
-    if (isRateLimit(embedded) && attempt < MAX_RATE_LIMIT_RETRIES) {
+    if (isRateLimit(embedded) && attempt < readIntEnv("LLM_RATE_LIMIT_RETRIES", 1, 0)) {
       await backoff(2 ** attempt * 2000, attempt, signal);
       continue;
     }
@@ -552,10 +552,10 @@ async function backoff(
   attempt: number,
   signal?: AbortSignal,
 ): Promise<void> {
-  const cappedWaitMs = Math.min(waitMs, MAX_RATE_LIMIT_BACKOFF_MS);
+  const cappedWaitMs = Math.min(waitMs, readIntEnv("LLM_RATE_LIMIT_MAX_BACKOFF_MS", 5000, 0));
   console.error(
     `LLM rate limited — retrying in ${Math.round(cappedWaitMs / 1000)}s ` +
-      `(attempt ${attempt + 1}/${MAX_RATE_LIMIT_RETRIES})…`,
+      `(attempt ${attempt + 1}/${readIntEnv("LLM_RATE_LIMIT_RETRIES", 1, 0)})…`,
   );
   await sleep(cappedWaitMs, signal);
 }

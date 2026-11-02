@@ -3,7 +3,8 @@ import { PNG } from "pngjs";
 
 const { chatJsonMock } = vi.hoisted(() => ({ chatJsonMock: vi.fn() }));
 
-vi.mock("../src/lib/llmClient.js", () => ({
+vi.mock("../src/lib/llmClient.js", async importOriginal => ({
+  validateLlmTransportConfiguration: (await importOriginal<typeof import("../src/lib/llmClient.js")>()).validateLlmTransportConfiguration,
   chatJson: chatJsonMock,
   getFastTextModels: () => ["fast-model"],
   getTextModels: () => ["text-model"],

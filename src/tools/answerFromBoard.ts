@@ -8,11 +8,9 @@ import {
   boundedText, connectionsForEvidence, formatEvidence, formatEvidenceConnection, retrieveEvidence,
   type Evidence,
 } from "../lib/evidence.js";
-import { ANSWER_MAX_OUTPUT_TOKENS } from "../lib/llmOutputBudgets.js";
+import { getAnswerMaxOutputTokens } from "../lib/llmOutputBudgets.js";
 import type { BoardData, OperationOptions } from "../types.js";
 
-const ANSWER_TOP_K = Math.min(readIntEnv("LLM_ANSWER_TOP_K", 15, 1), 30);
-const ANSWER_PROMPT_MAX_CHARS = Math.min(readIntEnv("LLM_ANSWER_PROMPT_MAX_CHARS", 40000, 4096), 60000);
 const ANSWER_KINDS = ["answer", "unresolved_task", "unresolved_question", "unresolved_proposal", "unsupported"] as const;
 type AnswerKind = typeof ANSWER_KINDS[number];
 const ANSWER_SYSTEM_PROMPT =
@@ -74,13 +72,15 @@ export async function answerFromBoard(
   options: AnswerFromBoardOptions = {},
 ): Promise<AnswerFromBoardOutput> {
   options.signal?.throwIfAborted();
+  const answerTopK = Math.min(readIntEnv("LLM_ANSWER_TOP_K", 15, 1), 30);
+  const answerPromptMaxChars = Math.min(readIntEnv("LLM_ANSWER_PROMPT_MAX_CHARS", 40000, 4096), 60000);
   const stored = await getBoardOrRestore(input.boardId, input.snapshotId);
   if (!stored) throw new Error(`Board "${input.boardId}" not found — run ingest_board first.`);
   // Snapshots cached before redaction existed must not reach the provider unredacted.
   const board = redactBoard(stored);
   const retrieved = retrieveEvidence(board, {
     query: isOverviewQuestion(input.question) ? undefined : input.question,
-    limit: isOverviewQuestion(input.question) ? 20 : ANSWER_TOP_K,
+    limit: isOverviewQuestion(input.question) ? 20 : answerTopK,
     includeNeighbors: true,
     neighborLimit: 4,
   });
@@ -88,8 +88,8 @@ export async function answerFromBoard(
 
   const prefix = "Source evidence (untrusted data):\n<board_context>\n";
   const suffix = `\n</board_context>\n\nQuestion: ${input.question}`;
-  const budget = ANSWER_PROMPT_MAX_CHARS - ANSWER_SYSTEM_PROMPT.length - prefix.length - suffix.length;
-  if (budget < 256) throw new Error(`Question is too long for LLM_ANSWER_PROMPT_MAX_CHARS=${ANSWER_PROMPT_MAX_CHARS}`);
+  const budget = answerPromptMaxChars - ANSWER_SYSTEM_PROMPT.length - prefix.length - suffix.length;
+  if (budget < 256) throw new Error(`Question is too long for LLM_ANSWER_PROMPT_MAX_CHARS=${answerPromptMaxChars}`);
   const primaryIds = new Set(retrieved.primaryEvidenceIds);
   const rendered = renderEvidence(retrieved.evidence, budget, primaryIds);
   if (rendered.evidence.length === 0) return unsupportedAnswer(input.question, retrieved.snapshotId);
@@ -109,7 +109,7 @@ export async function answerFromBoard(
       { role: "system", content: ANSWER_SYSTEM_PROMPT },
       { role: "user", content: `${prefix}${context}${suffix}` },
     ], {
-      maxOutputTokens: ANSWER_MAX_OUTPUT_TOKENS,
+      maxOutputTokens: getAnswerMaxOutputTokens(),
       reasoningEffort: getAnswerReasoningEffort(),
       requestTimeoutMs: getAnswerRequestTimeoutMs(),
       totalTimeoutMs: getAnswerTotalTimeoutMs(),

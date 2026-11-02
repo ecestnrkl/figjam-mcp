@@ -9,15 +9,15 @@ import { readLatestBoard, readBoardSnapshot, hasLegacyBoard } from "./persistent
  * falls back to the persistent cache, so ingested boards survive server
  * restarts without a manual re-ingest.
  */
-const MAX_CACHED_BOARDS = readIntEnv("FIGJAM_MCP_MEMORY_CACHE_MAX_BOARDS", 10, 1);
 const boards = new Map<string, BoardData>();
 
 export function setBoard(boardId: string, data: BoardData): void {
+  const maxCachedBoards = readIntEnv("FIGJAM_MCP_MEMORY_CACHE_MAX_BOARDS", 10, 1);
   // Map preserves insertion order. Re-inserting an existing board moves it to
   // the most-recently-used end before the oldest entries are evicted.
   boards.delete(boardId);
   boards.set(boardId, data);
-  while (boards.size > MAX_CACHED_BOARDS) {
+  while (boards.size > maxCachedBoards) {
     const oldestBoardId = boards.keys().next().value as string | undefined;
     if (oldestBoardId === undefined) {
       break;

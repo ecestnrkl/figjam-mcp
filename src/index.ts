@@ -1,10 +1,15 @@
 #!/usr/bin/env node
 
-import "dotenv/config";
 import { serveStdio } from "@modelcontextprotocol/server/stdio";
-import { createServer, packageMetadata } from "./server.js";
+import { loadConfiguredEnvFile } from "./lib/envFile.js";
+import { redactMessage } from "./lib/secrets.js";
+
+loadConfiguredEnvFile();
+let packageName = "figjam-context-mcp";
 
 async function main(): Promise<void> {
+  const { createServer, packageMetadata } = await import("./server.js");
+  packageName = packageMetadata.name;
   if (process.argv.includes("--version") || process.argv.includes("-v")) {
     process.stdout.write(`${packageMetadata.version}\n`);
     return;
@@ -17,7 +22,7 @@ async function main(): Promise<void> {
   console.error(`${packageMetadata.name} running on stdio`);
 }
 
-main().catch((error: unknown) => {
-  console.error(`Fatal error starting ${packageMetadata.name}:`, error);
+await main().catch((error: unknown) => {
+  console.error(redactMessage(`Fatal error starting ${packageName}: ${error instanceof Error ? error.message : String(error)}`));
   process.exit(1);
 });

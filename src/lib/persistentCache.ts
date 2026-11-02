@@ -7,18 +7,19 @@ import { z } from "zod";
 import type { BoardData, DocStructureHint, IngestMode, NormalizedNode } from "../types.js";
 import { getVisionConfigSignature } from "./modelRegistry.js";
 import { MAX_BOARD_NODES } from "./nodeTree.js";
+import { expandHomePath } from "./envFile.js";
 
 export const CACHE_SCHEMA_VERSION = 4;
 export const EXTRACTION_VERSION = 6;
 export const PROMPT_VERSION = 8;
-const defaultRoot = process.platform === "darwin"
+function defaultCacheRoot(): string { return process.platform === "darwin"
   ? path.join(homedir(), "Library", "Caches", "figjam-context-mcp")
   : process.platform === "win32"
     ? path.join(process.env.LOCALAPPDATA ?? path.join(homedir(), "AppData", "Local"), "figjam-context-mcp")
-    : path.join(process.env.XDG_CACHE_HOME ?? path.join(homedir(), ".cache"), "figjam-context-mcp");
-const CACHE_ROOT = process.env.FIGJAM_MCP_CACHE_DIR ?? defaultRoot;
-const CACHE_DIR = path.join(CACHE_ROOT, "v4");
-const LEGACY_ROOT = process.env.FIGJAM_MCP_CACHE_DIR ?? path.join(process.cwd(), ".cache", "figjam-mcp");
+    : path.join(process.env.XDG_CACHE_HOME ?? path.join(homedir(), ".cache"), "figjam-context-mcp"); }
+function cacheRoot(): string { return expandHomePath(process.env.FIGJAM_MCP_CACHE_DIR ?? defaultCacheRoot()); }
+function cacheDirectory(): string { return path.join(cacheRoot(), "v4"); }
+function legacyRoot(): string { return expandHomePath(process.env.FIGJAM_MCP_CACHE_DIR ?? path.join(process.cwd(), ".cache", "figjam-mcp")); }
 const HISTORY_LIMIT = 20;
 let mutationQueue: Promise<unknown> = Promise.resolve();
 const key = z.string().regex(/^[A-Za-z0-9_-]{1,128}$/);
@@ -79,12 +80,12 @@ export function hashNormalizedNodes(nodes: NormalizedNode[]): string {
 export function buildSnapshotId(fileKey: string, nodeHash: string, extractionVersion = EXTRACTION_VERSION): string {
   return hash(JSON.stringify([fileKey, extractionVersion, nodeHash]));
 }
-export function getRefinementSignature(): string {
-  return hash(JSON.stringify([getVisionConfigSignature(), process.env.LLM_BASE_URL ?? "", EXTRACTION_VERSION, PROMPT_VERSION]));
+export function getRefinementSignature(ingestMode?: IngestMode): string {
+  return hash(JSON.stringify([ingestMode === "max_speed" ? "max_speed" : getVisionConfigSignature(), process.env.LLM_BASE_URL ?? "", EXTRACTION_VERSION, PROMPT_VERSION]));
 }
 export function buildBoardCacheKey(identity: BoardCacheIdentity): string {
   return hash(JSON.stringify({ ...identity, figmaLastModified: undefined, schemaVersion: CACHE_SCHEMA_VERSION,
-    customPhases: identity.customPhases ?? [], refinementSignature: getRefinementSignature() }));
+    customPhases: identity.customPhases ?? [], refinementSignature: getRefinementSignature(identity.ingestMode) }));
 }
 
 /** Sources are immutable and stored separately from provider-dependent refinements. */
@@ -94,7 +95,7 @@ async function writeBoardLocked(cacheKey: string, revisionId: string, board: Boa
   const snapshotId = buildSnapshotId(board.fileKey, nodeHash);
   const normalized = boardSchema.parse({ ...board, schemaVersion: 4, extractionVersion: EXTRACTION_VERSION, snapshotId, nodeHash, cacheKey }) as BoardData;
   const { nodes, connectorEdges, ...derived } = normalized;
-  const sourcePath = path.join(CACHE_DIR, `source-${snapshotId}.json`);
+  const sourcePath = path.join(cacheDirectory(), `source-${snapshotId}.json`);
   // Rewriting identical source bytes repairs corruption without changing source identity.
   await atomicWrite(sourcePath, { schemaVersion: 4, extractionVersion: EXTRACTION_VERSION, snapshotId, fileKey: board.fileKey, nodes, connectorEdges }, signal);
   await atomicWrite(cachePath(revisionId), { schemaVersion: 4, revisionId, snapshotId, derived }, signal);
@@ -111,7 +112,7 @@ export async function readCachedBoard(cacheKey: string, fileKey?: string): Promi
       revisionId = entry.refinementId ?? entry.cacheKey;
     }
     const envelope = z.object({ schemaVersion: z.literal(4), revisionId: key, snapshotId: key, derived: z.record(z.string(), z.unknown()) }).parse(await readJson(cachePath(revisionId)));
-    const source = z.object({ schemaVersion: z.literal(4), extractionVersion: extractionVersionSchema, snapshotId: key, fileKey: key, nodes: z.array(nodeSchema).max(MAX_BOARD_NODES), connectorEdges: z.array(edgeSchema).optional() }).parse(await readJson(path.join(CACHE_DIR, `source-${envelope.snapshotId}.json`)));
+    const source = z.object({ schemaVersion: z.literal(4), extractionVersion: extractionVersionSchema, snapshotId: key, fileKey: key, nodes: z.array(nodeSchema).max(MAX_BOARD_NODES), connectorEdges: z.array(edgeSchema).optional() }).parse(await readJson(path.join(cacheDirectory(), `source-${envelope.snapshotId}.json`)));
     const board = boardSchema.parse({ ...envelope.derived, nodes: source.nodes, connectorEdges: source.connectorEdges }) as BoardData;
     if (envelope.revisionId !== revisionId || (fileKey && (board.fileKey !== fileKey || board.cacheKey !== cacheKey)) || board.snapshotId !== envelope.snapshotId || board.snapshotId !== source.snapshotId || board.extractionVersion !== source.extractionVersion || board.fileKey !== source.fileKey || board.boardId !== board.fileKey || buildSnapshotId(board.fileKey, hashNormalizedNodes(board.nodes), board.extractionVersion) !== board.snapshotId) throw new Error("Cache identity mismatch");
     return board;
@@ -136,7 +137,7 @@ export async function readBoardSnapshot(fileKey: string, snapshotId: string): Pr
 }
 export async function hasLegacyBoard(fileKey: string): Promise<boolean> {
   key.parse(fileKey);
-  try { await stat(path.join(LEGACY_ROOT, `latest-${fileKey}.json`)); return true; } catch { return false; }
+  try { await stat(path.join(legacyRoot(), `latest-${fileKey}.json`)); return true; } catch { return false; }
 }
 export async function readBoardHistory(fileKey: string): Promise<BoardHistoryEntry[]> {
   return (await readManifest(fileKey))?.history ?? [];
@@ -172,13 +173,13 @@ async function readManifest(fileKey: string): Promise<Manifest | undefined> {
   }
 }
 async function garbageCollect(): Promise<void> {
-  const names = await readdir(CACHE_DIR);
+  const names = await readdir(cacheDirectory());
   const refinements = new Set<string>();
   const sources = new Set<string>();
   // Fail closed if any manifest is damaged. Legacy v3 files are outside v4 and never touched.
   try {
     for (const name of names.filter(name => name.startsWith("board-") && name.endsWith(".json"))) {
-      const manifest = manifestSchema.parse(await readJson(path.join(CACHE_DIR, name)));
+      const manifest = manifestSchema.parse(await readJson(path.join(cacheDirectory(), name)));
       if (manifest.latest) refinements.add(manifest.latestRevision ?? manifest.latest);
       for (const entry of manifest.history) refinements.add(entry.refinementId ?? entry.cacheKey);
     }
@@ -192,16 +193,16 @@ async function garbageCollect(): Promise<void> {
     const sourceId = /^source-([a-f0-9]{64})\.json$/.exec(name)?.[1];
     const refinementId = /^refinement-([A-Za-z0-9_-]{1,128})\.json$/.exec(name)?.[1];
     if ((!sourceId || sources.has(sourceId)) && (!refinementId || refinements.has(refinementId))) continue;
-    const filename = path.join(CACHE_DIR, name);
+    const filename = path.join(cacheDirectory(), name);
     // A short grace period protects readers that captured the previous manifest before a publish.
     if (Date.now() - (await stat(filename)).mtimeMs < 60_000) continue;
     await unlink(filename);
   }
 }
 async function privateDirectory(): Promise<void> {
-  await mkdir(CACHE_DIR, { recursive: true, mode: 0o700 });
-  await chmod(CACHE_DIR, 0o700);
-  await chmod(CACHE_ROOT, 0o700);
+  await mkdir(cacheDirectory(), { recursive: true, mode: 0o700 });
+  await chmod(cacheDirectory(), 0o700);
+  await chmod(cacheRoot(), 0o700);
 }
 async function atomicWrite(filename: string, value: unknown, signal?: AbortSignal): Promise<void> {
   const temporary = `${filename}.${randomUUID()}.tmp`;
@@ -221,7 +222,7 @@ async function withMutation<T>(operation: () => Promise<T>, signal?: AbortSignal
   const result = mutationQueue.then(async () => {
     signal?.throwIfAborted();
     await privateDirectory();
-    const lockPath = path.join(CACHE_DIR, ".write-lock");
+    const lockPath = path.join(cacheDirectory(), ".write-lock");
     const token = randomUUID();
     const started = Date.now();
     for (;;) {
@@ -249,8 +250,8 @@ async function withMutation<T>(operation: () => Promise<T>, signal?: AbortSignal
   mutationQueue = result.catch(() => undefined);
   return result;
 }
-function manifestPath(fileKey: string): string { key.parse(fileKey); return path.join(CACHE_DIR, `board-${fileKey}.json`); }
-function cachePath(cacheKey: string): string { key.parse(cacheKey); return path.join(CACHE_DIR, `refinement-${cacheKey}.json`); }
+function manifestPath(fileKey: string): string { key.parse(fileKey); return path.join(cacheDirectory(), `board-${fileKey}.json`); }
+function cachePath(cacheKey: string): string { key.parse(cacheKey); return path.join(cacheDirectory(), `refinement-${cacheKey}.json`); }
 async function readJson(filename: string): Promise<unknown> {
   const size = (await stat(filename)).size;
   if (size > 128 * 1024 * 1024) throw new Error("Cache file exceeds 128 MiB");
