@@ -2,7 +2,6 @@ import { spawnSync } from "node:child_process";
 import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const original = { ...process.env };
@@ -10,7 +9,7 @@ const source = new URL("../src/index.ts", import.meta.url).href;
 const redactSource = new URL("../src/lib/redact.ts", import.meta.url).href;
 const llmSource = new URL("../src/lib/llmClient.ts", import.meta.url).href;
 const ingestSource = new URL("../src/tools/ingestBoard.ts", import.meta.url).href;
-const tsx = fileURLToPath(new URL("../node_modules/tsx/dist/loader.mjs", import.meta.url));
+const tsx = new URL("../node_modules/tsx/dist/loader.mjs", import.meta.url).href;
 let directory: string;
 
 beforeEach(async () => {

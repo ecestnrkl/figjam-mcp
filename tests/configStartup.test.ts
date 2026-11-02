@@ -1,13 +1,13 @@
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { Client } from "@modelcontextprotocol/client";
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { evidenceBoard } from "./fixtures/retrieval.js";
 
-const tsx = fileURLToPath(new URL("../node_modules/tsx/dist/loader.mjs", import.meta.url));
+const tsx = new URL("../node_modules/tsx/dist/loader.mjs", import.meta.url).href;
 const entrypoint = fileURLToPath(new URL("../src/index.ts", import.meta.url));
 const boardId = "StartupFixture";
 let directory: string;
@@ -46,7 +46,7 @@ async function withServer(extra: Record<string, string>, check: (client: Client)
     .filter(([name]) => !/^(?:LLM_|FIGMA_|FIGJAM_MCP_|INGEST_BOARD_|NODE_OPTIONS$)/.test(name)));
   const transport = new StdioClientTransport({
     command: process.execPath,
-    args: ["--import", tsx, "--import", preload, entrypoint],
+    args: ["--import", tsx, "--import", pathToFileURL(preload).href, entrypoint],
     cwd: directory,
     env: {
       ...env, FIGJAM_MCP_CACHE_DIR: cacheDirectory,
