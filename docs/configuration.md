@@ -25,7 +25,9 @@ line, and later errors about missing credentials also include the load failure.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `FIGJAM_MCP_REDACT_CREDENTIALS` | `true` | Replaces explicit credentials with `[redacted]` before they reach the cache, tool output or an LLM provider: labelled values such as `Passwort: …`, `PIN: …` or `API key: …` up to the end of the line, and known key formats (GitHub, OpenAI/OpenRouter, Figma, AWS, Slack, private key blocks). Set `false` to turn it off. |
+| `FIGJAM_MCP_REDACT_CREDENTIALS` | `true` | Replaces explicit credentials with `[redacted]` before cache, output or provider use: password/key/token labels with short qualifiers or parenthetical notes, single-word values on the next non-empty line, underscore-separated labels, PIN codes and Zugangscode, bare PIN values starting with a digit, Bearer tokens, JWTs and known key formats (GitHub, OpenAI/OpenRouter, Figma, AWS, Slack, private key blocks). Credential-labelled table columns and rows are redacted; bare `Token` is left alone. Set `false` to turn it off. |
+
+Hidden elements (`visible: false`) and their descendants are not read, rendered or sent to a provider.
 
 Messages replace exact configured Figma and LLM credentials, including a
 `figmaAccessToken` argument, with `[redacted]` when their trimmed value has at

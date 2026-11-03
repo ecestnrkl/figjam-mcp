@@ -1,0 +1,279 @@
+{
+  "generatedFrom": {
+    "commit": "2e039cf07a48cf7760cd3b174d810c99e0f18eb5",
+    "extractionVersion": 6,
+    "method": "origin/main max_speed ingest with mocked Figma boundary"
+  },
+  "fileKey": "Pre012Synthetic",
+  "rawTree": {
+    "version": "fixture-v1",
+    "lastModified": "2026-11-01T12:00:00Z",
+    "document": {
+      "id": "0:0",
+      "name": "Document",
+      "type": "DOCUMENT",
+      "children": [
+        {
+          "id": "0:1",
+          "name": "Page",
+          "type": "CANVAS",
+          "children": [
+            {
+              "id": "12:3",
+              "name": "Synthetic planning",
+              "type": "SECTION",
+              "absoluteBoundingBox": {
+                "x": 0,
+                "y": 0,
+                "width": 600,
+                "height": 200
+              },
+              "children": [
+                {
+                  "id": "12:30",
+                  "name": "Sticky",
+                  "type": "STICKY",
+                  "characters": "Alpha planning",
+                  "absoluteBoundingBox": {
+                    "x": 0,
+                    "y": 0,
+                    "width": 100,
+                    "height": 100
+                  }
+                },
+                {
+                  "id": "123:4",
+                  "name": "Sticky",
+                  "type": "STICKY",
+                  "characters": "Beta planning",
+                  "absoluteBoundingBox": {
+                    "x": 150,
+                    "y": 0,
+                    "width": 100,
+                    "height": 100
+                  }
+                },
+                {
+                  "id": "19:5",
+                  "name": "Sticky",
+                  "type": "STICKY",
+                  "characters": "Gamma planning",
+                  "absoluteBoundingBox": {
+                    "x": 300,
+                    "y": 0,
+                    "width": 100,
+                    "height": 100
+                  }
+                },
+                {
+                  "id": "198:6",
+                  "name": "Sticky",
+                  "type": "STICKY",
+                  "characters": "Delta planning",
+                  "absoluteBoundingBox": {
+                    "x": 450,
+                    "y": 0,
+                    "width": 100,
+                    "height": 100
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "files": {
+    "board-Pre012Synthetic.json": {
+      "schemaVersion": 4,
+      "history": [
+        {
+          "cacheKey": "84aeba3c0d6a903b27e52296e1492ebe7453209225c513a4478c2393348f5e09",
+          "refinementId": "84e82a2809da825c18183644978e45030549d0e30233402b8aabc49bfec29835",
+          "snapshotId": "fe7a89832085e91168b8c8df44beb59e1a0c644e914817e2e5ef563efa770c35",
+          "nodeHash": "39177c8cd8e9a30946a7a7a819a9f697b774ef502ccfc12ee29806a22a5c2f66",
+          "createdAt": 1793534400000
+        }
+      ],
+      "latest": "84aeba3c0d6a903b27e52296e1492ebe7453209225c513a4478c2393348f5e09",
+      "latestRevision": "84e82a2809da825c18183644978e45030549d0e30233402b8aabc49bfec29835"
+    },
+    "refinement-84e82a2809da825c18183644978e45030549d0e30233402b8aabc49bfec29835.json": {
+      "schemaVersion": 4,
+      "revisionId": "84e82a2809da825c18183644978e45030549d0e30233402b8aabc49bfec29835",
+      "snapshotId": "fe7a89832085e91168b8c8df44beb59e1a0c644e914817e2e5ef563efa770c35",
+      "derived": {
+        "schemaVersion": 4,
+        "extractionVersion": 6,
+        "snapshotId": "fe7a89832085e91168b8c8df44beb59e1a0c644e914817e2e5ef563efa770c35",
+        "boardId": "Pre012Synthetic",
+        "fileKey": "Pre012Synthetic",
+        "docStructureHint": "freeform",
+        "clusters": [
+          {
+            "id": "cluster_9161e7e12288825c039d24cb",
+            "nodeIds": [
+              "12:30",
+              "123:4",
+              "19:5",
+              "198:6"
+            ],
+            "confirmedNodeIds": [
+              "12:30",
+              "123:4",
+              "19:5",
+              "198:6"
+            ],
+            "label": "Synthetic planning",
+            "summary": "Cluster contains 4 board elements with 4 extracted text items. Extracted text highlights: \"Alpha planning\"; \"Beta planning\"; \"Gamma planning\"; \"Delta planning\". The source node IDs are retained for follow-up context.",
+            "boundingBox": {
+              "x": 0,
+              "y": 0,
+              "width": 550,
+              "height": 100
+            },
+            "summarySource": "deterministic",
+            "contentHash": "9790bf12b101bd1b565d6e5f7b6b4af1e5b273c2d64979a97d5f26a8daf09818"
+          }
+        ],
+        "createdAt": 1793534400000,
+        "clusterRelations": [],
+        "ingestMode": "max_speed",
+        "cacheKey": "84aeba3c0d6a903b27e52296e1492ebe7453209225c513a4478c2393348f5e09",
+        "figmaVersion": "fixture-v1",
+        "figmaLastModified": "2026-11-01T12:00:00Z",
+        "nodeHash": "39177c8cd8e9a30946a7a7a819a9f697b774ef502ccfc12ee29806a22a5c2f66",
+        "refinementSignature": "01c0d698a819726d14226f3b1717f5858490098e26e6e2a377498ce98aeb6d65",
+        "freshnessCheckedAt": 1793534400000,
+        "qualityReport": {
+          "modelsUsed": [],
+          "cachedClusters": 0,
+          "deterministicClusters": 1,
+          "visionClusters": 0,
+          "fallbackCount": 0,
+          "reusedClusters": 0,
+          "incompleteClusters": 0,
+          "fallbackReasons": {},
+          "figmaRequests": {
+            "imageFills": 0,
+            "renders": 0
+          }
+        }
+      }
+    },
+    "source-fe7a89832085e91168b8c8df44beb59e1a0c644e914817e2e5ef563efa770c35.json": {
+      "schemaVersion": 4,
+      "extractionVersion": 6,
+      "snapshotId": "fe7a89832085e91168b8c8df44beb59e1a0c644e914817e2e5ef563efa770c35",
+      "fileKey": "Pre012Synthetic",
+      "nodes": [
+        {
+          "id": "0:1",
+          "name": "Page",
+          "type": "CANVAS",
+          "x": 0,
+          "y": 0,
+          "width": 0,
+          "height": 0,
+          "rotation": 0,
+          "parentId": "0:0",
+          "pageId": "0:1",
+          "sectionIds": [],
+          "renderNodeId": "0:1",
+          "contentFingerprint": "ffe2f1a17fd99d471d0de5b01b6929aa2f47c8f5a7c11208d5bf0889a17c231b"
+        },
+        {
+          "id": "12:3",
+          "name": "Synthetic planning",
+          "type": "SECTION",
+          "x": 0,
+          "y": 0,
+          "width": 600,
+          "height": 200,
+          "rotation": 0,
+          "parentId": "0:1",
+          "pageId": "0:1",
+          "sectionIds": [
+            "12:3"
+          ],
+          "renderNodeId": "12:3",
+          "contentFingerprint": "b426c10448f57b3c6f35fe6314be310e2c8b608f7cb3c15b09569556580601f5"
+        },
+        {
+          "id": "12:30",
+          "name": "Sticky",
+          "type": "STICKY",
+          "x": 0,
+          "y": 0,
+          "width": 100,
+          "height": 100,
+          "rotation": 0,
+          "text": "Alpha planning",
+          "parentId": "12:3",
+          "pageId": "0:1",
+          "sectionIds": [
+            "12:3"
+          ],
+          "renderNodeId": "12:30",
+          "contentFingerprint": "450075b434548f8bf14900afa94c43178769697a30bad7cc4d25734675e8449b"
+        },
+        {
+          "id": "123:4",
+          "name": "Sticky",
+          "type": "STICKY",
+          "x": 150,
+          "y": 0,
+          "width": 100,
+          "height": 100,
+          "rotation": 0,
+          "text": "Beta planning",
+          "parentId": "12:3",
+          "pageId": "0:1",
+          "sectionIds": [
+            "12:3"
+          ],
+          "renderNodeId": "123:4",
+          "contentFingerprint": "f38623744f5e2d67182274b083baa5f2cfc7e5b55a88d3138238f76022764d3f"
+        },
+        {
+          "id": "19:5",
+          "name": "Sticky",
+          "type": "STICKY",
+          "x": 300,
+          "y": 0,
+          "width": 100,
+          "height": 100,
+          "rotation": 0,
+          "text": "Gamma planning",
+          "parentId": "12:3",
+          "pageId": "0:1",
+          "sectionIds": [
+            "12:3"
+          ],
+          "renderNodeId": "19:5",
+          "contentFingerprint": "9ff82bda3b4423805309a4b44e653627560fbae0225ccbafd914fc6b73ab82ce"
+        },
+        {
+          "id": "198:6",
+          "name": "Sticky",
+          "type": "STICKY",
+          "x": 450,
+          "y": 0,
+          "width": 100,
+          "height": 100,
+          "rotation": 0,
+          "text": "Delta planning",
+          "parentId": "12:3",
+          "pageId": "0:1",
+          "sectionIds": [
+            "12:3"
+          ],
+          "renderNodeId": "198:6",
+          "contentFingerprint": "7bec6b870977510cf5ceb602cab898dd0f31ba0410d23fa199acbfd6fd2eb83c"
+        }
+      ],
+      "connectorEdges": []
+    }
+  }
+}

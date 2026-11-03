@@ -2,6 +2,9 @@
 
 ## 0.12.0 — Unreleased
 
+- Hidden elements and their descendants are excluded from snapshots, excerpts, search, clusters and image requests.
+- Credential redaction covers qualified labels, next-line values, underscore separators, PIN codes, Zugangscode, Bearer tokens, JWTs and credential-labelled table columns and rows; `Pin: Feature X to the top` remains unchanged.
+- Content fingerprints use redacted text and hashes no longer depend on locale; the first ingest after this update reinterprets images.
 - The server no longer loads a working-directory `.env` automatically; move variables to the MCP client configuration, use `envFile` in VS Code, or set `FIGJAM_MCP_ENV_FILE` to the absolute file path.
 - Messages redact configured credentials, and tokens with invalid HTTP-header characters fail before any request.
 - Environment values are validated when a tool needs them; invalid values do not stop startup, and `max_speed` needs no model configuration.

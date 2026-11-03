@@ -59,6 +59,29 @@ function expectNoSecrets(value: unknown) {
 }
 
 describe("configured secrets at external error boundaries", () => {
+  it("preserves actionable token configuration names while applying board-only underscore redaction", async () => {
+    vi.stubEnv("FIGJAM_MCP_REDACT_CREDENTIALS", "true");
+    const { redactMessage } = await import("../src/lib/secrets.js");
+    const { redactCredentials } = await import("../src/lib/redact.js");
+    const message = "Figma access denied (401). Check FIGMA_ACCESS_TOKEN: it must be valid and have file_content:read scope.";
+    expect(redactMessage(message)).toBe(message);
+    expect(redactCredentials("aws_secret_access_key = synthetic-secret")).toBe("aws_secret_access_key = [redacted]");
+  });
+
+  it.each(["Passwort: synthetic-secret", "PIN: alphabetical-secret", "API key = synthetic-secret"])("retains labelled credential filtering in errors: %s", async message => {
+    vi.stubEnv("FIGJAM_MCP_REDACT_CREDENTIALS", "true");
+    const { redactMessage } = await import("../src/lib/secrets.js");
+    expect(redactMessage(message)).toBe(message.replace(/(?<=[:=] ).*/, "[redacted]"));
+  });
+
+  it("retains recognizable key and private-key filtering in errors", async () => {
+    vi.stubEnv("FIGJAM_MCP_REDACT_CREDENTIALS", "true");
+    const { redactMessage } = await import("../src/lib/secrets.js");
+    const key = "ghp_" + "synthetic1234567890";
+    const pem = ["-----BEGIN PRIVATE KEY-----", "synthetic", "-----END PRIVATE KEY-----"].join("\n");
+    expect(redactMessage(`Failure ${key}; key block:\n${pem}\nRetry.`)).toBe("Failure [redacted]; key block:\n[redacted]\nRetry.");
+  });
+
   it("hides arbitrary keys in provider-401 diagnosis, answer, ingest summary and stderr", async () => {
     const { diagnoseLlmConfig } = await import("../src/tools/diagnoseLlmConfig.js");
     const diagnosis = await diagnoseLlmConfig();

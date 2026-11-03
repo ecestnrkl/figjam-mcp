@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { flattenNodeTree } from "../src/lib/nodeTree.js";
+import { flattenNodeTree, isGenericNodeName } from "../src/lib/nodeTree.js";
 
 const sampleFigmaFile = {
   document: {
@@ -251,5 +251,22 @@ describe("flattenNodeTree", () => {
 
   it("throws on input without a document node", () => {
     expect(() => flattenNodeTree({})).toThrow();
+  });
+});
+
+describe("isGenericNodeName", () => {
+  it.each([
+    ["Sticky", true], [" Frame 12 ", true], ["Code   block 42", true],
+    ["Arrow left 3", true], ["PIN board for ideas", false], ["Planning 12", false],
+    ["Frame12", false], ["Table", true],
+  ])("keeps the classification for %j", (name, expected) => {
+    expect(isGenericNodeName(name)).toBe(expected);
+  });
+
+  it.each([["12", true], ["suffix", false]] as const)("collapses 80,000 spaces before testing suffix %s", (suffix, expected) => {
+    const name = `Frame${" ".repeat(80_000)}${suffix}`;
+    const started = performance.now();
+    expect(isGenericNodeName(name)).toBe(expected);
+    expect(performance.now() - started).toBeLessThan(100);
   });
 });

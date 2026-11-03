@@ -154,7 +154,7 @@ describe("offline ingest pipeline with actual persistent cache", () => {
     const { structuredContent: context } = await getBoardContext({ boardId: fileKey, nodeIds: ["idea", "test", "page"] });
     expect(context.connections).toEqual([expect.objectContaining({ connectorId: "arrow", fromNodeId: "idea", toNodeId: "test", direction: "forward", url: "https://www.figma.com/board/OfflineBoard?node-id=arrow" })]);
     const restored = await persistence.readLatestBoard(fileKey);
-    expect(restored?.extractionVersion).toBe(6);
+    expect(restored?.extractionVersion).toBe(7);
     expect(restored?.connectorEdges).toEqual([{ connectorId: "arrow", fromNodeId: "idea", toNodeId: "test", direction: "forward" }]);
     expect(await persistence.readBoardHistory(fileKey)).toHaveLength(2);
     expect((await persistence.readBoardSnapshot(fileKey, snapshotId))?.connectorEdges).toEqual(oldEdges);
@@ -456,7 +456,7 @@ describe("offline ingest pipeline with actual persistent cache", () => {
     ])("redacts reused vision labels and summaries on %s", async (_case, changeBoard) => {
       activeTree = boardTree([imageNode("photo", 0)]);
       visionMock.mockImplementationOnce((cluster: Cluster) => ({
-        ...cluster, label: `Login PIN: ${secret}`, summary: `The photo shows Passwort: ${secret}`,
+        ...cluster, label: `Login PIN-Code: ${secret}`, summary: `The photo shows Passwort: ${secret}`,
         confirmedNodeIds: [...cluster.nodeIds], summarySource: "vision_llm", modelId: "offline-vision",
       }));
       const unredacted = await reloadIngest({ FIGJAM_MCP_REDACT_CREDENTIALS: "false" });
@@ -467,11 +467,11 @@ describe("offline ingest pipeline with actual persistent cache", () => {
       const redacted = await reloadIngest({});
       const second = await redacted(input);
       expect(second.qualityReport).toMatchObject(changeBoard ? { reusedClusters: 1 } : { cachedClusters: 1 });
-      expect(second.summary).toContain('"Login PIN: [redacted]"');
+      expect(second.summary).toContain('"Login PIN-Code: [redacted]"');
       expect(JSON.stringify(second)).not.toContain(secret);
       const saved = await persistence.readLatestBoard(fileKey);
       expect(saved?.clusters.find(cluster => cluster.nodeIds.includes("photo"))).toMatchObject({
-        label: "Login PIN: [redacted]", summary: "The photo shows Passwort: [redacted]",
+        label: "Login PIN-Code: [redacted]", summary: "The photo shows Passwort: [redacted]",
       });
       expect(JSON.stringify(saved)).not.toContain(secret);
     });
@@ -485,6 +485,20 @@ describe("offline ingest pipeline with actual persistent cache", () => {
       expect(visionMock).toHaveBeenCalledTimes(2);
       expect(after.qualityReport).toMatchObject({ cachedClusters: 2, visionClusters: 2, fallbackCount: 0 });
       expect(JSON.stringify(await persistence.readLatestBoard(fileKey))).not.toContain(secret);
+    });
+
+    it("reuses max_quality image interpretations when only a redacted PIN changes", async () => {
+      const withPin = (pin: string) => ({ ...sticky("login", `PIN: ${pin}`), name: `PIN: ${pin}` });
+      activeTree = boardTree([withPin("4711")]);
+      const before = await ingestBoard(input);
+      expect(visionMock).toHaveBeenCalledTimes(1);
+      activeTree = boardTree([withPin("8812")], "v2");
+      const after = await ingestBoard(input);
+      expect(after.snapshotId).toBe(before.snapshotId);
+      expect(visionMock).toHaveBeenCalledTimes(1);
+      expect(screenshotMock).toHaveBeenCalledTimes(1);
+      expect(after.qualityReport).toMatchObject({ cachedClusters: 1, figmaRequests: { imageFills: 0, renders: 0 } });
+      expect((await diffBoard({ boardId: fileKey, compareTo: 1 })).stats.editedNodes).toBe(0);
     });
   });
 
