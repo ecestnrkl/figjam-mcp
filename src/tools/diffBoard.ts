@@ -58,6 +58,7 @@ export async function diffBoard(input: DiffBoardInput): Promise<DiffBoardOutput>
   const diff = diffBoards(redactBoard(baseline), redactBoard(current));
 
   return {
+    ...diff,
     boardId: input.boardId,
     baselineSnapshotId: baseline.snapshotId,
     currentSnapshotId: current.snapshotId,
@@ -66,15 +67,10 @@ export async function diffBoard(input: DiffBoardInput): Promise<DiffBoardOutput>
     summaryText: unchanged
       ? `No changes: the board content is the same as at ${new Date(currentEntry.createdAt).toISOString()}; ` +
         `the last ingest at ${new Date(singleSnapshot!.freshnessCheckedAt!).toISOString()} found it unchanged.`
-      : diff.summaryText,
-    stats: diff.stats,
-    newClusters: diff.newClusters,
-    removedClusters: diff.removedClusters,
-    modifiedClusters: diff.modifiedClusters,
-    addedConnections: diff.addedConnections,
-    removedConnections: diff.removedConnections,
-    tableCellChanges: diff.tableCellChanges,
-    nodeChanges: diff.nodeChanges,
-    ...(diff.nodeChangesOmitted === undefined ? {} : { nodeChangesOmitted: diff.nodeChangesOmitted }),
+      : (current.freshnessCheckedAt !== undefined && current.freshnessCheckedAt > currentEntry.createdAt
+        ? `No changes since ${new Date(currentEntry.createdAt).toISOString()}: ` +
+          `the last ingest at ${new Date(current.freshnessCheckedAt).toISOString()} found the board unchanged. ` +
+          `The latest change follows.\n\n${diff.summaryText}`
+        : diff.summaryText),
   };
 }

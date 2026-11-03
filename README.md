@@ -41,7 +41,7 @@ this one reports the change.
 | `ingest_board` | Reads a board, clusters it and saves a local snapshot. Re-ingests reuse unchanged clusters; `focusNodeIds` chooses which sections' images are interpreted first. | In `balanced` (default) and `max_quality` mode |
 | `get_board_context` | Reads saved context, automatically using compact source-ID lines for large section reads; `detail: "full"` returns complete excerpts and Figma links. Also supports topic search and pagination. | No |
 | `answer_from_board` | Answers one specific question (a number, status or decision) from the most relevant excerpts, with node-level citations or an insufficient-evidence result. Not meant for whole-board summaries. | Yes |
-| `diff_board` | Compares two snapshots: new, removed and changed clusters, nodes, table cells and arrows. | No |
+| `diff_board` | Compares snapshots with bounded lists and full totals: clusters, nodes, table cells (0-based), arrows with source IDs, section/frame renames and layout counts. Notes unchanged re-ingests. | No |
 | `diagnose_llm_config` | Tests the configured models with small text and image JSON checks. | Yes |
 
 ## Quick start

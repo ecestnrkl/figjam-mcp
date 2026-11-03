@@ -1,4 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import type { BoardData } from "../src/types.js";
 
 const { readBoardHistoryMock, readCachedBoardMock } = vi.hoisted(() => ({
@@ -14,6 +17,8 @@ vi.mock("../src/lib/persistentCache.js", async (importOriginal) => ({
 
 const { diffBoard } = await import("../src/tools/diffBoard.js");
 const { diffBoardOutputSchema } = await import("../src/schemas/diffBoard.js");
+const persistence = await vi.importActual<typeof import("../src/lib/persistentCache.js")>("../src/lib/persistentCache.js");
+let cacheRoot: string | undefined;
 
 function snapshot(createdAt: number, text: string): BoardData {
   return {
@@ -55,9 +60,29 @@ beforeEach(() => {
   readCachedBoardMock.mockResolvedValue(undefined);
 });
 
-afterEach(() => {
+afterEach(async () => {
   vi.clearAllMocks();
+  vi.unstubAllEnvs();
+  if (cacheRoot) await rm(cacheRoot, { recursive: true, force: true });
+  cacheRoot = undefined;
 });
+
+async function persistedHistory(length: number, unchanged: boolean): Promise<void> {
+  cacheRoot = await mkdtemp(path.join(tmpdir(), "figjam-diff-freshness-"));
+  vi.stubEnv("FIGJAM_MCP_CACHE_DIR", cacheRoot);
+  readBoardHistoryMock.mockImplementation(persistence.readBoardHistory);
+  readCachedBoardMock.mockImplementation(persistence.readCachedBoard);
+  for (let version = 1; version <= length; version++) {
+    await persistence.persistBoard({
+      ...snapshot(version * 1000, `Synthetic version ${version}`),
+      cacheKey: `key-${version}`, freshnessCheckedAt: version * 1000,
+    });
+  }
+  if (unchanged) {
+    const latest = await persistence.readLatestBoard("AbC123");
+    await persistence.persistBoard({ ...latest!, freshnessCheckedAt: (length + 1) * 1000 });
+  }
+}
 
 describe("diffBoard", () => {
   it("does not report changes between v6 and v7 fingerprints of the same redacted evidence", async () => {
@@ -160,6 +185,35 @@ describe("diffBoard", () => {
     expect(output.summaryText).toBe("No changes: the board content is the same as at 1970-01-01T00:00:01.000Z; " +
       "the last ingest at 1970-01-01T00:00:02.000Z found it unchanged.");
   });
+
+  it.each([[2, 1], [3, 1], [3, 2]] as const)(
+    "announces an unchanged re-ingest with %i persisted snapshots and compareTo %i",
+    async (length, compareTo) => {
+      await persistedHistory(length, true);
+      const output = await diffBoard({ boardId: "AbC123", compareTo: compareTo });
+      const createdAt = new Date(length * 1000).toISOString();
+      const checkedAt = new Date((length + 1) * 1000).toISOString();
+      expect(output.summaryText.startsWith(`No changes since ${createdAt}: the last ingest at ${checkedAt} ` +
+        "found the board unchanged. The latest change follows.\n\n")).toBe(true);
+      expect(output.summaryText).toContain(`"Synthetic version ${length - compareTo}" → "Synthetic version ${length}"`);
+      expect(output.baselineCreatedAt).toBe(new Date((length - compareTo) * 1000).toISOString());
+      expect(output.currentCreatedAt).toBe(createdAt);
+      expect(output.stats.editedNodes).toBe(1);
+      expect(await persistence.readBoardHistory("AbC123")).toHaveLength(length);
+      expect(diffBoardOutputSchema.parse(output)).toEqual(output);
+    },
+  );
+
+  it.each([[2, 1], [3, 1], [3, 2]] as const)(
+    "keeps a changed ingest without a freshness preface with %i persisted snapshots and compareTo %i",
+    async (length, compareTo) => {
+      await persistedHistory(length, false);
+      const output = await diffBoard({ boardId: "AbC123", compareTo: compareTo });
+      expect(output.summaryText).not.toContain("The latest change follows.");
+      expect(output.summaryText).toContain(`"Synthetic version ${length - compareTo}" → "Synthetic version ${length}"`);
+      expect(output.stats.editedNodes).toBe(1);
+    },
+  );
 
   it.each([undefined, 999, 1000])("keeps the single-snapshot error without a later ingest (%s)", async (freshnessCheckedAt) => {
     readBoardHistoryMock.mockResolvedValue([{ cacheKey: "k1", nodeHash: "h1", createdAt: 1000 }]);

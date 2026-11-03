@@ -2,7 +2,7 @@ import type { BoardData, ConnectorEdge, NormalizedNode, RefinedCluster, TableCel
 import { isGenericNodeName, STRUCTURAL_TYPES } from "./nodeTree.js";
 import { hashClusterNodes } from "./persistentCache.js";
 import { connectorArrow } from "./connectorGraph.js";
-import { boundedText, nodeLink, tableCellPositions } from "./evidence.js";
+import { boundedText, nodeLink, snapshotIdForBoard, tableCellPositions } from "./evidence.js";
 
 /**
  * Compares two ingest snapshots of the same board — "what changed since the
@@ -13,7 +13,7 @@ import { boundedText, nodeLink, tableCellPositions } from "./evidence.js";
  *  - clusters: matched across snapshots by member overlap, then classified
  *    as unchanged (same content hash), modified, new, or removed,
  *  - connections: connector arrows diffed as (from, to, label) edges and
- *    rendered with the owning clusters' labels.
+ *    rendered with arrow and endpoint IDs and endpoint text.
  */
 
 export interface ClusterSummaryRef {
@@ -57,6 +57,12 @@ export interface BoardDiffResult {
   nodeChanges: NodeChange[];
   /** Changed nodes beyond the NODE_CHANGE_LIMIT entries in nodeChanges. */
   nodeChangesOmitted?: number;
+  newClustersOmitted?: number;
+  removedClustersOmitted?: number;
+  modifiedClustersOmitted?: number;
+  addedConnectionsOmitted?: number;
+  removedConnectionsOmitted?: number;
+  tableCellChangesOmitted?: number;
 }
 
 /** What differs on an edited node; "appearance" only when nothing else explains a changed contentFingerprint. */
@@ -105,6 +111,9 @@ const CLUSTER_MATCH_THRESHOLD = 0.5;
 const SUMMARY_SECTION_LIMIT = 8;
 /** Max entries in nodeChanges, and lines per node or table cell block in summaryText. */
 const NODE_CHANGE_LIMIT = 100;
+const CLUSTER_LIMIT = 20;
+const CONNECTION_LIMIT = 50;
+const TABLE_CELL_LIMIT = 50;
 const NODE_LINES_PER_BLOCK = 20;
 /** Texts up to this length are shown whole; longer new or removed texts are cut here. */
 const FULL_TEXT_CHARS = 160;
@@ -155,15 +164,24 @@ export function diffBoards(baseline: BoardData, current: BoardData): BoardDiffRe
 
   return {
     stats,
-    newClusters: clusterDiff.newClusters,
-    removedClusters: clusterDiff.removedClusters,
-    modifiedClusters: clusterDiff.modifiedClusters,
-    addedConnections: connectionDiff.added,
-    removedConnections: connectionDiff.removed,
+    newClusters: clusterDiff.newClusters.slice(0, CLUSTER_LIMIT),
+    removedClusters: clusterDiff.removedClusters.slice(0, CLUSTER_LIMIT),
+    modifiedClusters: clusterDiff.modifiedClusters.slice(0, CLUSTER_LIMIT),
+    addedConnections: connectionDiff.added.slice(0, CONNECTION_LIMIT),
+    removedConnections: connectionDiff.removed.slice(0, CONNECTION_LIMIT),
     summaryText: buildSummaryText(baseline, current, stats, clusterDiff, connectionDiff, nodeDiff, tableCellChanges),
-    tableCellChanges,
+    tableCellChanges: tableCellChanges.slice(0, TABLE_CELL_LIMIT).map((change) => {
+      const [previousText, currentText] = textExcerpts(collapseWhitespace(change.previousText), collapseWhitespace(change.currentText));
+      return { ...change, previousText, currentText };
+    }),
     nodeChanges: nodeDiff.entries,
     ...(nodeDiff.omitted > 0 ? { nodeChangesOmitted: nodeDiff.omitted } : {}),
+    ...(clusterDiff.newClusters.length > CLUSTER_LIMIT ? { newClustersOmitted: clusterDiff.newClusters.length - CLUSTER_LIMIT } : {}),
+    ...(clusterDiff.removedClusters.length > CLUSTER_LIMIT ? { removedClustersOmitted: clusterDiff.removedClusters.length - CLUSTER_LIMIT } : {}),
+    ...(clusterDiff.modifiedClusters.length > CLUSTER_LIMIT ? { modifiedClustersOmitted: clusterDiff.modifiedClusters.length - CLUSTER_LIMIT } : {}),
+    ...(connectionDiff.added.length > CONNECTION_LIMIT ? { addedConnectionsOmitted: connectionDiff.added.length - CONNECTION_LIMIT } : {}),
+    ...(connectionDiff.removed.length > CONNECTION_LIMIT ? { removedConnectionsOmitted: connectionDiff.removed.length - CONNECTION_LIMIT } : {}),
+    ...(tableCellChanges.length > TABLE_CELL_LIMIT ? { tableCellChangesOmitted: tableCellChanges.length - TABLE_CELL_LIMIT } : {}),
   };
 }
 
@@ -198,6 +216,7 @@ interface NodeChangeItem {
 interface NodeDiffInternal {
   entries: NodeChange[];
   omitted: number;
+  cellOnlyTables: number;
   /** Per block: the first NODE_LINES_PER_BLOCK items and the total. */
   blocks: Array<{ title: string; shown: NodeChangeItem[]; total: number }>;
 }
@@ -236,6 +255,7 @@ function describeNodeChanges(
   return {
     entries: all.slice(0, NODE_CHANGE_LIMIT).map((id) => item(id).change),
     omitted: Math.max(0, all.length - NODE_CHANGE_LIMIT),
+    cellOnlyTables: editedIds.length - groups[0]!.ids.length,
     blocks: groups.map((group) => ({
       title: group.title, total: group.ids.length, shown: group.ids.slice(0, NODE_LINES_PER_BLOCK).map(item),
     })),
@@ -616,21 +636,44 @@ function groupEdgesByMeaning(edges: ConnectorEdge[]): Map<string, ConnectorEdge[
   return grouped;
 }
 
-/** Renders one edge with the owning clusters' labels (from its own snapshot). */
+/** Renders one arrow and its endpoints from its own snapshot, as get_board_context names them. */
 function edgeFormatter(board: BoardData): (edge: ConnectorEdge) => string {
-  const owner = new Map<string, RefinedCluster>();
   const nodes = new Map(board.nodes.map(node => [node.id, node]));
-  for (const cluster of board.clusters) for (const id of cluster.nodeIds) owner.set(id, cluster);
   return edge => {
-    const internal = owner.has(edge.fromNodeId) && owner.get(edge.fromNodeId) === owner.get(edge.toNodeId);
     const label = (id: string) => {
-      const cluster = owner.get(id);
-      if (cluster && !internal) return cluster.label;
-      const node = nodes.get(id); const text = node?.text?.trim();
-      return text ? truncate(text, 40) : node?.name ?? id;
+      const node = nodes.get(id);
+      const text = collapseWhitespace(node?.text) ?? collapseWhitespace(node?.name);
+      return text ? `${id} «${boundedText(text, 40)}»` : id;
     };
-    return `"${label(edge.fromNodeId)}" ${connectorArrow(edge)} "${label(edge.toNodeId)}"${edge.label ? ` — "${edge.label}"` : ""}`;
+    return `arrow ${edge.connectorId}: ${label(edge.fromNodeId)} ${connectorArrow(edge)} ${label(edge.toNodeId)}${edge.label ? ` (${edge.label})` : ""}`;
   };
+}
+
+/** Existing sections and frames can be renamed without changing any content node. */
+function renamedSections(baseline: BoardData, current: BoardData): string[] {
+  const previous = new Map(baseline.nodes.map((node) => [node.id, node]));
+  return current.nodes.flatMap((node) => {
+    const before = previous.get(node.id);
+    return (node.type === "SECTION" || node.type === "FRAME") && before?.type === node.type && before.name !== node.name
+      ? [`- ${readableType(node)} ${node.id}: ${quote(boundedName(before.name))} → ${quote(boundedName(node.name))}`]
+      : [];
+  });
+}
+
+/** Count placement changes only; added, removed and content-edited nodes are described elsewhere. */
+function layoutChangeCount(baseline: BoardData, current: BoardData): number {
+  const previous = new Map(baseline.nodes.map((node) => [node.id, node]));
+  return current.nodes.filter((node) => {
+    const before = previous.get(node.id);
+    if (node.type === "CONNECTOR" || !before) return false;
+    const resized = before.width !== node.width || before.height !== node.height;
+    // Extraction includes dimensions in the appearance fingerprint. A resize
+    // alone can change it, while the existing content/cluster classification stays intact.
+    const sameContent = resized
+      ? !nodeContentChanged({ ...before, contentFingerprint: undefined }, { ...node, contentFingerprint: undefined })
+      : !nodeContentChanged(before, node);
+    return sameContent && (resized || before.x !== node.x || before.y !== node.y);
+  }).length;
 }
 
 function buildSummaryText(
@@ -646,15 +689,23 @@ function buildSummaryText(
     `FigJam board ${current.fileKey} — changes from ${timestamp(baseline.createdAt)} to ${timestamp(current.createdAt)}:`,
     "",
   ];
+  const renames = renamedSections(baseline, current);
+  const layoutChanges = layoutChangeCount(baseline, current);
 
   if (
     stats.addedNodes + stats.removedNodes + stats.editedNodes === 0 &&
     stats.newClusters + stats.removedClusters + stats.modifiedClusters === 0 &&
-    stats.addedConnections + stats.removedConnections === 0
+    stats.addedConnections + stats.removedConnections === 0 &&
+    renames.length === 0 && layoutChanges === 0
   ) {
-    lines.push("No changes — the board content is identical.");
+    lines.push(snapshotIdForBoard(baseline) === snapshotIdForBoard(current)
+      ? "No changes — the board content is identical."
+      : "No content, name or layout changes found; the snapshots differ only in details diff_board does not compare.");
     return lines.join("\n");
   }
+
+  if (renames.length > 0) lines.push(`Renamed sections (${renames.length}):`, ...capped(renames, (line) => line));
+  if (layoutChanges > 0) lines.push(`Layout: ${layoutChanges} nodes moved or resized.`);
 
   if (clusters.newClusters.length > 0) {
     lines.push(`New clusters (${clusters.newClusters.length}):`);
@@ -700,7 +751,8 @@ function buildSummaryText(
     if (cells.length > NODE_LINES_PER_BLOCK) lines.push(`- … and ${cells.length - NODE_LINES_PER_BLOCK} more`);
   }
   lines.push(
-    `Nodes: +${stats.addedNodes} added / -${stats.removedNodes} removed / ${stats.editedNodes} edited.`,
+    `Nodes: +${stats.addedNodes} added / -${stats.removedNodes} removed / ${stats.editedNodes} edited` +
+      (nodes.cellOnlyTables > 0 ? ` (${nodes.cellOnlyTables} of them tables with cell changes, listed under Table cells).` : "."),
   );
   if (stats.unchangedClusters > 0) {
     lines.push(`Unchanged clusters: ${stats.unchangedClusters}.`);
@@ -738,14 +790,14 @@ function nodeChangeLine({ change, before, after, board }: NodeChangeItem): strin
   return head + parts.join("; ");
 }
 
-/** "- table "Name" 5:119 in "Section", row 3 "Label", column 4 "Label": "old" → "new"", rows and columns from 1. */
+/** "- table "Name" 5:119 in "Section", row 2 "Label", column 3 "Label": "old" → "new"", rows and columns from 0. */
 function tableCellLine(board: BoardData, table: NormalizedNode, change: TableCellChange): string {
   const row = change.currentRow ?? change.previousRow;
   const column = change.currentColumn ?? change.previousColumn;
   const labelled = (label: string | undefined) => label ? ` ${quote(label)}` : "";
   const place = row === undefined && column === undefined ? `, cell ${change.cellId}` :
-    (row === undefined ? "" : `, row ${row + 1}${labelled(change.rowLabel)}`) +
-    (column === undefined ? "" : `, column ${column + 1}${labelled(change.columnLabel)}`);
+    (row === undefined ? "" : `, row ${row}${labelled(change.rowLabel)}`) +
+    (column === undefined ? "" : `, column ${column}${labelled(change.columnLabel)}`);
   const before = collapseWhitespace(change.previousText);
   const after = collapseWhitespace(change.currentText);
   const cellText = (text: string | undefined) => text === undefined ? "(empty)" : quote(text);
@@ -753,7 +805,7 @@ function tableCellLine(board: BoardData, table: NormalizedNode, change: TableCel
   if (change.changeType === "added") detail = `added ${cellText(after === undefined ? undefined : leadingText(after))}`;
   else if (change.changeType === "removed") detail = `removed ${cellText(before === undefined ? undefined : leadingText(before))}`;
   else if (change.previousText === change.currentText) {
-    detail = `moved from row ${(change.previousRow ?? 0) + 1}, column ${(change.previousColumn ?? 0) + 1}`;
+    detail = `moved from row ${change.previousRow ?? 0}, column ${change.previousColumn ?? 0}`;
   } else if (before === after) {
     detail = `text changed only in whitespace: ${cellText(after === undefined ? undefined : leadingText(after))}`;
   } else {
@@ -798,8 +850,4 @@ function timestamp(ms: number): string {
 
 function firstSentence(text: string): string {
   return text.split(/(?<=[.!?])\s+/)[0]?.trim() ?? "";
-}
-
-function truncate(text: string, maxLength: number): string {
-  return text.length <= maxLength ? text : `${text.slice(0, maxLength - 1)}…`;
 }

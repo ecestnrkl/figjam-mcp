@@ -109,7 +109,7 @@ from it again instead of the cached result for unchanged content, for example af
 turning redaction off. It does not interpret images again: interpretations of
 unchanged clusters are kept, and pending clusters continue as on any ingest. The
 server detects model and prompt changes itself. An unchanged board gives no new
-snapshot for `diff_board`.
+snapshot; `diff_board` notes that check before reporting the latest recorded change.
 
 `focusNodeIds` (up to 50 IDs of pages, sections, frames, groups or nodes) changes
 only the order of image interpretation: clusters inside them come first, in list
@@ -164,6 +164,9 @@ deferred by the budget go before clusters that failed. Raise
   only one of them to the model; at most 128 KiB per result.
 - `answer_from_board`: 15 excerpts (20 for overview questions) plus direct
   neighbours, within 40,000 prompt characters (configurable up to 60,000).
+- `diff_board`: at most 20 entries per cluster list, 50 per arrow or table-cell
+  list and 100 node changes, with optional `…Omitted` counts and full `stats`.
+  Long cell texts use excerpts around the change, as node texts do.
 - History: 20 snapshots per board for `diff_board`.
 
 Compact overviews group one excerpt per line by section and shorten only the text
