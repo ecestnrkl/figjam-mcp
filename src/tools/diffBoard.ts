@@ -1,6 +1,6 @@
 import type { DiffBoardInput, DiffBoardOutput } from "../schemas/diffBoard.js";
 import { diffBoards } from "../lib/boardDiff.js";
-import { readBoardHistory, readCachedBoard } from "../lib/persistentCache.js";
+import { readBoardHistory, readCachedBoardState, readCachedBoard } from "../lib/persistentCache.js";
 import { redactBoard } from "../lib/redact.js";
 
 /**
@@ -42,6 +42,13 @@ export async function diffBoard(input: DiffBoardInput): Promise<DiffBoardOutput>
     singleSnapshot ?? readCachedBoard(currentEntry.refinementId ?? currentEntry.cacheKey),
   ]);
   if (!baseline || !current) {
+    const unreadable = await Promise.all([
+      ...(!baseline ? [readCachedBoardState(baselineEntry.refinementId ?? baselineEntry.cacheKey)] : []),
+      ...(!current ? [readCachedBoardState(currentEntry.refinementId ?? currentEntry.cacheKey)] : []),
+    ]);
+    if (unreadable.some((state) => state.damaged)) {
+      throw new Error(`A comparison snapshot of board "${input.boardId}" cannot be read (damaged files); run ingest_board to rebuild it.`);
+    }
     throw new Error(
       `A snapshot of board "${input.boardId}" is no longer cached on disk — re-run ingest_board to record a fresh baseline.`,
     );

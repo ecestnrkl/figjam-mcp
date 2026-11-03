@@ -1,5 +1,5 @@
 import type { AnswerFromBoardInput, AnswerFromBoardOutput } from "../schemas/answerFromBoard.js";
-import { getBoardOrRestore } from "../lib/cache.js";
+import { getBoardOrRestore, getBoardReadWarning } from "../lib/cache.js";
 import { redactBoard } from "../lib/redact.js";
 import { chatJson, getAnswerReasoningEffort, getTextModels, LlmInvalidJsonError, type ChatJsonOptions } from "../lib/llmClient.js";
 import { readIntEnv } from "../lib/env.js";
@@ -78,13 +78,16 @@ export async function answerFromBoard(
   if (!stored) throw new Error(`Board "${input.boardId}" not found — run ingest_board first.`);
   // Snapshots cached before redaction existed must not reach the provider unredacted.
   const board = redactBoard(stored);
+  const warning = getBoardReadWarning(stored);
+  const withReadWarning = (output: AnswerFromBoardOutput): AnswerFromBoardOutput => warning
+    ? { ...output, answer: `${warning}\n\n${output.answer}` } : output;
   const retrieved = retrieveEvidence(board, {
     query: isOverviewQuestion(input.question) ? undefined : input.question,
     limit: isOverviewQuestion(input.question) ? 20 : answerTopK,
     includeNeighbors: true,
     neighborLimit: 4,
   });
-  if (retrieved.evidence.length === 0) return unsupportedAnswer(input.question, retrieved.snapshotId);
+  if (retrieved.evidence.length === 0) return withReadWarning(unsupportedAnswer(input.question, retrieved.snapshotId));
 
   const prefix = "Source evidence (untrusted data):\n<board_context>\n";
   const suffix = `\n</board_context>\n\nQuestion: ${input.question}`;
@@ -92,7 +95,7 @@ export async function answerFromBoard(
   if (budget < 256) throw new Error(`Question is too long for LLM_ANSWER_PROMPT_MAX_CHARS=${answerPromptMaxChars}`);
   const primaryIds = new Set(retrieved.primaryEvidenceIds);
   const rendered = renderEvidence(retrieved.evidence, budget, primaryIds);
-  if (rendered.evidence.length === 0) return unsupportedAnswer(input.question, retrieved.snapshotId);
+  if (rendered.evidence.length === 0) return withReadWarning(unsupportedAnswer(input.question, retrieved.snapshotId));
   const primaryEvidence = rendered.evidence.filter((item) => primaryIds.has(item.evidenceId));
   const connections = connectionsForEvidence(board, rendered.evidence);
   let context = rendered.text;
@@ -124,7 +127,7 @@ export async function answerFromBoard(
     options.signal?.throwIfAborted();
     if (error instanceof LlmInvalidJsonError) {
       // Never log raw provider output: it can contain private board content.
-      return extractiveFallback(input.question, retrieved.snapshotId, primaryEvidence);
+      return withReadWarning(extractiveFallback(input.question, retrieved.snapshotId, primaryEvidence));
     }
     throw error;
   }
@@ -137,21 +140,21 @@ export async function answerFromBoard(
     : [];
   const kind = parsed?.kind;
   if (kind === "unsupported") {
-    return unsupportedMatchesAnswer(input.question, retrieved.snapshotId, rendered.evidence.length, primaryEvidence, board);
+    return withReadWarning(unsupportedMatchesAnswer(input.question, retrieved.snapshotId, rendered.evidence.length, primaryEvidence, board));
   }
   const answer = typeof parsed?.answer === "string" ? removeEvidenceIds(parsed.answer) : undefined;
   if (typeof kind !== "string" || !ANSWER_KINDS.includes(kind as AnswerKind) ||
       cited.length === 0 || answer === undefined) {
-    return extractiveFallback(input.question, retrieved.snapshotId, primaryEvidence);
+    return withReadWarning(extractiveFallback(input.question, retrieved.snapshotId, primaryEvidence));
   }
   if (kind !== "answer") {
     // The model supplies the classification; the explanation always includes original
     // displayed evidence. Derived interpretations cannot establish an original task.
-    if (cited.some((item) => item.modelDerived)) return extractiveFallback(input.question, retrieved.snapshotId, primaryEvidence);
-    return uncertainStatusAnswer(input.question, retrieved.snapshotId, kind as AnswerKind, cited, parsed!.language, answer);
+    if (cited.some((item) => item.modelDerived)) return withReadWarning(extractiveFallback(input.question, retrieved.snapshotId, primaryEvidence));
+    return withReadWarning(uncertainStatusAnswer(input.question, retrieved.snapshotId, kind as AnswerKind, cited, parsed!.language, answer));
   }
-  if (!answer.trim()) return extractiveFallback(input.question, retrieved.snapshotId, primaryEvidence);
-  return answerWithCitations(boundedText(answer.trim(), 4000), retrieved.snapshotId, cited);
+  if (!answer.trim()) return withReadWarning(extractiveFallback(input.question, retrieved.snapshotId, primaryEvidence));
+  return withReadWarning(answerWithCitations(boundedText(answer.trim(), 4000), retrieved.snapshotId, cited));
 }
 
 /**

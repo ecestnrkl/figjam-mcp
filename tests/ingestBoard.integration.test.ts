@@ -76,6 +76,44 @@ afterEach(async () => {
 });
 
 describe("offline ingest pipeline with actual persistent cache", () => {
+  it.each([false, true])("persists an empty snapshot after prior content: %s", async (withPriorContent) => {
+    let previousSnapshotId: string | undefined;
+    if (withPriorContent) {
+      activeTree = boardTree([sticky("note", "Previous synthetic content")]);
+      previousSnapshotId = (await ingestBoard({ ...input, ingestMode: "max_speed" })).snapshotId;
+    }
+    activeTree = boardTree([], "v2");
+    const result = await ingestBoard({ ...input, ingestMode: "max_speed" });
+    expect(result.clusterCount).toBe(0);
+    expect(result.persistenceWarning).toBeUndefined();
+    expect(result.summary).toContain("The board contains no readable content.");
+    const saved = await persistence.readLatestBoard(fileKey);
+    expect(saved?.snapshotId).toBe(result.snapshotId);
+    expect(saved?.clusters).toEqual([]);
+    const context = await getBoardContext({ boardId: fileKey });
+    expect(context.text).toContain("The board contains no readable content.");
+    expect(context.structuredContent.contextText).toContain("The board contains no readable content.");
+    expect(context.structuredContent.evidence).toEqual([]);
+    expect(context.structuredContent.clusters).toEqual([]);
+    expect(context.text).not.toContain("Previous synthetic content");
+    if (withPriorContent) {
+      const diff = await diffBoard({ boardId: fileKey, compareTo: 1 });
+      expect(diff.baselineSnapshotId).toBe(previousSnapshotId);
+      expect(diff.currentSnapshotId).toBe(result.snapshotId);
+      expect(diff.stats.removedNodes).toBeGreaterThan(0);
+      expect(diff.nodeChanges).toEqual(expect.arrayContaining([expect.objectContaining({ nodeId: "note", changeType: "removed" })]));
+    }
+  });
+
+  it("reports restarting history after a damaged manifest", async () => {
+    await ingestBoard({ ...input, ingestMode: "max_speed" });
+    await writeFile(path.join(cacheDirectory, "v4", `board-${fileKey}.json`), '{"schemaVersion":');
+    const result = await ingestBoard({ ...input, ingestMode: "max_speed" });
+    expect(result.persistenceWarning).toBeUndefined();
+    expect(result.summary).toContain("The cache manifest cannot be read (damaged file); snapshot history has restarted; run ingest_board again after edits to record changes.");
+    expect(await persistence.readBoardHistory(fileKey)).toHaveLength(1);
+  });
+
   it.each([
     ["LLM_MODEL_PRESET", "invalid", "LLM_MODEL_PRESET must be one of:"],
     ["LLM_PROVIDER_REQUIRE_PARAMETERS", "invalid", "LLM_PROVIDER_REQUIRE_PARAMETERS must be a boolean"],

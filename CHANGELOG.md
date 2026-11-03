@@ -2,6 +2,10 @@
 
 ## 0.12.0 — Unreleased
 
+- Failed snapshot saves name the cause and remedy in the warning and summary; locks left by crashed local servers are recovered automatically, and existing cache directory permissions are preserved.
+- Processes sharing a cache refresh boards from the latest saved snapshot before reading from memory.
+- Empty boards are saved as empty snapshots, replacing old content and allowing comparisons with the previous state.
+- Damaged snapshots fall back to readable history with a notice; damaged manifests report a history restart, and cleanup skips damaged entries and removes old temporary files.
 - Startup and environment-file tests run mostly in process, and CI runs once per PR commit.
 - Hidden elements and their descendants are excluded from snapshots, excerpts, search, clusters and image requests.
 - Credential redaction covers qualified labels, next-line values, underscore separators, PIN codes, Zugangscode, Bearer tokens, JWTs and credential-labelled table columns and rows; `Pin: Feature X to the top` remains unchanged.

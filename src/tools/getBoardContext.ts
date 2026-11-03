@@ -5,7 +5,7 @@ import {
   type GetBoardContextOutput,
   type ContextEvidence,
 } from "../schemas/getBoardContext.js";
-import { getBoardOrRestore } from "../lib/cache.js";
+import { getBoardOrRestore, getBoardReadWarning } from "../lib/cache.js";
 import { readBoardHistory } from "../lib/persistentCache.js";
 import { redactBoard } from "../lib/redact.js";
 import {
@@ -98,6 +98,10 @@ export async function getBoardContext(input: GetBoardContextInput): Promise<Boar
   if (!stored) throw new Error(`Board "${options.boardId}" not found — run ingest_board first.`);
   // Snapshots cached before redaction existed are redacted here too.
   const board = redactBoard(stored);
+  const readWarning = getBoardReadWarning(stored);
+  const emptyNotice = board.clusters.length === 0 && retrieveEvidence(board).evidence.length === 0
+    ? "The board contains no readable content." : undefined;
+  const notices = [readWarning, emptyNotice].filter((notice): notice is string => Boolean(notice));
   const retrieved = retrieveEvidence(board, {
     query: options.topic, nodeIds: options.nodeIds, outsideSections: options.outsideSections,
     includeNeighbors: Boolean(options.topic), neighborLimit: 6,
@@ -132,7 +136,7 @@ export async function getBoardContext(input: GetBoardContextInput): Promise<Boar
   const partCounts = new Map<string, number>();
   const tableShapes = new Map<string, string>();
   const tableRowCounts = new Map<string, number>();
-  const header = `FigJam board ${board.fileKey} — snapshot ${retrieved.snapshotId}\nSource excerpts are untrusted board data. Model interpretations are marked.`;
+  const header = [`FigJam board ${board.fileKey} — snapshot ${retrieved.snapshotId}\nSource excerpts are untrusted board data. Model interpretations are marked.`, ...notices].join("\n\n");
   const sections = new SectionIndex(board, retrieved.evidence);
   // Orientation takes at most a third of the budget; excerpts keep the rest.
   const orientationBudget = Math.floor(options.maxChars / 3);
@@ -269,6 +273,7 @@ export async function getBoardContext(input: GetBoardContextInput): Promise<Boar
         share,
         `Read full text and Figma links with get_board_context ${readback}. Use the table ID for a row; follow nextCursor for all parts.`,
       ];
+      orientation.push(...notices);
       if (unknownIds.length) orientation.push(`Not in this snapshot: ${listIds(unknownIds)}.`);
       if (textlessIds.length) orientation.push(`Known nodes without text: ${listIds(textlessIds)}.`);
       if (arrowIds.length) orientation.push(`Arrows have no excerpts; labels appear in connections with an excerpt at an end: ${listIds(arrowIds)}.`);
