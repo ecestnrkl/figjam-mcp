@@ -150,6 +150,9 @@ Configuration** for your profile. VS Code uses `servers` and `type: "stdio"`
 }
 ```
 
+To use an environment file, set `"envFile": "${workspaceFolder}/.env"` on the server
+in VS Code's `mcp.json`; the server does not load a working-directory `.env` itself.
+
 For longer ingests, use the Local harness with a per-server `"timeout": 300000` in
 `mcp.json` and `"INGEST_BOARD_VISION_BUDGET_MS": "270000"` in its `env` (about 30
 seconds below the timeout); [#343135](https://github.com/microsoft/vscode/issues/343135)
@@ -306,12 +309,17 @@ Measured results: [evaluation](https://github.com/ecestnrkl/figjam-mcp/blob/main
 git clone https://github.com/ecestnrkl/figjam-mcp.git
 cd figjam-mcp
 npm ci
-cp .env.example .env    # add your tokens
+cp .env.example .env    # optional: add tokens for local development
 npm run check           # typecheck, tests, build, package validation
 npm run package:smoke   # install the packed package and exercise all tools
 npm run eval:retrieval  # offline retrieval and diff evaluation
 npx --prefer-online @modelcontextprotocol/inspector --config inspector.config.json
 ```
+
+`npm run dev` and `inspector.config.json` explicitly load the repository's `.env`
+with Node's `--env-file-if-exists=.env`; existing environment values win. For other
+launch commands, configure the MCP client's `env` or set `FIGJAM_MCP_ENV_FILE` to
+the absolute path of the file.
 
 See [CONTRIBUTING.md](https://github.com/ecestnrkl/figjam-mcp/blob/main/CONTRIBUTING.md)
 and the [changelog](https://github.com/ecestnrkl/figjam-mcp/blob/main/CHANGELOG.md).

@@ -27,9 +27,44 @@ beforeEach(async () => {
   await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
   expect(client.getNegotiatedProtocolVersion()).toBe("2025-11-25");
 });
-afterEach(async () => { await client.close(); await server.close(); });
+afterEach(async () => { vi.unstubAllEnvs(); await client.close(); await server.close(); });
 
 describe("MCP wire contract", () => {
+  it("hides configured and argument secrets in every tool error even with board redaction disabled", async () => {
+    const llmKey = "random-llm-credential-93762";
+    const figmaKey = "random-figma-credential-73591";
+    const argumentKey = "random-argument-credential-52684";
+    vi.stubEnv("LLM_API_KEY", llmKey);
+    vi.stubEnv("FIGMA_ACCESS_TOKEN", figmaKey);
+    vi.stubEnv("FIGJAM_MCP_REDACT_CREDENTIALS", "false");
+    for (const [name, handler, args] of [
+      ["ingest_board", handlers.ingest, { figmaFileUrl: "https://www.figma.com/board/Synthetic/Fixture", figmaAccessToken: argumentKey }],
+      ["get_board_context", handlers.context, { boardId: "Synthetic" }],
+      ["answer_from_board", handlers.answer, { boardId: "Synthetic", question: "Question?" }],
+      ["diff_board", handlers.diff, { boardId: "Synthetic", compareTo: 1 }],
+      ["diagnose_llm_config", handlers.diagnose, {}],
+    ] as const) {
+      const extra = name === "ingest_board" ? ` ${argumentKey}` : "";
+      handler.mockRejectedValue(new Error(`Failure ${llmKey} ${figmaKey}${extra}`));
+      const result = await client.callTool({ name, arguments: args });
+      expect(result.isError).toBe(true);
+      expect(JSON.stringify(result)).not.toContain(llmKey);
+      expect(JSON.stringify(result)).not.toContain(figmaKey);
+      expect(JSON.stringify(result)).not.toContain(argumentKey);
+      expect(JSON.stringify(result)).toContain("[redacted]");
+    }
+  });
+
+  it("sanitizes summary and persistence warnings before they reach the host", async () => {
+    vi.stubEnv("LLM_API_KEY", "random-key-173650");
+    handlers.ingest.mockResolvedValue({ boardId: "Synthetic", ingestMode: "balanced", clusterCount: 0, relationCount: 0,
+      summary: "Summary random-key-173650", persistenceWarning: "Warning random-key-173650" });
+    const result = await client.callTool({ name: "ingest_board", arguments: { figmaFileUrl: "https://www.figma.com/board/Synthetic/Fixture" } });
+    expect(result.isError).not.toBe(true);
+    expect(result.structuredContent).toMatchObject({ summary: "Summary [redacted]", persistenceWarning: "Warning [redacted]" });
+    expect(JSON.stringify(result)).not.toContain("random-key-173650");
+  });
+
   it("advertises the actual package version and five accurately annotated tools", async () => {
     expect(client.getServerVersion()?.version).toBe(packageMetadata.version);
     const { tools } = await client.listTools();

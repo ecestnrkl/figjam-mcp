@@ -120,8 +120,8 @@ describe("chatJson", () => {
     vi.stubEnv("LLM_API_KEY", " ");
     try {
       const expected = 'LLM_BASE_URL and LLM_API_KEY are not set. Add them to "env" of this server in your MCP client '
-        + "configuration (see README, Quick start), then restart the server. "
-        + "In a local checkout, a .env file in the project directory works too.";
+        + "configuration (see README, Quick start), then restart the server."
+        + (await import("../src/lib/envFile.js")).missingEnvironmentHint();
       expect(() => validateLlmConfiguration()).toThrow(expected);
       await expect(chatJson("test-model", MESSAGES)).rejects.toThrow(expected);
       vi.stubEnv("LLM_BASE_URL", "http://test.local/v1");

@@ -23,6 +23,7 @@ import { getBoardContext } from "./tools/getBoardContext.js";
 import { answerFromBoard, answerText } from "./tools/answerFromBoard.js";
 import { diagnoseLlmConfig } from "./tools/diagnoseLlmConfig.js";
 import { diffBoard } from "./tools/diffBoard.js";
+import { redactError, redactOutputSecrets, withSecretScope } from "./lib/secrets.js";
 
 interface PackageMetadata {
   name: string;
@@ -70,9 +71,8 @@ export const packageMetadata = loadPackageMetadata();
  * Builds the MCP server and registers all tools.
  *
  * Error handling: handlers throw plain Errors with actionable messages; the
- * MCP SDK catches anything thrown inside registerTool() handlers and turns
- * it into { isError: true, content: [{ type: "text", text: message }] }, so
- * no per-tool try/catch is needed here.
+ * safeTool sanitizes messages and outputs at the host boundary. The MCP SDK
+ * turns thrown errors into { isError: true, content: [{ type: "text", text: message }] }.
  */
 export function createServer(): McpServer {
   const server = new McpServer({
@@ -90,7 +90,7 @@ export function createServer(): McpServer {
       inputSchema: ingestBoardInputSchema,
       outputSchema: z.object(ingestBoardOutputShape),
     },
-    async (input, ctx) => {
+    async (input, ctx) => safeTool(async () => {
       const progressToken = ctx.mcpReq._meta?.progressToken;
       const output = await ingestBoard(input, {
         signal: ctx.mcpReq.signal,
@@ -105,7 +105,7 @@ export function createServer(): McpServer {
         content: [{ type: "text" as const, text: output.summary }],
         structuredContent: output,
       };
-    },
+    }, [input.figmaAccessToken ?? ""]),
   );
 
   server.registerTool(
@@ -118,13 +118,13 @@ export function createServer(): McpServer {
       inputSchema: getBoardContextInputSchema,
       outputSchema: z.object(getBoardContextOutputShape),
     },
-    async (input) => {
+    async (input) => safeTool(async () => {
       const { text, structuredContent } = await getBoardContext(input);
       return {
         content: [{ type: "text" as const, text }],
         structuredContent,
       };
-    },
+    }),
   );
 
   server.registerTool(
@@ -137,13 +137,13 @@ export function createServer(): McpServer {
       inputSchema: answerFromBoardInputSchema,
       outputSchema: z.object(answerFromBoardOutputShape),
     },
-    async (input, ctx) => {
+    async (input, ctx) => safeTool(async () => {
       const output = await answerFromBoard(input, { signal: ctx.mcpReq.signal });
       return {
         content: [{ type: "text" as const, text: answerText(output) }],
         structuredContent: output,
       };
-    },
+    }),
   );
 
   server.registerTool(
@@ -156,13 +156,13 @@ export function createServer(): McpServer {
       inputSchema: diffBoardInputSchema,
       outputSchema: z.object(diffBoardOutputShape),
     },
-    async (input) => {
+    async (input) => safeTool(async () => {
       const output = await diffBoard(input);
       return {
         content: [{ type: "text" as const, text: output.summaryText }],
         structuredContent: output,
       };
-    },
+    }),
   );
 
   server.registerTool(
@@ -175,14 +175,21 @@ export function createServer(): McpServer {
       inputSchema: diagnoseLlmConfigInputSchema,
       outputSchema: z.object(diagnoseLlmConfigOutputShape),
     },
-    async (_input, ctx) => {
+    async (_input, ctx) => safeTool(async () => {
       const output = await diagnoseLlmConfig({ signal: ctx.mcpReq.signal });
       return {
         content: [{ type: "text" as const, text: output.summary }],
         structuredContent: output,
       };
-    },
+    }),
   );
 
   return server;
+}
+
+async function safeTool<T>(run: () => Promise<T>, additionalSecrets: string[] = []): Promise<T> {
+  return withSecretScope(additionalSecrets, async () => {
+    try { return redactOutputSecrets(await run()); }
+    catch (error) { throw redactError(error); }
+  });
 }

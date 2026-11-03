@@ -76,6 +76,48 @@ afterEach(async () => {
 });
 
 describe("offline ingest pipeline with actual persistent cache", () => {
+  it.each([
+    ["LLM_MODEL_PRESET", "invalid", "LLM_MODEL_PRESET must be one of:"],
+    ["LLM_PROVIDER_REQUIRE_PARAMETERS", "invalid", "LLM_PROVIDER_REQUIRE_PARAMETERS must be a boolean"],
+  ])("max_speed ignores %s while balanced reports it", async (name, value, message) => {
+    vi.stubEnv(name, value);
+    const result = await ingestBoard({ ...input, ingestMode: "max_speed" });
+    expect(result.clusterCount).toBeGreaterThan(0);
+    expect(visionMock).not.toHaveBeenCalled();
+    expect((await persistence.readLatestBoard(fileKey))?.modelPreset).toBeUndefined();
+    await expect(ingestBoard({ ...input, ingestMode: "balanced" })).rejects.toThrow(message);
+  });
+
+  it.each([
+    ["INGEST_BOARD_VISION_BUDGET_MS", "270s", "INGEST_BOARD_VISION_BUDGET_MS must be an integer >= 0"],
+    ["INGEST_BOARD_MIN_VISION_SLOT_MS", "-1", "INGEST_BOARD_MIN_VISION_SLOT_MS must be an integer >= 0"],
+  ])("defers %s validation to ingest and leaves cached context and diff usable", async (name, value, message) => {
+    await ingestBoard({ ...input, ingestMode: "max_speed" });
+    activeTree = boardTree([table("Budget 200")], "v2");
+    const latest = await ingestBoard({ ...input, ingestMode: "max_speed" });
+    vi.stubEnv(name, value);
+    vi.resetModules();
+    const { ingestBoard: configuredIngest } = await import("../src/tools/ingestBoard.js");
+    const { getBoardContext: configuredContext } = await import("../src/tools/getBoardContext.js");
+    const { diffBoard: configuredDiff } = await import("../src/tools/diffBoard.js");
+    expect((await configuredContext({ boardId: fileKey })).structuredContent.snapshotId).toBe(latest.snapshotId);
+    expect((await configuredDiff({ boardId: fileKey, compareTo: 1 })).currentSnapshotId).toBe(latest.snapshotId);
+    await expect(configuredIngest({ ...input, ingestMode: "balanced" })).rejects.toThrow(message);
+  });
+
+  it.each([
+    ["LLM_VISION_MAX_OUTPUT_TOKENS", 256], ["LLM_VISION_REQUEST_TIMEOUT_MS", 1000],
+    ["LLM_REQUEST_TIMEOUT_MS", 1000], ["LLM_RATE_LIMIT_RETRIES", 0],
+    ["LLM_RATE_LIMIT_MAX_BACKOFF_MS", 0], ["LLM_SDK_MAX_RETRIES", 0],
+    ["FIGMA_REQUEST_TIMEOUT_MS", 1000], ["FIGMA_SCREENSHOT_DOWNLOAD_CONCURRENCY", 1],
+  ])("reports invalid %s before image or model requests", async (name, minimum) => {
+    vi.stubEnv(name, "invalid");
+    await expect(ingestBoard(input)).rejects.toThrow(`${name} must be an integer >= ${minimum}`);
+    expect(screenshotMock).not.toHaveBeenCalled();
+    expect(imageFillsMock).not.toHaveBeenCalled();
+    expect(visionMock).not.toHaveBeenCalled();
+  });
+
   it("re-extracts an unchanged legacy board and retains the original connector snapshot", async () => {
     activeTree = boardTree([sticky("idea", "Idea", 0), sticky("test", "Test", 1000),
       { id: "arrow", name: "Arrow", type: "CONNECTOR", connectorStart: { endpointNodeId: "idea" }, connectorEnd: { endpointNodeId: "test" }, connectorStartStrokeCap: "NONE", connectorEndStrokeCap: "LINE_ARROW" },

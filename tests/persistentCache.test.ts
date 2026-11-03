@@ -16,6 +16,19 @@ function board(text = "Original", name = "AbC123"): BoardData {
     createdAt: 1 };
 }
 describe("v4 persistence", () => {
+  it("resolves a home-relative cache directory when persistence is needed", async () => {
+    vi.doMock("node:os", () => ({ homedir: () => root }));
+    try {
+      const cache = await import("../src/lib/persistentCache.js");
+      process.env.FIGJAM_MCP_CACHE_DIR = "~/private-cache";
+      await cache.persistBoard(board());
+      expect(await readdir(path.join(root, "private-cache", "v4"))).toContain("board-AbC123.json");
+      expect((await cache.readLatestBoard("AbC123"))?.nodes[0]?.text).toBe("Original");
+    } finally {
+      vi.doUnmock("node:os");
+    }
+  });
+
   it("atomically publishes a validated board with separate source and refinement files", async () => {
     const c = await import("../src/lib/persistentCache.js");
     const input = board();

@@ -59,7 +59,15 @@ describe("answer retrieval configuration", () => {
     ["LLM_ANSWER_PROMPT_MAX_CHARS", "4095", 4096], ["LLM_ANSWER_PROMPT_MAX_CHARS", "invalid", 4096],
   ])("rejects %s=%s below the minimum or not an integer", async (name, value, minimum) => {
     vi.stubEnv(name, value);
-    await expect(import("../src/tools/answerFromBoard.js")).rejects.toThrow(`${name} must be an integer >= ${minimum}`);
+    await expect(import("../src/tools/answerFromBoard.js")).resolves.toBeDefined();
+    await expect(ask()).rejects.toThrow(`${name} must be an integer >= ${minimum}`);
+    expect(chatJsonMock).not.toHaveBeenCalled();
+  });
+
+  it("reads answer output budgets when answering rather than loading the module", async () => {
+    vi.stubEnv("LLM_ANSWER_MAX_OUTPUT_TOKENS", "invalid");
+    await expect(import("../src/tools/answerFromBoard.js")).resolves.toBeDefined();
+    await expect(ask()).rejects.toThrow("LLM_ANSWER_MAX_OUTPUT_TOKENS must be an integer >= 1");
     expect(chatJsonMock).not.toHaveBeenCalled();
   });
 });

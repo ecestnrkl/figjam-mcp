@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.12.0 — Unreleased
+
+- The server no longer loads a working-directory `.env` automatically; move variables to the MCP client configuration, use `envFile` in VS Code, or set `FIGJAM_MCP_ENV_FILE` to the absolute file path.
+- Messages redact configured credentials, and tokens with invalid HTTP-header characters fail before any request.
+- Environment values are validated when a tool needs them; invalid values do not stop startup, and `max_speed` needs no model configuration.
+- `FIGJAM_MCP_CACHE_DIR` and `FIGJAM_MCP_ENV_FILE` expand a leading `~` or `~/` to the home directory.
+- Removed the unused `LLM_MAX_OUTPUT_TOKENS` setting.
+
 ## 0.11.0 — 2026-10-26
 
 - Model-provider HTTP 402 errors explain how to add credits, raise the API key's credit limit or choose a free model; `ingest_board` stops starting image requests after the first payment failure and keeps affected clusters pending.

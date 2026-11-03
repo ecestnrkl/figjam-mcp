@@ -6,10 +6,14 @@ import { readIntEnv } from "./env.js";
  * on compatible providers.
  */
 
-export const ANSWER_MAX_OUTPUT_TOKENS = readIntEnv("LLM_ANSWER_MAX_OUTPUT_TOKENS", 2048, 1);
+export function getAnswerMaxOutputTokens(): number {
+  return readIntEnv("LLM_ANSWER_MAX_OUTPUT_TOKENS", 2048, 1);
+}
 
 /**
  * Vision refinement returns only a label, a short summary, and a bounded ID
  * list. Give reasoning models enough room to reach that JSON.
  */
-export const VISION_MAX_OUTPUT_TOKENS = readIntEnv("LLM_VISION_MAX_OUTPUT_TOKENS", 4096, 256);
+export function getVisionMaxOutputTokens(): number {
+  return readIntEnv("LLM_VISION_MAX_OUTPUT_TOKENS", 4096, 256);
+}

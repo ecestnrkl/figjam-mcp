@@ -1,8 +1,9 @@
+import { redactMessage, redactOutputSecrets } from "../lib/secrets.js";
 import type { DiagnoseLlmConfigOutput } from "../schemas/diagnoseLlmConfig.js";
-import { chatJson, getFastTextModels, getTextModels, getVisionModels } from "../lib/llmClient.js";
+import { chatJson, getFastTextModels, getTextModels, getVisionModels, validateLlmTransportConfiguration } from "../lib/llmClient.js";
 import { describeModelConfig } from "../lib/modelRegistry.js";
 import { getAnswerRequestTimeoutMs, getVisionRequestTimeoutMs } from "../lib/llmTimeouts.js";
-import { ANSWER_MAX_OUTPUT_TOKENS, VISION_MAX_OUTPUT_TOKENS } from "../lib/llmOutputBudgets.js";
+import { getAnswerMaxOutputTokens, getVisionMaxOutputTokens } from "../lib/llmOutputBudgets.js";
 
 /**
  * Each check ends after this time even if the provider hangs. The checks run in
@@ -40,11 +41,12 @@ type ReplyValidator = (reply: unknown) => string | undefined;
 
 export async function diagnoseLlmConfig(options: { signal?: AbortSignal } = {}): Promise<DiagnoseLlmConfigOutput> {
   options.signal?.throwIfAborted();
+  validateLlmTransportConfiguration();
   const config = describeModelConfig();
   const visionRequestTimeoutMs = getVisionRequestTimeoutMs();
   // Text checks run under the same deadline as answer_from_board, the production text path.
   const textLimits = {
-    maxOutputTokens: ANSWER_MAX_OUTPUT_TOKENS,
+    maxOutputTokens: getAnswerMaxOutputTokens(),
     requestTimeoutMs: getAnswerRequestTimeoutMs(),
     timeoutSetting: "LLM_ANSWER_REQUEST_TIMEOUT_MS",
   };
@@ -83,7 +85,7 @@ export async function diagnoseLlmConfig(options: { signal?: AbortSignal } = {}):
       },
     ], VISION_DIAG_SCHEMA, expectDominantColor("blue"),
     {
-      maxOutputTokens: VISION_MAX_OUTPUT_TOKENS,
+      maxOutputTokens: getVisionMaxOutputTokens(),
       requestTimeoutMs: visionRequestTimeoutMs,
       timeoutSetting: "LLM_VISION_REQUEST_TIMEOUT_MS",
     }, options.signal),
@@ -188,7 +190,7 @@ async function runCheck(
           pending = undefined;
         },
         onModelFailed: (model, error) => {
-          attempts.push({ model, ok: false, error });
+          attempts.push({ model, ok: false, error: redactMessage(error) });
           pending = undefined;
         },
       }),
@@ -201,7 +203,7 @@ async function runCheck(
     return { name, ok: true, modelUsed, ...(attempts.length ? { attempts } : {}) };
   } catch (error) {
     signal?.throwIfAborted();
-    const message = error instanceof Error ? error.message : String(error);
+    const message = redactMessage(error instanceof Error ? error.message : String(error));
     if (pending) attempts.push({ model: pending, ok: false, error: message });
     return failed(message);
   } finally {
@@ -260,6 +262,6 @@ function hasOnlyKey(value: unknown, expectedKey: string): value is Record<string
 }
 
 function formatValue(value: unknown): string {
-  const serialized = JSON.stringify(value);
+  const serialized = JSON.stringify(redactOutputSecrets(value));
   return serialized === undefined ? String(value) : serialized.slice(0, 120);
 }

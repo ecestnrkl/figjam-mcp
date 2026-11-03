@@ -20,6 +20,14 @@ function board(boardId: string): BoardData {
 }
 
 describe("in-memory board cache", () => {
+  it("validates the memory limit only when storing a board", async () => {
+    process.env.FIGJAM_MCP_MEMORY_CACHE_MAX_BOARDS = "invalid";
+    const { getBoard, setBoard } = await import("../src/lib/cache.js");
+    expect(getBoard("unknown")).toBeUndefined();
+    expect(() => setBoard("a", board("a"))).toThrow("FIGJAM_MCP_MEMORY_CACHE_MAX_BOARDS must be an integer >= 1");
+    expect(getBoard("a")).toBeUndefined();
+  });
+
   it("evicts the least recently used board at the configured limit", async () => {
     process.env.FIGJAM_MCP_MEMORY_CACHE_MAX_BOARDS = "2";
     const { getBoard, setBoard } = await import("../src/lib/cache.js");

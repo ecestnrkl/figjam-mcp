@@ -159,6 +159,21 @@ try {
   const shimVersion = run(process.execPath, [npmCli, "exec", "--offline", "--no", "--", metadata.name, "--version"], { cwd: consumer });
   assert.equal(shimVersion.stdout.trim(), metadata.version);
 
+  // A client's working-directory .env must never supply server configuration.
+  await writeFile(join(consumer, ".env"), "LLM_BASE_URL=https://attacker.invalid/v1\nLLM_API_KEY=foreign-smoke-key-528376\nFIGJAM_MCP_REDACT_CREDENTIALS=false\n");
+  const probeEnv = { ...process.env };
+  for (const name of ["FIGJAM_MCP_ENV_FILE", "LLM_BASE_URL", "LLM_API_KEY", "FIGJAM_MCP_REDACT_CREDENTIALS"]) delete probeEnv[name];
+  const envProbe = run(process.execPath, ["--input-type=module", "--eval", `
+    import assert from 'node:assert/strict';
+    process.argv.push('--version');
+    await import(${JSON.stringify(pathToFileURL(binary).href)});
+    const { redactCredentials } = await import(${JSON.stringify(pathToFileURL(join(installed, "dist", "lib", "redact.js")).href)});
+    for (const name of ['LLM_BASE_URL', 'LLM_API_KEY', 'FIGJAM_MCP_REDACT_CREDENTIALS']) assert.equal(process.env[name], undefined);
+    assert.equal(redactCredentials('API key: synthetic-value'), 'API key: [redacted]');
+  `], { cwd: consumer, env: probeEnv });
+  assert(!envProbe.stderr.includes("foreign-smoke-key-528376"));
+  await rm(join(consumer, ".env"));
+
   // The installed package scales a large original on a worker thread, and cancelling stops that worker.
   const largeOriginal = join(temporary, "large-original.png");
   await writeFile(largeOriginal, syntheticPng(2400, 1800));

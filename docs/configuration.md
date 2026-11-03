@@ -1,8 +1,15 @@
 # Configuration
 
-Set variables in the `env` block of your MCP client. When the server starts in a
-directory that contains a `.env` file, it loads that file as well; values from
-the client win. Restart the server after a change.
+Set variables in the `env` block of your MCP client. The server does not load a
+`.env` file from its working directory automatically. Restart the server after a
+change.
+
+To load a file explicitly, set `FIGJAM_MCP_ENV_FILE` to its absolute path. Existing
+environment variables take precedence over values in the file. A leading `~` or
+`~/` expands to the home directory; other paths are used unchanged. At startup,
+one stderr line reports the path and names of newly loaded variables (excluding
+those already set), never their values. A missing or unreadable file does not stop the server: it logs one stderr
+line, and later errors about missing credentials also include the load failure.
 
 ## Environment variables
 
@@ -19,6 +26,13 @@ the client win. Restart the server after a change.
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `FIGJAM_MCP_REDACT_CREDENTIALS` | `true` | Replaces explicit credentials with `[redacted]` before they reach the cache, tool output or an LLM provider: labelled values such as `Passwort: …`, `PIN: …` or `API key: …` up to the end of the line, and known key formats (GitHub, OpenAI/OpenRouter, Figma, AWS, Slack, private key blocks). Set `false` to turn it off. |
+
+Messages replace exact configured Figma and LLM credentials, including a
+`figmaAccessToken` argument, with `[redacted]` when their trimmed value has at
+least 16 characters, even when board redaction is off. Shorter values are treated
+as placeholders.
+Tokens with characters that cannot be sent in an HTTP header are rejected before
+any request, with a message naming their source.
 
 After turning redaction off, run `ingest_board` once with `forceFullIngest: true`
 so the original text is extracted again. Snapshots cached by earlier versions keep
@@ -72,9 +86,12 @@ invalid JSON or an unavailable model. Changing any model setting or
 | `INGEST_BOARD_VISION_CONCURRENCY` | `8` or `3` | Resolved per ingest for workers and render planning: `8` when `LLM_BASE_URL` has host `openrouter.ai` and no vision candidate (`LLM_VISION_MODELS`, legacy `LLM_VISION_MODEL`, preset) is `openrouter/free` or ends in `:free`; otherwise `3`, including the free preset, GitHub Models and missing or invalid URLs. An explicit integer ≥ 1 overrides either default. |
 | `FIGMA_SCREENSHOT_DOWNLOAD_CONCURRENCY` | `3` | Parallel render downloads per cluster; the originals of a cluster download together. |
 | `FIGJAM_MCP_MEMORY_CACHE_MAX_BOARDS` | `10` | Boards kept in memory; others are reloaded from disk. |
-| `FIGJAM_MCP_CACHE_DIR` | OS cache directory | Cache root. Use an absolute, dedicated directory. |
+| `FIGJAM_MCP_CACHE_DIR` | OS cache directory | Cache root. Use an absolute, dedicated directory. A leading `~` or `~/` expands to the home directory. |
 
-Invalid numbers fail with an error that names the variable and its minimum.
+Environment values are checked when a tool needs them, so an invalid value does
+not prevent server startup. Invalid numbers fail in that tool with an error that
+names the variable and its minimum. `get_board_context` and `diff_board` need no
+Figma or LLM configuration; `max_speed` does not read model configuration.
 
 ## Ingest modes
 

@@ -2,7 +2,7 @@ import type OpenAI from "openai";
 import type { Cluster, NormalizedNode, RefinedCluster, ConnectorEdge } from "../types.js";
 import { getVisionRequestTimeoutMs } from "./llmTimeouts.js";
 import { chatJson, getVisionModels, LlmInvalidJsonError } from "./llmClient.js";
-import { VISION_MAX_OUTPUT_TOKENS } from "./llmOutputBudgets.js";
+import { getVisionMaxOutputTokens } from "./llmOutputBudgets.js";
 import { redactCredentials } from "./redact.js";
 import { imageMimeType } from "./figmaApi.js";
 
@@ -65,7 +65,7 @@ export async function refineClusterWithVision(
     {
       schemaName: "figjam_cluster_refinement",
       jsonSchema: VISION_REPLY_SCHEMA,
-      maxOutputTokens: VISION_MAX_OUTPUT_TOKENS,
+      maxOutputTokens: getVisionMaxOutputTokens(),
       requestTimeoutMs: getVisionRequestTimeoutMs(),
       timeoutSetting: "LLM_VISION_REQUEST_TIMEOUT_MS",
       signal,

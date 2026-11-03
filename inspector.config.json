@@ -3,7 +3,12 @@
     "figjam-local": {
       "type": "stdio",
       "command": "node",
-      "args": ["--import", "tsx", "src/index.ts"],
+      "args": [
+        "--env-file-if-exists=.env",
+        "--import",
+        "tsx",
+        "src/index.ts"
+      ],
       "cwd": ".",
       "requestTimeout": 180000
     }

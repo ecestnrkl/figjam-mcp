@@ -6,6 +6,7 @@ import { fetchFileTree, fetchRenderUrls, downloadRenders, fetchImageRefs, downlo
   FigmaTimeoutError, IMAGE_MAX_BYTES, INGEST_IMAGE_MAX_BYTES, type OriginalImage, type RenderUrls } from "../lib/figmaApi.js";
 import {
   LLMConfigurationError, LlmInvalidJsonError, LlmRequestError, LlmTimeoutError, missingLlmConfigurationMessage, validateLlmConfiguration,
+  validateLlmRuntimeConfiguration,
 } from "../lib/llmClient.js";
 import { flattenNodeTree, isGenericNodeName } from "../lib/nodeTree.js";
 import { partitionedBoardClusters } from "../lib/spatialCluster.js";
@@ -16,6 +17,10 @@ import { buildClusterRelations, extractConnectorEdges } from "../lib/connectorGr
 import { setBoard } from "../lib/cache.js";
 import { redactBoard } from "../lib/redact.js";
 import { readIntEnv } from "../lib/env.js";
+import { missingEnvironmentHint } from "../lib/envFile.js";
+import { validateHeaderSecret, withSecretScope } from "../lib/secrets.js";
+import { getVisionMaxOutputTokens } from "../lib/llmOutputBudgets.js";
+import { getVisionRequestTimeoutMs } from "../lib/llmTimeouts.js";
 import { describeModelConfig } from "../lib/modelRegistry.js";
 import { sectionGuide } from "../lib/sections.js";
 import { enclosingIdsLookup } from "../lib/evidence.js";
@@ -41,15 +46,6 @@ import {
 const MAX_SCREENSHOTS_PER_CLUSTER = 6;
 /** Image data sent per vision request; images reach the model with at most 1,024 px on the longest side. */
 const VISION_REQUEST_IMAGE_MAX_BYTES = 8 * 1024 * 1024;
-
-/**
- * Many MCP clients cancel a tool call after the SDK's 60 s request timeout, and
- * a cancelled ingest persists nothing. A 40 s vision phase leaves room for the
- * Figma download, clustering and persistence; remaining clusters keep a
- * deterministic text summary and are interpreted on the next ingest.
- */
-const VISION_BUDGET_MS = readIntEnv("INGEST_BOARD_VISION_BUDGET_MS", 40_000, 0);
-const MIN_VISION_SLOT_MS = readIntEnv("INGEST_BOARD_MIN_VISION_SLOT_MS", 10000, 0);
 
 /**
  * Resolve once per ingest, for both workers and render planning. Paid
@@ -93,7 +89,7 @@ const ingestQueues = new Map<string, Promise<unknown>>();
 export async function ingestBoard(input: IngestBoardInput, options: OperationOptions = {}): Promise<IngestBoardOutput> {
   const fileKey = parseFigmaFileKey(input.figmaFileUrl);
   const pending = (ingestQueues.get(fileKey) ?? Promise.resolve()).catch(() => undefined)
-    .then(() => performIngest(input, options));
+    .then(() => withSecretScope([input.figmaAccessToken ?? ""], () => performIngest(input, options)));
   ingestQueues.set(fileKey, pending);
   try { return await pending; }
   finally { if (ingestQueues.get(fileKey) === pending) ingestQueues.delete(fileKey); }
@@ -101,7 +97,23 @@ export async function ingestBoard(input: IngestBoardInput, options: OperationOpt
 
 async function performIngest(input: IngestBoardInput, options: OperationOptions): Promise<IngestBoardOutput> {
   const { signal } = options;
-  const concurrency = getVisionConcurrency();
+  const ingestMode = input.ingestMode ?? "balanced";
+  const modelConfig = ingestMode === "max_speed" ? undefined : describeModelConfig();
+  const concurrency = ingestMode === "max_speed" ? 0 : getVisionConcurrency();
+  // Leave room for downloading and persistence before the usual 60 s client
+  // timeout; clusters beyond this budget retain deterministic text summaries.
+  const visionBudgetMs = ingestMode === "max_speed" ? 0 : readIntEnv("INGEST_BOARD_VISION_BUDGET_MS", 40_000, 0);
+  const minVisionSlotMs = ingestMode === "max_speed" ? 0 : readIntEnv("INGEST_BOARD_MIN_VISION_SLOT_MS", 10000, 0);
+  // Validate the mode's configuration before spending a Figma file request,
+  // even when the downloaded board would contain no vision clusters.
+  readIntEnv("FIGMA_FILE_REQUEST_TIMEOUT_MS", 60000, 1000);
+  if (ingestMode !== "max_speed") {
+    getVisionMaxOutputTokens();
+    getVisionRequestTimeoutMs();
+    readIntEnv("FIGMA_REQUEST_TIMEOUT_MS", 15000, 1000);
+    readIntEnv("FIGMA_SCREENSHOT_DOWNLOAD_CONCURRENCY", 3, 1);
+    if (!missingLlmConfigurationMessage()) validateLlmRuntimeConfiguration();
+  }
   const progress = async (phase: string, completed: number) => {
     // Let stdio cancellation notifications run between bounded CPU phases.
     await yieldToRequests(undefined, { signal });
@@ -112,10 +124,10 @@ async function performIngest(input: IngestBoardInput, options: OperationOptions)
   // must not turn an already committed operation into an apparent rollback.
   const complete = async () => { try { await options.onProgress?.("complete", 5, 5); } catch { /* Best effort after commit. */ } };
   await progress("fetch", 0);
-  const ingestMode = input.ingestMode ?? "balanced";
   const fileKey = parseFigmaFileKey(input.figmaFileUrl);
   const token = input.figmaAccessToken?.trim() || process.env.FIGMA_ACCESS_TOKEN?.trim();
-  if (!token) throw new Error("No Figma access token — set FIGMA_ACCESS_TOKEN in your MCP client's environment");
+  if (!token) throw new Error("No Figma access token — set FIGMA_ACCESS_TOKEN in your MCP client's environment" + missingEnvironmentHint());
+  validateHeaderSecret(token, input.figmaAccessToken?.trim() ? "figmaAccessToken" : "FIGMA_ACCESS_TOKEN");
   const previousBoard = await readLatestBoard(fileKey);
   // Every ingest downloads the board: /meta reports edits only with Figma's next
   // autosave or after a content read, minutes later, so it cannot confirm freshness.
@@ -132,7 +144,9 @@ async function performIngest(input: IngestBoardInput, options: OperationOptions)
   const snapshotId = buildSnapshotId(fileKey, nodeHash);
   // Only a previous snapshot of the same extraction version can be compared.
   const contentChanged = previousBoard?.extractionVersion === EXTRACTION_VERSION ? previousBoard.snapshotId !== snapshotId : undefined;
-  const refinementSignature = getRefinementSignature();
+  // Speed mode keeps existing interpretations without consulting model settings.
+  const refinementSignature = ingestMode === "max_speed" && previousBoard?.refinementSignature
+    ? previousBoard.refinementSignature : getRefinementSignature(ingestMode);
   const cacheKey = buildBoardCacheKey({ fileKey, nodeHash, docStructureHint: input.docStructureHint,
     customPhases: input.customPhases, ingestMode });
   const cacheCandidate = input.forceFullIngest ? undefined : await readCachedBoard(cacheKey, fileKey);
@@ -196,15 +210,20 @@ async function performIngest(input: IngestBoardInput, options: OperationOptions)
   visionQueue.sort((left, right) => focusRanks[left]! - focusRanks[right]!
     || retryPriorities[left]! - retryPriorities[right]!
     || compareVisionPriority(priorities[left]!, priorities[right]!));
+  let sharedFailure: { reason: VisionFallbackReason; retryAfter?: number } | undefined;
+  if (visionQueue.length) {
+    try { validateLlmConfiguration(); }
+    catch (error) { sharedFailure = { reason: classifyVisionFailure(error, "model") }; }
+  }
   await progress("interpret", 3);
-  const deadline = Date.now() + VISION_BUDGET_MS;
+  const deadline = Date.now() + visionBudgetMs;
   const imageBudget = { usedBytes: 0, maxBytes: INGEST_IMAGE_MAX_BYTES };
   const imageNodes = new Map(visionQueue.map(index => [index, pickImageNodes(clusterNodesByIndex[index]!)] as const)
     .filter(([, picked]) => picked.length));
   const screenshotNodes = new Map(visionQueue.filter(index => !imageNodes.has(index))
     .map(index => [index, pickScreenshotNodes(clusterNodesByIndex[index]!)]));
   // Only clusters the budget can realistically reach share the first batches.
-  const plannedClusters = MIN_VISION_SLOT_MS > 0 ? Math.floor(concurrency * VISION_BUDGET_MS / MIN_VISION_SLOT_MS) : Infinity;
+  const plannedClusters = minVisionSlotMs > 0 ? Math.floor(concurrency * visionBudgetMs / minVisionSlotMs) : Infinity;
   const { batches: renderBatches, plannedBatches } = planRenderBatches(visionQueue, screenshotNodes, plannedClusters);
   const figmaRequests = { imageFills: 0, renders: 0 };
   const batchOfCluster = new Map(renderBatches.flatMap((batch, number) => batch.map(index => [index, number] as const)));
@@ -216,7 +235,7 @@ async function performIngest(input: IngestBoardInput, options: OperationOptions)
   // phase or the ingest rather than with one cluster's work.
   const renderPhase = new AbortController();
   const renderSignal = signal ? AbortSignal.any([signal, renderPhase.signal]) : renderPhase.signal;
-  const renderPhaseTimer = setTimeout(() => renderPhase.abort(new VisionDeadlineExceededError()), Math.max(0, deadline - Date.now()));
+  const renderPhaseTimer = setTimeout(() => renderPhase.abort(new VisionDeadlineExceededError(visionBudgetMs)), Math.max(0, deadline - Date.now()));
   const renderBatch = (batch: number): Promise<RenderUrls> => {
     let request = renderRequests[batch];
     if (!request) {
@@ -231,7 +250,7 @@ async function performIngest(input: IngestBoardInput, options: OperationOptions)
   // Stays one batch ahead of the workers, and only within the planned batches.
   const prefetchRenderBatch = (batch: number) => {
     if (batch < plannedBatches && !renderRequests[batch] && !sharedFailure &&
-      hasVisionBudget(deadline, requiredSlotMs(clusterDurations))) void renderBatch(batch);
+      hasVisionBudget(deadline, requiredSlotMs(clusterDurations, minVisionSlotMs))) void renderBatch(batch);
   };
   // One image fills request (Tier 2) serves every image cluster of the ingest.
   let imageFillsRequest: Promise<Record<string, string>> | undefined;
@@ -258,13 +277,8 @@ async function performIngest(input: IngestBoardInput, options: OperationOptions)
     });
     return clusterProgress;
   };
-  let sharedFailure: { reason: VisionFallbackReason; retryAfter?: number } | undefined;
   const currentSharedFailure = (): typeof sharedFailure => sharedFailure;
-  if (visionQueue.length) {
-    try { validateLlmConfiguration(); }
-    catch (error) { sharedFailure = { reason: classifyVisionFailure(error, "model") }; }
-  }
-  if (imageNodes.size && !sharedFailure && hasVisionBudget(deadline)) void imageFills();
+  if (imageNodes.size && !sharedFailure && hasVisionBudget(deadline, minVisionSlotMs)) void imageFills();
   const fallback = (index: number, reason: VisionFallbackReason, retryAfter?: number) => {
     const members = clusterNodesByIndex[index]!;
     refined[index] = { ...refineClusterFromText(clusters[index]!, members), contentHash: contentHashes.get(clusters[index]!.id),
@@ -299,7 +313,7 @@ async function performIngest(input: IngestBoardInput, options: OperationOptions)
       const cluster = clusters[index]!;
       const members = clusterNodesByIndex[index]!;
       if (sharedFailure) { fallback(index, sharedFailure.reason, sharedFailure.retryAfter); continue; }
-      if (!hasVisionBudget(deadline, requiredSlotMs(clusterDurations))) { fallback(index, "time_budget"); continue; }
+      if (!hasVisionBudget(deadline, requiredSlotMs(clusterDurations, minVisionSlotMs))) { fallback(index, "time_budget"); continue; }
       const clusterStartedAt = Date.now();
       let stage: VisionStage = "render";
       try {
@@ -311,15 +325,15 @@ async function performIngest(input: IngestBoardInput, options: OperationOptions)
           const renderUrls = await renderBatch(batch);
           prefetchRenderBatch(batch + 1);
           return withinRequestLimit(await prepareRenders(await downloadRenders(screenshotNodes.get(index)!, renderUrls, requestSignal, imageBudget), requestSignal));
-        }, deadline, signal);
+        }, deadline, visionBudgetMs, signal);
         const failureAfterRendering = currentSharedFailure();
         if (failureAfterRendering) { fallback(index, failureAfterRendering.reason, failureAfterRendering.retryAfter); continue; }
-        if (!hasVisionBudget(deadline, requiredSlotMs(modelDurations))) { fallback(index, "time_budget"); continue; }
+        if (!hasVisionBudget(deadline, requiredSlotMs(modelDurations, minVisionSlotMs))) { fallback(index, "time_budget"); continue; }
         const internalEdges = internalEdgesByCluster.get(cluster.id) ?? [];
         stage = "model";
         const modelStartedAt = Date.now();
         refined[index] = { ...await withinVisionDeadline(phaseSignal => refineClusterWithVision(cluster, screenshots, members,
-          signal ? AbortSignal.any([signal, phaseSignal]) : phaseSignal, internalEdges), deadline, signal),
+          signal ? AbortSignal.any([signal, phaseSignal]) : phaseSignal, internalEdges), deadline, visionBudgetMs, signal),
           contentHash: contentHashes.get(cluster.id), incomplete: false };
         const finishedAt = Date.now();
         modelDurations.push(finishedAt - modelStartedAt);
@@ -349,7 +363,7 @@ async function performIngest(input: IngestBoardInput, options: OperationOptions)
   const board = redactBoard({
     schemaVersion: 4, extractionVersion: EXTRACTION_VERSION, boardId: fileKey, fileKey, docStructureHint: input.docStructureHint,
     customPhases: input.customPhases, ingestMode, cacheKey, snapshotId, figmaLastModified, figmaVersion,
-    freshnessCheckedAt, nodeHash, refinementSignature, modelPreset: describeModelConfig().preset,
+    freshnessCheckedAt, nodeHash, refinementSignature, modelPreset: modelConfig?.preset,
     qualityReport, nodes, clusters: finalClusters, connectorEdges,
     clusterRelations: buildClusterRelations(connectorEdges, finalClusters),
     createdAt: previousBoard?.snapshotId === snapshotId ? previousBoard.createdAt : Date.now(),
@@ -503,10 +517,7 @@ function planRenderBatches(queue: number[], screenshotNodes: Map<number, string[
   return { batches, plannedBatches };
 }
 
-function hasVisionBudget(deadline: number, slotMs = MIN_VISION_SLOT_MS): boolean {
-  if (VISION_BUDGET_MS <= 0) {
-    return false;
-  }
+function hasVisionBudget(deadline: number, slotMs: number): boolean {
   const now = Date.now();
   return now < deadline && now + slotMs <= deadline;
 }
@@ -516,17 +527,17 @@ function hasVisionBudget(deadline: number, slotMs = MIN_VISION_SLOT_MS): boolean
  * at the deadline still costs a provider request, so a step starts only when
  * 1.25 × the median of its successful durations in this ingest still fits.
  */
-function requiredSlotMs(durations: number[]): number {
-  if (!durations.length) return MIN_VISION_SLOT_MS;
+function requiredSlotMs(durations: number[], minimumMs: number): number {
+  if (!durations.length) return minimumMs;
   const sorted = [...durations].sort((a, b) => a - b);
   const middle = sorted.length >>> 1;
   const median = sorted.length % 2 ? sorted[middle]! : (sorted[middle - 1]! + sorted[middle]!) / 2;
-  return Math.max(MIN_VISION_SLOT_MS, Math.ceil(1.25 * median));
+  return Math.max(minimumMs, Math.ceil(1.25 * median));
 }
 
 class VisionDeadlineExceededError extends Error {
-  constructor() {
-    super(`Vision phase deadline exceeded (${VISION_BUDGET_MS} ms)`);
+  constructor(budgetMs: number) {
+    super(`Vision phase deadline exceeded (${budgetMs} ms)`);
     this.name = "VisionDeadlineExceededError";
   }
 }
@@ -539,11 +550,12 @@ class VisionDeadlineExceededError extends Error {
 function withinVisionDeadline<T>(
   operation: (signal: AbortSignal) => Promise<T>,
   deadline: number,
+  budgetMs: number,
   signal?: AbortSignal,
 ): Promise<T> {
   const remainingMs = deadline - Date.now();
   if (remainingMs <= 0) {
-    return Promise.reject(new VisionDeadlineExceededError());
+    return Promise.reject(new VisionDeadlineExceededError(budgetMs));
   }
 
   return new Promise<T>((resolve, reject) => {
@@ -552,7 +564,7 @@ function withinVisionDeadline<T>(
     const onAbort = () => { clearTimeout(timer); controller.abort(signal?.reason); reject(signal?.reason); };
     signal?.addEventListener("abort", onAbort, { once: true });
     const timer = setTimeout(() => {
-      const error = new VisionDeadlineExceededError();
+      const error = new VisionDeadlineExceededError(budgetMs);
       signal?.removeEventListener("abort", onAbort);
       controller.abort(error);
       reject(error);
