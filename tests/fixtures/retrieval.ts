@@ -40,6 +40,26 @@ export const retrievalFixtures: Array<{ name: string; board: BoardData; query: s
   ]),
 }));
 
+// Search normalization and field-indexing cases use synthetic content only.
+for (const [name, text, query] of [
+  ["accent folding", "Café seating", "cafe"],
+  ["hyphenated word", "Wi-Fi access", "wifi"],
+  ["uppercase stopword acronym", "Waiting for IT", "IT"],
+  ["invisible character", "Bezah\u200Blung", "Bezahlung"],
+  ["German filler words", "Bezahlung mit Karte", "Gibt es etwas zur Bezahlung?"],
+]) {
+  retrievalFixtures.push({ name: name!, query: query!, expectedNodeId: "target",
+    board: evidenceBoard(`Normalization${retrievalFixtures.length}`, [textNode("other", "Es gibt etwas Neues"), textNode("target", text!)]) });
+}
+const arrowBoard = evidenceBoard("ArrowLabelFixture", [textNode("target", "The selected proposal"), textNode("other", "Another idea")]);
+arrowBoard.connectorEdges = [{ connectorId: "arrow", fromNodeId: "target", toNodeId: "other", label: "chosen" }];
+retrievalFixtures.push({ name: "arrow label", board: arrowBoard, query: "chosen", expectedNodeId: "target" });
+const headingsBoard = evidenceBoard("HeadingsFixture", [{ ...textNode("table", ""), type: "TABLE", table: { cells: [
+  { id: "heading-a", text: "Feature", row: 0, column: 0 }, { id: "heading-b", text: "Effort", row: 0, column: 1 },
+  { id: "feature", text: "Order ahead", row: 1, column: 0 }, { id: "effort", text: "Low", row: 1, column: 1 },
+] } }]);
+retrievalFixtures.push({ name: "column heading", board: headingsBoard, query: "low effort", expectedNodeId: "effort" });
+
 const longBoard = evidenceBoard("LongText123", [textNode("2:1", "Ordinary workshop detail. ".repeat(150) + "The lunar launch window starts at 06:45 UTC.")]);
 retrievalFixtures.push({ name: "fact beyond first chunk", board: longBoard, query: "lunar launch", expectedNodeId: "2:1" });
 const sixthBoard = evidenceBoard("SixthNode123", Array.from({ length: 8 }, (_, index) => textNode(`3:${index}`, index === 6 ? "The zephyr budget is EUR 8400." : "Generic interview notes.")));

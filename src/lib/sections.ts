@@ -96,7 +96,7 @@ export class SectionIndex {
    * Sections with the most excerpts, nested sections included, skipping each that
    * lies in one already named; ties go to the outer section, then reading order.
    */
-  largestLine(limit: number): string {
+  largestSections(limit: number): Array<{ id: string; name: string; count: number }> {
     const depth = (section: NormalizedNode) => [...this.enclosing(section.id)].filter((id) => this.nodesById.get(id)?.type === "SECTION").length;
     const ranked = this.sections.filter((section) => this.excerpts.has(section.id))
       .sort((a, b) => this.excerpts.get(b.id)! - this.excerpts.get(a.id)! || depth(a) - depth(b));
@@ -105,10 +105,15 @@ export class SectionIndex {
       if (largest.length === limit) break;
       if (!largest.some((named) => this.enclosing(section.id).has(named.id))) largest.push(section);
     }
+    return largest.map((section) => ({ id: section.id, name: this.name(section), count: this.excerpts.get(section.id)! }));
+  }
+
+  largestLine(limit: number): string {
+    const largest = this.largestSections(limit);
     if (!largest.length) return "";
-    const covered = largest.reduce((sum, section) => sum + this.excerpts.get(section.id)!, 0);
+    const covered = largest.reduce((sum, section) => sum + section.count, 0);
     return `Largest sections (ID, name, excerpts): ${largest.map((section) =>
-      `${section.id} ${this.name(section)} — ${this.excerpts.get(section.id)}`).join("; ")}. ` +
+      `${section.id} ${section.name} — ${section.count}`).join("; ")}. ` +
       `Together they hold ${covered} of the board's ${this.evidence.length} excerpts.`;
   }
 

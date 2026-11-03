@@ -231,8 +231,11 @@ Problems: [troubleshooting](https://github.com/ecestnrkl/figjam-mcp/blob/main/do
 5. **Serve.** The snapshot is saved to a private local cache. Search favors
    excerpts containing more of the question’s words.
    `get_board_context` searches it (BM25 over original text, table rows and
-   names), `answer_from_board` answers with citations and `diff_board` compares
-   snapshots. The first `get_board_context` page includes a size-limited section
+   names, arrow labels and table headings), `answer_from_board` answers with
+   citations and `diff_board` compares snapshots. Topic and question searches
+   match whole words ignoring case and accents, but not other word forms,
+   synonyms or translations. Use the board's words and language; an empty search
+   does not prove the board lacks the topic. The first `get_board_context` page includes a size-limited section
    overview with IDs; pass a page, section, frame or group ID as `nodeIds` to read
    everything inside it; several
    IDs in one call take turns in request order. With default `detail: "auto"`,

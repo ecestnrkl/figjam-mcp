@@ -5,19 +5,19 @@ not a release gate; the model checks below are smoke tests.
 
 ## Retrieval and change detection (offline)
 
-`npm run eval:retrieval` runs 22 synthetic board cases and one known word-form
+`npm run eval:retrieval` runs 29 synthetic board cases and one known word-form
 limitation without provider calls.
 CI runs it on every push (Linux, Node 24).
 
 | Check | Result |
 | --- | --- |
-| Original expected source ranked first | 18/18 |
+| Original expected source ranked first | 25/25 |
 | Long English/German question: source in first six | 2/2 |
 | Correct empty result for an unrelated topic | 2/2 |
-| Expected board changes found by `diff_board` | 20/20 |
-| Changes named in the text output | 20/20 |
+| Expected board changes found by `diff_board` | 27/27 |
+| Changes named in the text output | 27/27 |
 
-Recall@6, Recall@15 and MRR cover all 20 answerable cases. The plural/singular
+Recall@6, Recall@15 and MRR cover all 27 answerable cases. The plural/singular
 case is reported separately and excluded from those metrics.
 
 The corpus is small and synthetic. It measures ranking, source traceability and

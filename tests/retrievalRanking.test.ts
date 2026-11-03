@@ -99,15 +99,16 @@ describe("field-aware source ranking", () => {
     expect(result.evidence[0]!.text).toContain("responsible team");
   });
 
-  it("keeps original section/page discovery without separate page or section excerpts", () => {
+  it("finds sections but does not create matches from page names or container excerpts", () => {
     const board = evidenceBoard("OriginalScope", [{ ...textNode("value", "42"), name: "Count" }]);
     board.nodes.push(
       { ...textNode("0:1", ""), type: "CANVAS", name: "Operations", sectionIds: [] },
       { ...textNode("1:0", ""), type: "SECTION", name: "Participants", sectionIds: [] },
     );
-    for (const query of ["Count", "Participants", "Operations", "STICKY"]) {
+    for (const query of ["Count", "Participants", "STICKY"]) {
       expect(retrieveEvidence(board, { query }).evidence.some((item) => item.nodeId === "value" && item.text === "42")).toBe(true);
     }
+    expect(retrieveEvidence(board, { query: "Operations" }).evidence).toEqual([]);
     expect(retrieveEvidence(board).evidence.some((item) => item.nodeId === "1:0" || item.nodeId === "0:1")).toBe(false);
   });
 

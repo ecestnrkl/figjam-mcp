@@ -77,7 +77,7 @@ const changeCases = changeFixtures.map((fixture) => {
   };
 });
 const result = {
-  evaluation: "22 synthetic lexical source-retrieval fixtures and one known word-form limitation; not a real-board benchmark",
+  evaluation: "29 synthetic lexical source-retrieval fixtures and one known word-form limitation; not a real-board benchmark",
   mode: withLlm ? "explicit-provider-evaluation" : "offline",
   ...(withLlm ? { providerEvaluation: {
     selection: groundingOnly ? "grounding-only" : "retrieval-and-grounding",
@@ -126,7 +126,7 @@ const result = {
 };
 console.log(JSON.stringify(result, null, 2));
 if (cases.slice(0, retrievalFixtures.length).some((item) => item.answerable && item.rank !== 1) ||
-    result.recallAt6 < 1 || result.correctAbstentionRate < 1 || result.fixtures !== 22 ||
+    result.recallAt6 < 1 || result.correctAbstentionRate < 1 || result.fixtures !== 29 ||
     changeCases.some((item) => !item.passed || !item.namedInText) ||
     externalCases.some((item) => item.error || item.validCitationCount !== item.citationCount ||
       (item.expectedNodeId ? !item.citesExpectedNode : !item.abstained)) ||

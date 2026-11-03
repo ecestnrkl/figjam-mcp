@@ -34,10 +34,10 @@ describe("answerFromBoard evidence grounding", () => {
   });
 
   it.each([
-    { kind: "answer", language: "en", answer: "Invented answer", evidenceIds: [] },
     { kind: "answer", language: "en", answer: "Invented answer", evidenceIds: ["ev_madeup"] },
+    { kind: "unsupported", language: "en", answer: "Invented answer", evidenceIds: ["ev_madeup"] },
     { kind: "answer", language: "en", answer: "Invented answer", citedClusters: ["Area 1"] },
-  ])("rejects uncited, invented-ID and label-only claims: %j", async (reply) => {
+  ])("rejects invented-ID and label-only claims: %j", async (reply) => {
     const data = evidenceBoard("NoCitation123");
     setBoard(data.boardId, data);
     chatJsonMock.mockResolvedValueOnce(reply);
@@ -115,14 +115,67 @@ describe("answerFromBoard evidence grounding", () => {
     expect(chatJsonMock).toHaveBeenCalledTimes(1);
   });
 
-  it("returns unsupported without an LLM call when nothing matches", async () => {
-    setBoard("Absent123", evidenceBoard("Absent123"));
-    const output = await answerFromBoard({ boardId: "Absent123", question: "Where is the quantum reactor?" });
+  it.each([
+    ["Where is the quantum reactor?", false],
+    ["Wo ist der Quantenreaktor?", true],
+  ])("explains a search miss and the largest sections: %s", async (question, german) => {
+    const data = evidenceBoard("Absent123", [
+      { ...textNode("n:1", "Payment"), sectionIds: ["s:1"] },
+      { ...textNode("n:2", "Receipt"), sectionIds: ["s:1"] },
+      { ...textNode("n:3", "Other"), sectionIds: [] },
+    ]);
+    data.nodes.push({ ...textNode("s:1", ""), type: "SECTION", name: "Ideas", sectionIds: [] });
+    setBoard(data.boardId, data);
+    const output = await answerFromBoard({ boardId: data.boardId, question });
     expect(chatJsonMock).not.toHaveBeenCalled();
-    expect(output.answer).toBe("The board has no excerpts that answer this question.");
+    expect(output.answer).toContain(german ? "Kein Auszug passt zu einem Wort dieser Frage" : "No excerpt matches a word of this question");
+    expect(output.answer).toContain('get_board_context nodeIds: "Ideas" (ID: s:1).');
+    expect(output.answer).toContain(german ? "1 Auszug liegt außerhalb von Sections: lies ihn" : "1 excerpt lies outside sections: read it");
     expect(output.citations).toEqual([]);
-    const german = await answerFromBoard({ boardId: "Absent123", question: "Wo ist der Quantenreaktor?" });
-    expect(german.answer).toBe("Das Board enthält keine Auszüge, die diese Frage beantworten.");
+  });
+
+  it.each([
+    ["Where is the quantum reactor?", "or read the board with get_board_context without parameters."],
+    ["Wo ist der Quantenreaktor?", "oder lies das Board mit get_board_context ohne Parameter."],
+  ])("suggests reading the board without sections: %s", async (question, ending) => {
+    const data = evidenceBoard("NoSections", [{ ...textNode("1:1", "Payment"), sectionIds: [] }]);
+    setBoard(data.boardId, data);
+    const output = await answerFromBoard({ boardId: data.boardId, question });
+    expect(output.answer).toContain(ending);
+    expect(output.answer).toContain(question.startsWith("Wo") ? "1 Auszug liegt" : "1 excerpt lies");
+    expect(chatJsonMock).not.toHaveBeenCalled();
+  });
+
+  it.each(["answer", "unresolved_task"])('treats empty evidenceIds as unsupported for %s', async (kind) => {
+    const data = evidenceBoard("EmptyEvidence");
+    setBoard(data.boardId, data);
+    chatJsonMock.mockResolvedValueOnce({ kind, answer: "Invented answer", evidenceIds: [] });
+    const output = await answerFromBoard({ boardId: data.boardId, question: "Payment retries?" });
+    expect(output.answer).toContain("best-matching excerpts do not answer this question");
+    expect(output.citations).toEqual([]);
+  });
+
+  it.each([
+    ["Payment ", "The question leaves no room for board excerpts within LLM_ANSWER_PROMPT_MAX_CHARS=4096; shorten the question or raise the setting."],
+    ["zur Bezahlung ", "Die Frage lässt innerhalb von LLM_ANSWER_PROMPT_MAX_CHARS=4096 keinen Platz für Auszüge; kürze die Frage oder erhöhe den Wert."],
+  ])("reports exhausted prompt budget: %s", async (word, expected) => {
+    vi.stubEnv("LLM_ANSWER_PROMPT_MAX_CHARS", "4096");
+    const data = evidenceBoard("Budget", [textNode("1:1", word.trim())]);
+    setBoard(data.boardId, data);
+    const output = await answerFromBoard({ boardId: data.boardId, question: word.repeat(1000) });
+    expect(output.answer).toBe(expected);
+    expect(chatJsonMock).not.toHaveBeenCalled();
+  });
+
+  it.each<[string, boolean]>([
+    ["Was steht zum Thema Bezahlung?", true],
+    ...["steht", "zum", "zur", "wann", "wurde", "wurden", "etwas", "noch", "schon", "kann", "thema", "wird", "werden", "eine", "einen", "einem", "einer", "eines", "auf", "bei"].map((word): [string, boolean] => [word, true]),
+    ["What was decided?", false], ["Is there anything on payment?", false], ["Who at MIT owns this?", false],
+  ])("detects the language of %s", async (question, german) => {
+    const data = evidenceBoard("Language", [{ ...textNode("1:1", "Quantum"), sectionIds: [] }]);
+    setBoard(data.boardId, data);
+    const output = await answerFromBoard({ boardId: data.boardId, question });
+    expect(output.answer.startsWith(german ? "Kein Auszug" : "No excerpt")).toBe(true);
   });
 
   it("removes evidence IDs from the answer text and keeps the citations", async () => {
@@ -179,7 +232,7 @@ describe("answerFromBoard evidence grounding", () => {
 
   it("reports unsupported with the actual excerpt count, no citations and a section reading hint", async () => {
     const data = evidenceBoard("UnsupportedMatches", Array.from({ length: 18 }, (_, i) =>
-      ({ ...textNode(`n:${i}`, "Payment procedure"), sectionIds: ["s:0", "s:1"] })));
+      ({ ...textNode(`n:${i}`, `Payment procedure ${i}`), sectionIds: ["s:0", "s:1"] })));
     data.nodes.push(
       { ...textNode("s:0", ""), type: "SECTION", name: "Workshop", sectionIds: [] },
       { ...textNode("s:1", ""), type: "SECTION", name: "Delivery", sectionIds: ["s:0"] },
@@ -202,7 +255,7 @@ describe("answerFromBoard evidence grounding", () => {
     ["Wie ist die Payment Freigabe?", "Die 6 am besten passenden Auszüge beantworten diese Frage nicht.", "Treffer außerhalb von Sections"],
   ])("names at most three distinct innermost sections and outsideSections: %s", async (question, intro, outside) => {
     const data = evidenceBoard("UnsupportedPlaces", ["s:1", "s:1", "s:2", "s:3", "s:4", undefined].map((id, i) =>
-      ({ ...textNode(`n:${i}`, "Payment"), sectionIds: id ? ["outer", id] : [] })));
+      ({ ...textNode(`n:${i}`, `Payment ${i}`), sectionIds: id ? ["outer", id] : [] })));
     data.nodes.push(...["outer", "s:1", "s:2", "s:3", "s:4"].map((id) =>
       ({ ...textNode(id, ""), type: "SECTION", name: `Section ${id}`, sectionIds: [] })));
     setBoard(data.boardId, data);

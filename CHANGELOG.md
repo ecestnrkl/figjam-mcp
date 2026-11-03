@@ -2,6 +2,10 @@
 
 ## 0.12.0 — Unreleased
 
+- Search folds Latin accents and joined hyphens, handles uppercase acronyms and invisible characters, indexes arrow labels and table headings, excludes page-only matches and deduplicates limited answer selections.
+- `answer_from_board` explains lexical search misses and prompt-budget limits, and treats model responses without evidence IDs as unsupported.
+- `get_board_context` topic searches explain matching, context excerpts and empty results, with match counts by section.
+
 - `diff_board` caps each cluster list at 20, arrow and table-cell lists at 50, and node changes at 100, with optional omitted counts, full totals and shortened cell texts; the text explains tables counted as edited only for cell changes.
 - `diff_board` reports section/frame renames and layout-only changes, distinguishes unmatched snapshot details from identical snapshots, notes unchanged re-ingests before the latest change, and uses 0-based table coordinates and arrow IDs with named endpoint IDs like `get_board_context`.
 - Failed snapshot saves name the cause and remedy in the warning and summary; locks left by crashed local servers and all locks older than 10 minutes are recovered automatically, and existing cache directory permissions are preserved.

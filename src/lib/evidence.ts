@@ -134,15 +134,60 @@ const STOPWORDS = new Set([
   "die", "ein", "eine", "einen", "einer", "es", "für", "hat", "haben", "im", "ist", "mit",
   "nach", "nicht", "oder", "sich", "sie", "sind", "über", "um", "und", "vom", "von", "war",
   "welche", "welcher", "welches", "wer", "wie", "wo", "zu", "zum", "zur", "projekt", "bitte",
-  "dass", "laut", "bereits",
+  "dass", "laut", "bereits", "gibt", "etwas", "wann", "noch", "steht", "thema", "wurde", "wurden",
+  "schon", "kann", "wird", "werden", "einem", "eines",
 ]);
 
 /** Unicode word segmentation supports accented words and scripts without whitespace. */
+interface TokenizedWord { lower: string; folded: string; keep: boolean }
+
 export function evidenceTokens(text: string): string[] {
-  return Array.from(segmenter.segment(text.normalize("NFKC").toLowerCase()))
-    .filter((part) => part.isWordLike)
-    .map((part) => part.segment)
-    .filter((word) => !STOPWORDS.has(word));
+  return tokenizeEvidence(text, new Map());
+}
+
+function tokenizeEvidence(text: string, words: Map<string, TokenizedWord>): string[] {
+  const input = text.normalize("NFKC").replace(/[\u00AD\u200B-\u200D\u2060\uFEFF]/g, "");
+  const lowerInput = input.toLowerCase();
+  const hasHyphen = /[-‐]/.test(input);
+  // Non-Latin, uncased text needs no per-word normalization or compound handling.
+  if (!hasHyphen && input === lowerInput && !/\p{Script=Latin}/u.test(input)) {
+    return Array.from(segmenter.segment(input)).filter((part) => part.isWordLike)
+      .map((part) => part.segment).filter((word) => !STOPWORDS.has(word));
+  }
+  const tokens: string[] = [];
+  const fold = (word: string) => {
+    if (!/[^\x00-\x7f]/.test(word) || !/\p{Script=Latin}/u.test(word)) return word;
+    if (/^[\p{Script=Latin}\p{M}]+$/u.test(word)) return word.normalize("NFD").replace(/\p{M}/gu, "");
+    return word.replace(/\p{Script=Latin}[\p{M}]*/gu, (latin) => latin.normalize("NFD").replace(/\p{M}/gu, ""));
+  };
+  let compound: string[] = [];
+  let afterHyphen = false;
+  const flush = () => {
+    if (compound.length > 1) tokens.push(fold(compound.join("")));
+    compound = [];
+    afterHyphen = false;
+  };
+  for (const part of segmenter.segment(input)) {
+    if (part.isWordLike) {
+      if (hasHyphen && !afterHyphen) flush();
+      let word = words.get(part.segment);
+      if (!word) {
+        const lower = part.segment.toLowerCase();
+        const acronym = part.segment.length >= 2 && part.segment !== lower && part.segment === part.segment.toUpperCase();
+        word = { lower, folded: fold(lower), keep: acronym || !STOPWORDS.has(lower) };
+        words.set(part.segment, word);
+      }
+      if (word.keep) tokens.push(word.folded);
+      if (hasHyphen) compound.push(word.lower);
+      afterHyphen = false;
+    } else if (hasHyphen && (part.segment === "-" || part.segment === "‐") && compound.length && !afterHyphen) {
+      afterHyphen = true;
+    } else if (hasHyphen) {
+      flush();
+    }
+  }
+  if (hasHyphen) flush();
+  return tokens;
 }
 
 export function snapshotIdForBoard(board: BoardData): string {
@@ -200,11 +245,13 @@ export function retrieveEvidence(board: BoardData, options: EvidenceQuery = {}):
     const queryTerms = [...new Set(evidenceTokens(options.query))];
     const scores = new Map<number, number>();
     const coveredTerms = new Map<number, Set<string>>();
-    for (const field of ORIGINAL_FIELDS) {
-      addFieldScores(index, field, queryTerms, scores, undefined, field === "page" ? undefined : coveredTerms);
+    for (const field of ["text", "node", "section"] as const) {
+      addFieldScores(index, field, queryTerms, scores, undefined, coveredTerms);
     }
-    // Derived cluster labels can help rank an original match, never create one.
-    addFieldScores(index, "cluster", queryTerms, scores, new Set(scores.keys()));
+    // Page and derived cluster labels can help rank an original match, never create one.
+    const matched = new Set(scores.keys());
+    addFieldScores(index, "page", queryTerms, scores, matched);
+    addFieldScores(index, "cluster", queryTerms, scores, matched);
     for (const [entry, score] of scores) {
       scores.set(entry, score * ((coveredTerms.get(entry)?.size ?? 0) / queryTerms.length) ** 2);
     }
@@ -218,7 +265,16 @@ export function retrieveEvidence(board: BoardData, options: EvidenceQuery = {}):
   }
 
   const totalMatched = matches.length;
-  const primary = (options.limit === undefined ? matches : matches.slice(0, options.limit))
+  const distinct = (entries: IndexedEvidence[]) => {
+    const seen = new Set<string>();
+    return entries.filter(({ evidence }) => {
+      const key = evidence.text.normalize("NFKC").toLowerCase().replace(/\s+/g, " ").trim();
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  };
+  const primary = (options.limit === undefined ? matches : distinct(matches).slice(0, options.limit))
     .map((entry) => entry.evidence);
   const selected = [...primary];
   if (options.includeNeighbors && selected.length > 0) {
@@ -546,15 +602,39 @@ function getIndex(board: BoardData): EvidenceIndex {
   const fields: Record<EvidenceField, FieldIndex> = {
     text: emptyField(), node: emptyField(), section: emptyField(), page: emptyField(), cluster: emptyField(),
   };
+  const firstRows = new Map<string, Evidence[]>();
+  for (const { evidence: item } of sources) {
+    if (item.sourceType !== "table_row") continue;
+    const rows = firstRows.get(item.nodeId);
+    if (!rows) firstRows.set(item.nodeId, [item]);
+    else if (rows[0]!.row === item.row) rows.push(item);
+  }
+  const labels = new Map<string, string[]>();
+  const cellTables = new Map<string, string>();
+  for (const node of board.nodes) for (const cell of node.table?.cells ?? []) cellTables.set(cell.id, node.id);
+  for (const edge of board.connectorEdges ?? []) {
+    if (!edge.label?.trim()) continue;
+    for (const id of new Set([edge.fromNodeId, edge.toNodeId].map((end) => cellTables.get(end) ?? end))) {
+      const existingLabels = labels.get(id) ?? [];
+      existingLabels.push(edge.label);
+      labels.set(id, existingLabels);
+    }
+  }
+  const headings = new Map([...firstRows].map(([id, rows]) => [id, rows.map((row) => row.text).join("\n")]));
   const totalLengths: Record<EvidenceField, number> = { text: 0, node: 0, section: 0, page: 0, cluster: 0 };
   const entries: IndexedEvidence[] = [];
+  const tokenizedWords = new Map<string, TokenizedWord>();
   for (const { evidence: item, cellIds } of sources) {
     const node = nodesById.get(item.renderNodeId ?? item.nodeId);
-    const values = evidenceFields(item, node, nodesById);
+    const firstRow = firstRows.get(item.nodeId)?.[0]?.row;
+    const isLaterRow = item.sourceType === "table_row" && item.row !== firstRow;
+    const extraNode = [isLaterRow ? headings.get(item.nodeId) : "",
+      !isLaterRow && item.sourceType !== "table_cell" ? (labels.get(node?.id ?? item.nodeId) ?? []).join("\n") : ""].filter(Boolean).join("\n");
+    const values = evidenceFields(item, node, nodesById, extraNode);
     const lengths = {} as Record<EvidenceField, number>;
     const position = entries.length;
     for (const field of FIELDS) {
-      const tokens = evidenceTokens(values[field]);
+      const tokens = tokenizeEvidence(values[field], tokenizedWords);
       lengths[field] = tokens.length;
       totalLengths[field] += tokens.length;
       const frequencies = new Map<string, number>();
@@ -571,20 +651,13 @@ function getIndex(board: BoardData): EvidenceIndex {
     fields[field].averageLength = totalLengths[field] / Math.max(1, entries.length) || 1;
   }
   const vocabulary = [...new Set(ORIGINAL_FIELDS.flatMap((field) => [...fields[field].postings.keys()]))].sort();
-  const firstRows = new Map<string, Evidence[]>();
-  for (const { evidence: item } of entries) {
-    if (item.sourceType !== "table_row") continue;
-    const rows = firstRows.get(item.nodeId);
-    if (!rows) firstRows.set(item.nodeId, [item]);
-    else if (rows[0]!.row === item.row) rows.push(item);
-  }
   const index = { snapshotId, entries, fields, vocabulary, firstRows };
   indexes.set(board, index);
   return index;
 }
 
 function evidenceFields(
-  item: Evidence, node: NormalizedNode | undefined, nodesById: Map<string, NormalizedNode>,
+  item: Evidence, node: NormalizedNode | undefined, nodesById: Map<string, NormalizedNode>, extraNode: string,
 ): Record<EvidenceField, string> {
   const normalize = (value: string) => value.normalize("NFKC").toLowerCase().replace(/\s+/g, " ").trim();
   const name = normalize(node?.name ?? "");
@@ -594,7 +667,7 @@ function evidenceFields(
   const nameDuplicatesText = Boolean(name && text && text.startsWith(name));
   return {
     text: item.text,
-    node: [item.sourceType === "board_metadata" || nameDuplicatesText ? "" : node?.name, node?.type]
+    node: [item.sourceType === "board_metadata" || nameDuplicatesText ? "" : node?.name, node?.type, extraNode]
       .filter(Boolean).join("\n"),
     section: (node?.sectionIds ?? []).map((id) => nodesById.get(id)?.name ?? "").join("\n"),
     page: node?.pageId ? nodesById.get(node.pageId)?.name ?? "" : "",

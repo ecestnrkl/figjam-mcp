@@ -132,7 +132,7 @@ export function createServer(): McpServer {
     {
       title: "Answer From Board",
       description:
-        "Answer one specific question, such as a number, a status or a decision, from the most relevant excerpts of an ingested board, with validated source citations or an insufficient-evidence result. It reads only a handful of excerpts: not for summaries, lists, risks or next steps across several sections; read those with get_board_context. Sends the question and the selected excerpts to the configured LLM provider; calls may incur charges.",
+        "Answer one specific question, such as a number, a status or a decision, from the most relevant excerpts of an ingested board, with validated source citations or an insufficient-evidence result. It finds excerpts by the question's words (whole words, ignoring case and accents; no other word forms, synonyms or translations), so ask with the board's words and language. It reads only a handful of excerpts: not for summaries, lists, risks or next steps across several sections; read those with get_board_context. Sends the question and the selected excerpts to the configured LLM provider; calls may incur charges.",
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: false, openWorldHint: true },
       inputSchema: answerFromBoardInputSchema,
       outputSchema: z.object(answerFromBoardOutputShape),

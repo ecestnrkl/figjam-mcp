@@ -4,8 +4,8 @@ import { longQueryFixtures, retrievalFixtures, retrievalLimitations } from "./fi
 import { changeFixtures } from "./fixtures/changes.js";
 import { diffBoards } from "../src/lib/boardDiff.js";
 
-describe("synthetic retrieval quality gate (20 fixtures)", () => {
-  it("keeps the declared evaluation corpus complete", () => expect(retrievalFixtures).toHaveLength(20));
+describe("synthetic retrieval quality gate (27 fixtures)", () => {
+  it("keeps the declared evaluation corpus complete", () => expect(retrievalFixtures).toHaveLength(27));
   it.each(retrievalFixtures)("$name", ({ board, query, expectedNodeId }) => {
     const result = retrieveEvidence(board, { query, limit: 3 });
     if (expectedNodeId) {
@@ -46,7 +46,7 @@ describe("long-question retrieval", () => {
   });
 });
 
-describe("synthetic revision quality gate (20 paired boards)", () => {
+describe("synthetic revision quality gate (27 paired boards)", () => {
   it("covers each retrieval board with a declared change", () => {
     expect(changeFixtures.map((fixture) => fixture.name)).toEqual(retrievalFixtures.map((fixture) => fixture.name));
     expect(new Set(changeFixtures.map((fixture) => fixture.kind)).size).toBe(5);

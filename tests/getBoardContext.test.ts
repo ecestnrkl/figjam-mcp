@@ -131,10 +131,98 @@ describe("getBoardContext", () => {
     const { text, structuredContent: output } = await getBoardContext({ boardId: "Missing123", topic: "quantum reactor" });
     expect(output).toMatchObject({ evidence: [], clusters: [], connections: [], totalMatched: 0, truncated: false });
     for (const shown of [text, output.contextText]) {
-      expect(shown).toContain("No source evidence matched");
+      expect(shown).toContain("Topic search for quantum, reactor: no excerpt matches.");
+      expect(shown).toContain("whole words, ignoring case and accents");
+      expect(shown).toContain("2 excerpts lie outside sections: read them with get_board_context outsideSections: true.");
       expect(shown).not.toContain("Interview quotes");
     }
     expect(output.contextText).not.toContain("Excerpts are in evidence");
+  });
+
+  it("explains topic matches and context on the first page, leaving continuation pages unchanged", async () => {
+    const data = board("TopicInfo123");
+    setBoard(data.boardId, data);
+    const single = await getBoardContext({ boardId: data.boardId, topic: "Interview interview" });
+    for (const shown of [single.text, single.structuredContent.contextText]) {
+      expect(shown).toContain("Topic search for interview: 1 excerpt matches; 1 more is shown as context (arrow neighbors and table headings).");
+      expect(shown).toContain("whole words, ignoring case and accents");
+    }
+    const first = await getBoardContext({ boardId: data.boardId, topic: "interview", limit: 1 });
+    expect(first.text).toContain("Showing 1 of 2 excerpts on this page; 1 remaining.");
+    const second = await getBoardContext({ boardId: data.boardId, topic: "interview", limit: 1, cursor: first.structuredContent.nextCursor });
+    expect(second.text).toContain("Showing 1 of 2 excerpts on this page; 0 remaining.");
+    expect(second.text).not.toContain("Topic search for");
+    expect(second.text).not.toContain("whole words, ignoring case and accents");
+  });
+
+  it("reports only actual matches by their innermost section and guides a miss", async () => {
+    const data = largeBoard("TopicSections123", 12, 2, 3, { subsections: 1, outsideClusters: 1 });
+    setBoard(data.boardId, data);
+    const found = await getBoardContext({ boardId: data.boardId, topic: "onboarding", maxChars: 24000 });
+    expect(found.text).toContain("Matches by section (ID, name, matches):");
+    expect(found.structuredContent.contextText).toContain("Matches by section (ID, name, matches):");
+    expect(found.text).not.toContain("outside sections —");
+    const missing = await getBoardContext({ boardId: data.boardId, topic: "quasar" });
+    expect(missing.text).toContain("Topic search for quasar: no excerpt matches.");
+    expect(missing.text).toContain("Largest sections (ID, name, excerpts):");
+    expect(missing.text).toContain("30 excerpts lie outside sections: read them with get_board_context outsideSections: true.");
+  });
+
+  it("counts nested-section matches separately and excludes an arrow neighbor", async () => {
+    const section = { ...textNode("2:1", ""), name: "Outer", type: "SECTION", sectionIds: [] };
+    const inner = { ...textNode("2:2", ""), name: "Inner", type: "SECTION", parentId: "2:1", sectionIds: ["2:1"] };
+    const data = evidenceBoard("TopicNested123", [
+      { ...textNode("3:1", "quasar alpha"), sectionIds: ["2:1", "2:2"] },
+      { ...textNode("3:2", "quasar beta"), sectionIds: ["2:1", "2:2"] },
+      { ...textNode("3:3", "quasar gamma"), sectionIds: ["2:1"] },
+      { ...textNode("3:4", "neighbor"), sectionIds: [] },
+    ]);
+    data.nodes.unshift(section, inner);
+    data.connectorEdges = [{ connectorId: "4:1", fromNodeId: "3:1", toNodeId: "3:4", label: "related" }];
+    setBoard(data.boardId, data);
+    const { text } = await getBoardContext({ boardId: data.boardId, topic: "quasar" });
+    expect(text).toContain("Topic search for quasar: 3 excerpts match; 1 more is shown as context (arrow neighbors and table headings).");
+    expect(text).toContain("Matches by section (ID, name, matches): 2:2 Inner — 2; 2:1 Outer — 1.");
+    expect(text).not.toContain("outside sections — 1");
+  });
+
+  it("lists at most twelve distinct normalized topic words", async () => {
+    const data = evidenceBoard("TopicWords123", [textNode("3:1", "café")]);
+    setBoard(data.boardId, data);
+    const { text } = await getBoardContext({ boardId: data.boardId,
+      topic: "café cafe alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu" });
+    expect(text).toContain("Topic search for cafe, alpha, beta, gamma, delta, epsilon, zeta, eta, theta, iota, kappa, lambda, …: 1 excerpt matches.");
+  });
+
+  it("explains a topic made only of common words and singular outside excerpts", async () => {
+    const data = evidenceBoard("TopicCommon123", [textNode("1:1", "A note")]);
+    setBoard(data.boardId, data);
+    const { text, structuredContent } = await getBoardContext({ boardId: data.boardId, topic: "the and is" });
+    for (const shown of [text, structuredContent.contextText]) {
+      expect(shown).toContain('Topic search: "the and is" has only common words, which are not searched; use words from the board.');
+      expect(shown).toContain("1 excerpt lies outside sections: read it with get_board_context outsideSections: true.");
+    }
+    expect(structuredContent.totalMatched).toBe(0);
+  });
+
+  it("limits the match summary to eight sections and counts the omitted sections", async () => {
+    const data = largeBoard("TopicSectionLimit123", 80, 1, 12);
+    setBoard(data.boardId, data);
+    const { structuredContent } = await getBoardContext({ boardId: data.boardId, topic: "onboarding", maxChars: 24000 });
+    const line = structuredContent.contextText.split("\n").find((value) => value.startsWith("Matches by section"))!;
+    expect(line.match(/1:\d+ Theme \d+ — \d+/g)).toHaveLength(8);
+    expect(line).toContain("and 4 more sections.");
+  });
+
+  it("keeps an excerpt within the smallest topic budget with many sections", async () => {
+    const data = largeBoard("TopicBudget123", 30, 1, 12);
+    setBoard(data.boardId, data);
+    const { text, structuredContent } = await getBoardContext({ boardId: data.boardId, topic: "onboarding", maxChars: 2000 });
+    expect(structuredContent.evidence.length).toBeGreaterThan(0);
+    expect(text.length).toBeLessThanOrEqual(2000);
+    expect(JSON.stringify(structuredContent).length).toBeLessThanOrEqual(2000);
+    expect(text).toContain("Topic search for onboarding: 30 excerpts match.");
+    expect(text).toContain("more sections");
   });
 
   it("fails with the unknown IDs and where valid IDs come from when no requested ID is in the snapshot", async () => {

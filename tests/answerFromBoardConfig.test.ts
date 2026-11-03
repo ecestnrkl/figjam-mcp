@@ -18,7 +18,7 @@ async function ask(text = "Payment procedure") {
   const { setBoard } = await import("../src/lib/cache.js");
   const { answerFromBoard } = await import("../src/tools/answerFromBoard.js");
   const board = evidenceBoard("AnswerConfig", Array.from({ length: 35 }, (_, i) =>
-    ({ ...textNode(`n:${i}`, text), sectionIds: [] })));
+    ({ ...textNode(`n:${i}`, `${i} ${text}`), sectionIds: [] })));
   setBoard(board.boardId, board);
   const output = await answerFromBoard({ boardId: board.boardId, question: "Payment approval?" });
   const messages = chatJsonMock.mock.calls[0]![1] as Array<{ content: string }>;
