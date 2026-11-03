@@ -4,7 +4,8 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { Client } from "@modelcontextprotocol/client";
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { InMemoryTransport } from "@modelcontextprotocol/server";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { evidenceBoard } from "./fixtures/retrieval.js";
 
 const tsx = new URL("../node_modules/tsx/dist/loader.mjs", import.meta.url).href;
@@ -15,6 +16,13 @@ let cacheDirectory: string;
 let preload: string;
 let requestsFile: string;
 let snapshotId: string;
+let fetchMock: ReturnType<typeof vi.fn>;
+
+const environmentPattern = /^(?:LLM_|FIGMA_|FIGJAM_MCP_|INGEST_BOARD_|NODE_OPTIONS$)/;
+const offlineEnvironment = {
+  FIGMA_ACCESS_TOKEN: "offline-startup-figma-token", LLM_API_KEY: "offline-startup-model-key",
+  LLM_BASE_URL: "https://offline-startup.invalid/v1",
+};
 
 beforeAll(async () => {
   directory = await mkdtemp(path.join(tmpdir(), "figjam-startup-"));
@@ -33,25 +41,67 @@ beforeAll(async () => {
   const { persistBoard, readLatestBoard } = await import("../src/lib/persistentCache.js");
   await persistBoard({ ...evidenceBoard(boardId), cacheKey: "startup-cache" });
   snapshotId = (await readLatestBoard(boardId))!.snapshotId!;
+  vi.unstubAllEnvs();
+});
+
+beforeEach(() => {
+  vi.resetModules();
+  for (const name of Object.keys(process.env)) if (environmentPattern.test(name)) vi.stubEnv(name, undefined);
+  for (const [name, value] of Object.entries(offlineEnvironment)) vi.stubEnv(name, value);
+  vi.stubEnv("FIGJAM_MCP_CACHE_DIR", cacheDirectory);
+  fetchMock = vi.fn(async () => { throw new Error("Unexpected network access in offline startup test"); });
+  vi.stubGlobal("fetch", fetchMock);
+});
+
+afterEach(() => {
+  expect(fetchMock).not.toHaveBeenCalled();
+  vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
+  vi.restoreAllMocks();
 });
 
 afterAll(async () => {
-  vi.unstubAllEnvs();
   if (directory) await rm(directory, { recursive: true, force: true });
 });
 
+async function checkServer(client: Client, check: (client: Client) => Promise<void>) {
+  expect(client.getServerVersion()?.name).toBe("figjam-context-mcp");
+  const { tools } = await client.listTools();
+  expect(tools).toHaveLength(5);
+  await check(client);
+}
+
 async function withServer(extra: Record<string, string>, check: (client: Client) => Promise<void>) {
+  for (const [name, value] of Object.entries(extra)) vi.stubEnv(name, value);
+  // Reload the real tool graph with the invalid setting already in place.
+  // Import-time configuration errors must fail before any tool is called.
+  const loading = import("../src/server.js");
+  await expect(loading).resolves.toHaveProperty("createServer");
+  const { createServer } = await loading;
+  const server = createServer();
+  const client = new Client({ name: "offline-startup-test", version: "1.0.0" }, {
+    supportedProtocolVersions: ["2025-11-25"],
+  });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  try {
+    await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+    await checkServer(client, check);
+  } finally {
+    await client.close();
+    await server.close();
+  }
+}
+
+async function withStdioServer(extra: Record<string, string>, check: (client: Client) => Promise<void>) {
   const env = Object.fromEntries(Object.entries(process.env)
     .filter((entry): entry is [string, string] => entry[1] !== undefined)
-    .filter(([name]) => !/^(?:LLM_|FIGMA_|FIGJAM_MCP_|INGEST_BOARD_|NODE_OPTIONS$)/.test(name)));
+    .filter(([name]) => !environmentPattern.test(name)));
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: ["--import", tsx, "--import", pathToFileURL(preload).href, entrypoint],
     cwd: directory,
     env: {
-      ...env, FIGJAM_MCP_CACHE_DIR: cacheDirectory,
-      FIGMA_ACCESS_TOKEN: "offline-startup-figma-token", LLM_API_KEY: "offline-startup-model-key",
-      LLM_BASE_URL: "https://offline-startup.invalid/v1", ...extra,
+      ...env, ...offlineEnvironment, FIGJAM_MCP_CACHE_DIR: cacheDirectory, ...extra,
     },
     stderr: "pipe",
   });
@@ -62,10 +112,7 @@ async function withServer(extra: Record<string, string>, check: (client: Client)
   transport.stderr?.on("data", chunk => { stderr += String(chunk); });
   try {
     await client.connect(transport);
-    expect(client.getServerVersion()?.name).toBe("figjam-context-mcp");
-    const { tools } = await client.listTools();
-    expect(tools).toHaveLength(5);
-    await check(client);
+    await checkServer(client, check);
   } catch (error) {
     throw new Error(`Offline startup failed: ${stderr}`, { cause: error });
   } finally {
@@ -75,7 +122,15 @@ async function withServer(extra: Record<string, string>, check: (client: Client)
   expect(await readFile(requestsFile, "utf8")).toBe("");
 }
 
-describe("stdio startup with invalid environment values", () => {
+describe("startup with invalid environment values", () => {
+  it("starts over stdio and serves persisted context with invalid LLM_ANSWER_TOP_K", async () => {
+    await withStdioServer({ LLM_ANSWER_TOP_K: "invalid" }, async client => {
+      const context = await client.callTool({ name: "get_board_context", arguments: { boardId, snapshotId } });
+      expect(context.isError).not.toBe(true);
+      expect(JSON.stringify(context)).toContain("Payment retries require an idempotency key.");
+    });
+  }, 15_000);
+
   it.each([
     "LLM_ANSWER_TOP_K", "LLM_ANSWER_PROMPT_MAX_CHARS",
     "INGEST_BOARD_VISION_BUDGET_MS", "INGEST_BOARD_MIN_VISION_SLOT_MS",
@@ -90,7 +145,7 @@ describe("stdio startup with invalid environment values", () => {
       expect(context.isError).not.toBe(true);
       expect(JSON.stringify(context)).toContain("Payment retries require an idempotency key.");
     });
-  }, 15_000);
+  });
 
   it("keeps ordinary context reads available with INGEST_BOARD_VISION_BUDGET_MS=270s and reports it from balanced ingest", async () => {
     await withServer({ INGEST_BOARD_VISION_BUDGET_MS: "270s" }, async client => {
@@ -102,7 +157,7 @@ describe("stdio startup with invalid environment values", () => {
       expect(ingest.isError).toBe(true);
       expect(ingest.content).toContainEqual({ type: "text", text: "INGEST_BOARD_VISION_BUDGET_MS must be an integer >= 0" });
     });
-  }, 15_000);
+  });
 
   it.each([
     ["LLM_REQUEST_TIMEOUT_MS", 1000], ["LLM_RATE_LIMIT_RETRIES", 0],
@@ -113,5 +168,5 @@ describe("stdio startup with invalid environment values", () => {
       expect(diagnosis.isError).toBe(true);
       expect(diagnosis.content).toContainEqual({ type: "text", text: `${name} must be an integer >= ${minimum}` });
     });
-  }, 15_000);
+  });
 });

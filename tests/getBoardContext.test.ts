@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { setBoard } from "../src/lib/cache.js";
 import { getBoardContext } from "../src/tools/getBoardContext.js";
 import { getBoardContextInputSchema, getBoardContextOutputSchema, type GetBoardContextInput } from "../src/schemas/getBoardContext.js";
@@ -9,6 +9,21 @@ import { sectionGuide } from "../src/lib/sections.js";
 import { flattenNodeTree, isGenericNodeName } from "../src/lib/nodeTree.js";
 import { partitionedBoardClusters } from "../src/lib/spatialCluster.js";
 import type { BoardData } from "../src/types.js";
+
+function freezeFixture<T>(value: T): T {
+  if (value !== null && typeof value === "object" && !Object.isFrozen(value)) {
+    for (const child of Object.values(value)) freezeFixture(child);
+    Object.freeze(value);
+  }
+  return value;
+}
+
+let large300: BoardData;
+beforeAll(() => {
+  // Keep one immutable snapshot so repeated reads also reuse its evidence index.
+  // Tests that modify board data continue to construct their own fixtures.
+  large300 = freezeFixture(largeBoard("Large300"));
+});
 
 function board(boardId: string) {
   const data = evidenceBoard(boardId, [
@@ -263,7 +278,7 @@ describe("getBoardContext", () => {
   });
 
   it("issues versioned short cursors that detect changes to every bound field", async () => {
-    setBoard("Large300", largeBoard("Large300"));
+    setBoard("Large300", large300);
     const { structuredContent: first } = await getBoardContext({ boardId: "Large300", limit: 5 });
     const cursor = first.nextCursor!;
     expect(cursor).toMatch(/^v2\.f\.2\.5\.cccccccccccc\.[0-9a-f]{12}$/);
@@ -384,7 +399,7 @@ describe("getBoardContext", () => {
 });
 
 describe("getBoardContext response size", () => {
-  beforeEach(() => setBoard("Large300", largeBoard("Large300")));
+  beforeEach(() => setBoard("Large300", large300));
 
   it("keeps the whole structured response within maxChars on a large board", async () => {
     for (const input of [{}, { limit: 100, maxChars: 24000 }]) {
@@ -577,7 +592,7 @@ describe("getBoardContext response size", () => {
 });
 
 describe("getBoardContext text and structured content", () => {
-  beforeEach(() => setBoard("Large300", largeBoard("Large300")));
+  beforeEach(() => setBoard("Large300", large300));
 
   it("sends excerpt text once in structuredContent and the full readable page as text", async () => {
     setBoard("Readable123", board("Readable123"));
@@ -860,7 +875,7 @@ describe("getBoardContext by section", () => {
   });
 
   it("names the largest sections before the tree and keeps them when the budget shortens the tree", async () => {
-    setBoard("Large300", largeBoard("Large300"));
+    setBoard("Large300", large300);
     const { contextText } = (await getBoardContext({ boardId: "Large300", maxChars: 24000 })).structuredContent;
     const line = contextText.split("\n").find((text) => text.startsWith("Largest sections (ID, name, excerpts): "))!;
     const largest = [...line.matchAll(/(\d+:\d+) (Theme \d+) — (\d+)/g)].map(([, id, name, count]) => ({ id, name, count: Number(count) }));
