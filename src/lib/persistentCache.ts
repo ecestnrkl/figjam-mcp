@@ -8,9 +8,10 @@ import type { BoardData, DocStructureHint, IngestMode, NormalizedNode } from "..
 import { getVisionConfigSignature } from "./modelRegistry.js";
 import { MAX_BOARD_NODES } from "./nodeTree.js";
 import { expandHomePath } from "./envFile.js";
+import { compareCodeUnits } from "./stringOrder.js";
 
 export const CACHE_SCHEMA_VERSION = 4;
-export const EXTRACTION_VERSION = 6;
+export const EXTRACTION_VERSION = 7;
 export const PROMPT_VERSION = 8;
 function defaultCacheRoot(): string { return process.platform === "darwin"
   ? path.join(homedir(), "Library", "Caches", "figjam-context-mcp")
@@ -72,10 +73,10 @@ export function hashClusterNodes(nodes: NormalizedNode[]): string {
     connectorStartId: node.connectorStartId, connectorEndId: node.connectorEndId,
     connectorStartArrowhead: node.connectorStartArrowhead, connectorEndArrowhead: node.connectorEndArrowhead,
     rotation: node.rotation,
-  })).sort((a, b) => a.id.localeCompare(b.id))));
+  })).sort((a, b) => compareCodeUnits(a.id, b.id))));
 }
 export function hashNormalizedNodes(nodes: NormalizedNode[]): string {
-  return hash(stableStringify([...nodes].sort((a, b) => a.id.localeCompare(b.id))));
+  return hash(stableStringify([...nodes].sort((a, b) => compareCodeUnits(a.id, b.id))));
 }
 export function buildSnapshotId(fileKey: string, nodeHash: string, extractionVersion = EXTRACTION_VERSION): string {
   return hash(JSON.stringify([fileKey, extractionVersion, nodeHash]));
@@ -261,5 +262,5 @@ function isMissing(error: unknown): boolean { return (error as NodeJS.ErrnoExcep
 function hash(value: string): string { return createHash("sha256").update(value).digest("hex"); }
 
 function stableStringify(value: unknown): string {
-  return JSON.stringify(value, (_key, item: unknown) => item && typeof item === "object" && !Array.isArray(item) ? Object.fromEntries(Object.entries(item).sort(([a], [b]) => a.localeCompare(b))) : item);
+  return JSON.stringify(value, (_key, item: unknown) => item && typeof item === "object" && !Array.isArray(item) ? Object.fromEntries(Object.entries(item).sort(([a], [b]) => compareCodeUnits(a, b))) : item);
 }

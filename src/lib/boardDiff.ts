@@ -117,6 +117,15 @@ const READABLE_TYPES: Record<string, string> = {
 };
 
 export function diffBoards(baseline: BoardData, current: BoardData): BoardDiffResult {
+  // Fingerprint algorithms change with extraction rules. Compare stored evidence
+  // across versions without treating the algorithm change as a visual edit.
+  if ((baseline.extractionVersion ?? 4) !== (current.extractionVersion ?? 4)) {
+    const withoutFingerprints = (board: BoardData): BoardData => ({
+      ...board, nodes: board.nodes.map((node) => ({ ...node, contentFingerprint: undefined })),
+    });
+    baseline = withoutFingerprints(baseline);
+    current = withoutFingerprints(current);
+  }
   const baselineNodes = contentNodesById(baseline);
   const currentNodes = contentNodesById(current);
 

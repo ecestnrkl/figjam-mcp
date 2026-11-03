@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { evidenceBoard, textNode } from "./fixtures/retrieval.js";
 import { flattenNodeTree } from "../src/lib/nodeTree.js";
-import { redactBoard, redactCredentials } from "../src/lib/redact.js";
+import { redactBoard, redactCredentials, redactTableCells } from "../src/lib/redact.js";
 
 const { chatJsonMock } = vi.hoisted(() => ({ chatJsonMock: vi.fn() }));
 vi.mock("../src/lib/llmClient.js", () => ({
@@ -22,6 +22,47 @@ const awsKey = "AKIA" + "IOSFODNN7EXAMPLE";
 const slackToken = "xox" + "b-123456789012-" + "abcdefABCDEF1234";
 const pemBlock = ["-----BEGIN RSA PRIVATE KEY-----", "MIIEpAIBAAKCAQEAsynthetic", "c3ludGhldGljIGtleQ==", "-----END RSA PRIVATE KEY-----"].join("\n");
 
+const extendedCredentialCases = [
+  ["Admin password for the test devices: Summer2026!", "Admin password for the test devices: [redacted]"],
+  ["Passwort für das Testgerät: Sommer2026!", "Passwort für das Testgerät: [redacted]"],
+  ["Kennwort zum Testsystem = Winter2027?", "Kennwort zum Testsystem = [redacted]"],
+  ["Passcode zur Anmeldung: 8812", "Passcode zur Anmeldung: [redacted]"],
+  ["API key of the demo: demo-key", "API key of the demo: [redacted]"],
+  ["Access token von Lea: demo-token", "Access token von Lea: [redacted]"],
+  ["Auth token for tests: demo-token", "Auth token for tests: [redacted]"],
+  ["Bearer token for tests: demo-token", "Bearer token for tests: [redacted]"],
+  ["Client secret for tests: demo-secret", "Client secret for tests: [redacted]"],
+  ["Secret key for tests: demo-key", "Secret key for tests: [redacted]"],
+  ["Access key for tests: demo-key", "Access key for tests: [redacted]"],
+  ["Private key for tests: demo-key", "Private key for tests: [redacted]"],
+  ["Passwort (Test-iPad): Sommer2026!", "Passwort (Test-iPad): [redacted]"],
+  ["API key (demo) = demo-key", "API key (demo) = [redacted]"],
+  ["Passwort:\nSommer2026!", "Passwort:\n[redacted]"],
+  ["Client secret =\r\n\r\n  demo-secret  \r\nDone", "Client secret =\r\n\r\n  [redacted]  \r\nDone"],
+  ["PIN:\n4711", "PIN:\n[redacted]"],
+  ["PIN-Code:\ncodeword", "PIN-Code:\n[redacted]"],
+  ["aws_secret_access_key = wJalrSyntheticValue", "aws_secret_access_key = [redacted]"],
+  ["PIN-Code: 4711", "PIN-Code: [redacted]"],
+  ["PIN Code: letters are permitted", "PIN Code: [redacted]"],
+  ["Zugangscode: 8812", "Zugangscode: [redacted]"],
+  ["Zugangscode: guest entry code", "Zugangscode: [redacted]"],
+  ["Pin: 4-word test code", "Pin: [redacted]"],
+  ["Authorization: Bearer " + "aB_1-".repeat(4), "Authorization: Bearer [redacted]"],
+  ["Use Bearer " + "aB_1-".repeat(4) + " here", "Use Bearer [redacted] here"],
+  ["Session " + ["eyJhbGciOiJIUzI1NiJ9", "c3ludGhldGlj", "c2lnbmF0dXJl"].join(".") + " expires", "Session [redacted] expires"],
+] as const;
+
+const unchangedCredentialCases = [
+  "Design tokens: color.primary", "Token: color-primary-500", "PIN board for ideas",
+  "Pin the following ideas: first, second", "Pin: Feature X to the top", "PIN: letters",
+  "Passwort-Reset: Link per Mail", "Password reset: send link",
+  "Password policy:\n- at least 12 characters", "Secret sauce: speed",
+  "PIN for the demo: 4711", "PW for the demo: abc123", "pwd (demo): abc123",
+  "Passwort:\nabc", "Passwort:\ncorrect horse battery staple", "PIN:\nletter-code",
+  "Password for " + "x".repeat(41) + ": demo-secret",
+  "Use Bearer " + "a".repeat(19), "Use eyJabc.one only", "Use abc.one.two here",
+] as const;
+
 beforeEach(() => { chatJsonMock.mockReset(); });
 afterEach(() => { vi.unstubAllEnvs(); });
 
@@ -38,6 +79,7 @@ describe("redactCredentials", () => {
     ["API key: abc-def", "API key: [redacted]"],
     ["api-key: abc-def", "api-key: [redacted]"],
     ["APIKEY=abc-def", "APIKEY=[redacted]"],
+    ["API\tkey=abc-def", "API\tkey=[redacted]"],
     ["API Token: t0ken", "API Token: [redacted]"],
     ["Access token: t0ken", "Access token: [redacted]"],
     ["auth_token=t0ken", "auth_token=[redacted]"],
@@ -48,6 +90,34 @@ describe("redactCredentials", () => {
     ["Private key: s3cret", "Private key: [redacted]"],
   ])("redacts the labelled value in %j", (input, expected) => {
     expect(redactCredentials(input)).toBe(expected);
+  });
+
+  it.each(extendedCredentialCases)("redacts the narrowly extended case %j", (input, expected) => {
+    expect(redactCredentials(input)).toBe(expected);
+    const raw = { document: { id: "root", name: "Document", type: "DOCUMENT", children: [
+      { id: "text", name: input, type: "TEXT", characters: input },
+    ] } };
+    expect(flattenNodeTree(raw).find((node) => node.id === "text")).toMatchObject({ name: expected, text: expected });
+    const board = evidenceBoard("SyntheticLegacy", [{ ...textNode("text", input), name: input }]);
+    expect(redactBoard(board).nodes[0]).toMatchObject({ name: expected, text: expected });
+  });
+
+  it.each(unchangedCredentialCases)("preserves the non-credential case %j", (input) => {
+    expect(redactCredentials(input)).toBe(input);
+  });
+
+  it("allows at most 40 suffix characters after a recognized preposition", () => {
+    expect(redactCredentials("Password for " + "x".repeat(40) + ": demo-secret"))
+      .toBe("Password for " + "x".repeat(40) + ": [redacted]");
+  });
+
+  it("keeps quotes, later highlights and the final sentence after an existing marker (CD11)", () => {
+    const summary = 'Extracted text highlights: "Guest Wi-Fi password: [redacted]"; "Plan the workshop". The board contains two groups.';
+    expect(redactCredentials(summary)).toBe(summary);
+    expect(redactCredentials('Passwort:\n[redacted]";')).toBe('Passwort:\n[redacted]";');
+    const board = evidenceBoard("SyntheticSummary", [textNode("text", "Guest Wi-Fi password: [redacted]")]);
+    board.clusters[0]!.summary = summary;
+    expect(redactBoard(board).clusters[0]!.summary).toBe(summary);
   });
 
   it("redacts only to the end of the line", () => {
@@ -138,6 +208,89 @@ describe("credential redaction during extraction", () => {
   it("keeps values when redaction is switched off", () => {
     vi.stubEnv("FIGJAM_MCP_REDACT_CREDENTIALS", "false");
     expect(JSON.stringify(flattenNodeTree(file))).toContain("Sommer2024");
+  });
+});
+
+describe("credential table context", () => {
+  const tableLabels = ["Password", "Passwort:", "Kennwort", "Passcode", "PW", "pwd", "PIN", "PIN-Code", "PIN Code", "Zugangscode",
+    "API key", "API token", "Access token", "Auth token", "Bearer token", "Client secret", "Secret key", "Access key", "Private key"];
+  const makeCells = (rows: string[][]) => rows.flatMap((row, rowIndex) => row.map((text, column) => ({
+    id: `cell-${rowIndex}-${column}`, row: rowIndex, column, text,
+  })));
+
+  it.each(tableLabels)("redacts values under an exact %s header, including mixed case", (label) => {
+    const cells = makeCells([["Portal", "User", label.toUpperCase()], ["Admin-Portal", "lea", "Sommer2026!"], ["Test", "max", "Winter2027?"]]);
+    const output = redactTableCells(cells);
+    expect(output.map((cell) => cell.text)).toEqual(["Portal", "User", label.toUpperCase(), "Admin-Portal", "lea", "[redacted]", "Test", "max", "[redacted]"]);
+  });
+
+  it.each(tableLabels)("redacts remaining cells when a row starts with %s", (label) => {
+    const cells = makeCells([["Feature", "Value", "Owner"], [label, "Winter2027?", "another secret"]]);
+    expect(redactTableCells(cells).map((cell) => cell.text)).toEqual(["Feature", "Value", "Owner", label, "[redacted]", "[redacted]"]);
+  });
+
+  it.each([
+    [["Feature", "Value", "Effort", "Status"], ["Login", "Improved", "M", "Ready"]],
+    [["Token", "Value"], ["color.primary", "blue"]],
+    [["Feature", "Value"], ["Token:", "color-primary-500"]],
+    [["Password reset", "Value"], ["Send link", "mail"]],
+  ])("keeps unrelated table cells unchanged: %j", (...rows) => {
+    const cells = makeCells(rows);
+    expect(redactTableCells(cells)).toEqual(cells);
+  });
+
+  it("applies the same column and row protection during extraction and on old snapshots", () => {
+    const cells = makeCells([["Portal", "User", "Passwort"], ["Admin-Portal", "lea", "Sommer2026!"], ["Passwort:", "Winter2027?", "another-secret"]]);
+    const expected = redactTableCells(cells);
+    const nodes = flattenNodeTree({ document: { id: "root", name: "Document", type: "DOCUMENT", children: [{
+      id: "table", name: "Table", type: "TABLE", children: cells.map((cell) => ({
+        id: cell.id, name: cell.text, type: "TABLE_CELL", rowIndex: cell.row, columnIndex: cell.column, characters: cell.text,
+      })),
+    }] } });
+    const table = nodes.find((node) => node.id === "table")!;
+    expect(table.table?.cells).toEqual(expected);
+    expect(table.text).toBe(expected.map((cell) => cell.text).join("\n"));
+    const legacy = evidenceBoard("SyntheticLegacyTable", [{ ...textNode("table", cells.map((cell) => cell.text).join("\n")), type: "TABLE", table: { cells } }]);
+    expect(redactBoard(legacy).nodes[0]!.table?.cells).toEqual(expected);
+    expect(redactBoard(legacy).nodes[0]!.text).toBe(table.text);
+  });
+
+  it("rebuilds only the legacy cell suffix, preserving a table prefix and public text", () => {
+    const cells = makeCells([["Portal", "Passwort"], ["Data", "a"]]);
+    const prefix = "Plan a workshop";
+    const legacy = evidenceBoard("ShortLegacyTable", [{ ...textNode("table", `${prefix}\n${cells.map((cell) => cell.text).join("\n")}`), type: "TABLE", table: { cells } }]);
+    const redacted = redactBoard(legacy).nodes[0]!;
+    expect(redacted.table?.cells.map((cell) => cell.text)).toEqual(["Portal", "Passwort", "Data", "[redacted]"]);
+    expect(redacted.text).toBe(`${prefix}\nPortal\nPasswort\nData\n[redacted]`);
+  });
+
+  it("uses encoded complete-rectangle IDs for extraction and legacy table redaction", () => {
+    const rows = [["Portal", "User", "Passwort"], ["Admin-Portal", "lea", "Sommer2026!"], ["Passwort:", "Winter2027?", "another-secret"]];
+    const cells = rows.flatMap((row, r) => row.map((text, c) => ({ id: `T5:119;row-${r};col-${c}`, text })));
+    const expected = ["Portal", "User", "Passwort", "Admin-Portal", "lea", "[redacted]", "Passwort:", "[redacted]", "[redacted]"];
+    expect(redactTableCells(cells, "5:119").map((cell) => cell.text)).toEqual(expected);
+    const table = flattenNodeTree({ document: { id: "root", name: "Document", type: "DOCUMENT", children: [{
+      id: "5:119", name: "Table", type: "TABLE", children: cells.map((cell) => ({ ...cell, name: cell.text, type: "TABLE_CELL", characters: cell.text })),
+    }] } }).find((node) => node.id === "5:119")!;
+    expect(table.table?.cells.map((cell) => cell.text)).toEqual(expected);
+    const legacy = evidenceBoard("EncodedLegacyTable", [{ ...textNode("5:119", cells.map((cell) => cell.text).join("\n")), type: "TABLE", table: { cells } }]);
+    const redacted = redactBoard(legacy).nodes[0]!;
+    expect(redacted.table?.cells.map((cell) => cell.text)).toEqual(expected);
+    expect(redacted.text).toBe(table.text);
+  });
+
+  it.each([
+    [{ id: "unknown", text: "Passwort" }, { id: "other", text: "secret-value" }],
+    [{ id: "Ttable;r0;c0", text: "Portal" }, { id: "Ttable;r0;c1", text: "Passwort" }, { id: "Ttable;r1;c1", text: "secret-value" }],
+    [{ id: "Twrong;r0;c0", text: "Passwort" }, { id: "Twrong;r1;c0", text: "secret-value" }],
+  ])("does not guess table coordinates from unknown, incomplete, or mismatched IDs: %j", (...cells) => {
+    expect(redactTableCells(cells, "table")).toEqual(cells);
+  });
+
+  it("leaves table context unchanged when redaction is disabled", () => {
+    vi.stubEnv("FIGJAM_MCP_REDACT_CREDENTIALS", "false");
+    const cells = makeCells([["Passwort", "Other"], ["secret-value", "visible-value"]]);
+    expect(redactTableCells(cells)).toBe(cells);
   });
 });
 

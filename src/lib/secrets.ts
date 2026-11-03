@@ -1,5 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import { redactCredentials, REDACTED } from "./redact.js";
+import { redactMessageCredentials, REDACTED } from "./redact.js";
 
 const scopedSecrets = new AsyncLocalStorage<string[]>();
 
@@ -23,7 +23,7 @@ export function redactConfiguredSecrets(text: string, additionalSecrets: string[
 export function redactMessage(text: string, additionalSecrets: string[] = []): string {
   const safe = redactConfiguredSecrets(text, additionalSecrets);
   // Invalid redaction configuration must still be reportable without leaking a secret.
-  try { return redactCredentials(safe); } catch { return safe; }
+  try { return redactMessageCredentials(safe); } catch { return safe; }
 }
 
 export function validateHeaderSecret(value: string, source: string): void {

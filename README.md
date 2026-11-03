@@ -276,6 +276,7 @@ larger ones are scaled down locally.
 ## Privacy
 
 - The server reads from Figma and never changes a board.
+- Hidden elements and their descendants are skipped before extraction, image loading and provider requests.
 - `balanced` and `max_quality` ingests send board text and images (originals or
   renders) to the configured LLM provider. `answer_from_board` sends the question and selected
   excerpts. `max_speed` with `get_board_context` and `diff_board` sends nothing

@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
-import { redactCredentials } from "./redact.js";
+import { REDACTED, redactCredentials, redactTableCells } from "./redact.js";
+import { compareCodeUnits } from "./stringOrder.js";
 import type { NormalizedNode, TableCell } from "../types.js";
 
 interface RawFigmaNode {
@@ -7,6 +8,7 @@ interface RawFigmaNode {
   id: string;
   name: string;
   type: string;
+  visible?: boolean;
   absoluteBoundingBox?: { x: number; y: number; width: number; height: number };
   rotation?: number;
   characters?: string;
@@ -37,7 +39,7 @@ const GENERIC_NODE_NAMES = new Set([
 ]);
 
 export function isGenericNodeName(name: string): boolean {
-  return GENERIC_NODE_NAMES.has(name.trim().replace(/\s+\d+$/, "").replace(/\s+/g, " ").toLowerCase());
+  return GENERIC_NODE_NAMES.has(name.trim().replace(/\s+/g, " ").replace(/\s+\d+$/, "").toLowerCase());
 }
 const MAX_BOARD_DEPTH = 1024;
 const MAX_METADATA_DEPTH = 64;
@@ -76,7 +78,7 @@ function extractImageRef(node: RawFigmaNode): string | undefined {
   return node.fills?.find((fill) => fill.type === "IMAGE" && fill.imageRef)?.imageRef;
 }
 
-/** Placement does not invalidate a summary; paint, shape and original text do. */
+/** Placement does not invalidate a summary; paint, shape and redacted text do. */
 function fingerprint(node: RawFigmaNode, childFingerprints: string[] = []): string {
   const omitted = new Set([
     "id", "children", "absoluteBoundingBox", "absoluteRenderBounds", "relativeTransform",
@@ -93,7 +95,7 @@ function fingerprint(node: RawFigmaNode, childFingerprints: string[] = []): stri
   validateMetadataDepth(content, node.id);
   const serialized = JSON.stringify(content, (_key, value: unknown) => {
     if (value && typeof value === "object" && !Array.isArray(value)) {
-      return Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)));
+      return Object.fromEntries(Object.entries(value).sort(([a], [b]) => compareCodeUnits(a, b)));
     }
     return value;
   });
@@ -111,6 +113,7 @@ interface Entry {
   keep: boolean;
   children: number[];
   contentFingerprint?: string;
+  redactedCell?: boolean;
 }
 
 function cellText(entry: Entry, entries: Entry[]): string {
@@ -138,6 +141,7 @@ export function flattenNodeTree(rawFigmaJson: unknown): NormalizedNode[] {
   if (!isRawFigmaNode(document)) {
     throw new Error("flattenNodeTree: expected a Figma file response with a document node");
   }
+  if (document.visible === false) return [];
 
   const entries: Entry[] = [];
   const roots = document.children ?? [];
@@ -147,6 +151,7 @@ export function flattenNodeTree(rawFigmaJson: unknown): NormalizedNode[] {
   while (stack.length > 0) {
     const item = stack.pop()!;
     if (!isRawFigmaNode(item.raw)) throw new Error("flattenNodeTree: invalid child node");
+    if (item.raw.visible === false) continue;
     validateGeometry(item.raw);
     if (entries.length >= MAX_BOARD_NODES) throw new Error(`Board exceeds the ${MAX_BOARD_NODES}-node limit`);
     const parent = item.parent === undefined ? undefined : entries[item.parent]!;
@@ -172,6 +177,36 @@ export function flattenNodeTree(rawFigmaJson: unknown): NormalizedNode[] {
   }
 
   const cellsByTable = new Map<number, TableCell[]>();
+  for (const entry of entries) {
+    if (entry.tableOwner === undefined || entry.raw.type !== "TABLE_CELL") continue;
+    const cell: TableCell = { id: entry.raw.id, text: cellText(entry, entries) };
+    // Only report positions explicitly present in the source; IDs are opaque.
+    if (Number.isInteger(entry.raw.rowIndex) && Number(entry.raw.rowIndex) >= 0) cell.row = Number(entry.raw.rowIndex);
+    if (Number.isInteger(entry.raw.columnIndex) && Number(entry.raw.columnIndex) >= 0) cell.column = Number(entry.raw.columnIndex);
+    const cells = cellsByTable.get(entry.tableOwner) ?? [];
+    cells.push(cell);
+    cellsByTable.set(entry.tableOwner, cells);
+  }
+  const redactedCells = new Map<string, string>();
+  for (const [table, cells] of cellsByTable) {
+    const redacted = redactTableCells(cells, entries[table]!.raw.id);
+    for (const cell of redacted) if (cell.text.includes(REDACTED)) redactedCells.set(cell.id, cell.text);
+    cellsByTable.set(table, redacted);
+  }
+  // Sanitize before hashing, including descendants of credential table cells.
+  // No fingerprint may retain an oracle for a redacted value or auto-generated name.
+  for (const entry of entries) {
+    const cellCharacters = redactedCells.get(entry.raw.id);
+    entry.redactedCell = cellCharacters !== undefined ||
+      (entry.parent !== undefined && entries[entry.parent]!.redactedCell === true);
+    entry.raw = {
+      ...entry.raw,
+      name: entry.redactedCell ? REDACTED : redactCredentials(entry.raw.name),
+      ...(cellCharacters !== undefined ? { characters: cellCharacters } : entry.raw.characters === undefined ? {} : {
+        characters: entry.redactedCell ? REDACTED : redactCredentials(entry.raw.characters),
+      }),
+    };
+  }
   // Hash table descendants bottom-up, so non-text visual edits also invalidate reuse.
   for (let i = entries.length - 1; i >= 0; i--) {
     const entry = entries[i]!;
@@ -179,16 +214,6 @@ export function flattenNodeTree(rawFigmaJson: unknown): NormalizedNode[] {
     entry.contentFingerprint = fingerprint(entry.raw, includeChildren
       ? entry.children.map((child) => entries[child]!.contentFingerprint!) : []);
     if (entry.keep && entry.parent !== undefined) entries[entry.parent]!.keep = true;
-  }
-  for (const entry of entries) {
-    if (entry.tableOwner === undefined || entry.raw.type !== "TABLE_CELL") continue;
-    const cell: TableCell = { id: entry.raw.id, text: redactCredentials(cellText(entry, entries)) };
-    // Only report positions explicitly present in the source; IDs are opaque.
-    if (Number.isInteger(entry.raw.rowIndex) && Number(entry.raw.rowIndex) >= 0) cell.row = Number(entry.raw.rowIndex);
-    if (Number.isInteger(entry.raw.columnIndex) && Number(entry.raw.columnIndex) >= 0) cell.column = Number(entry.raw.columnIndex);
-    const cells = cellsByTable.get(entry.tableOwner) ?? [];
-    cells.push(cell);
-    cellsByTable.set(entry.tableOwner, cells);
   }
 
   const result: NormalizedNode[] = [];
@@ -198,9 +223,9 @@ export function flattenNodeTree(rawFigmaJson: unknown): NormalizedNode[] {
     const box = node.absoluteBoundingBox ?? { x: 0, y: 0, width: 0, height: 0 };
     const cells = node.type === "TABLE" ? cellsByTable.get(index) ?? [] : undefined;
     // FigJam names text nodes after their content, so names need the same redaction as text.
-    const characters = node.characters === undefined ? undefined : redactCredentials(node.characters);
+    const characters = node.characters;
     result.push({
-      id: node.id, name: redactCredentials(node.name), type: node.type,
+      id: node.id, name: node.name, type: node.type,
       x: box.x, y: box.y, width: box.width, height: box.height,
       rotation: node.rotation ?? 0, imageRef: extractImageRef(node),
       text: cells ? [characters, ...cells.map((cell) => cell.text)].filter((text) => text !== undefined && text !== "").join("\n") : characters,

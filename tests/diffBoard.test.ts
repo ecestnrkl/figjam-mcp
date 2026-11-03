@@ -60,6 +60,46 @@ afterEach(() => {
 });
 
 describe("diffBoard", () => {
+  it("does not report changes between v6 and v7 fingerprints of the same redacted evidence", async () => {
+    readBoardHistoryMock.mockResolvedValue([
+      { cacheKey: "v6", nodeHash: "old-node-hash", createdAt: 1000 },
+      { cacheKey: "v7", nodeHash: "new-node-hash", createdAt: 2000 },
+    ]);
+    const baseline = snapshot(1000, "PIN: 4711");
+    const current = snapshot(2000, "PIN: [redacted]");
+    baseline.extractionVersion = 6;
+    current.extractionVersion = 7;
+    // v6 fingerprints incorporated the raw secret; v7 fingerprints use redacted text.
+    baseline.nodes[0]!.contentFingerprint = "raw-pin-fingerprint";
+    current.nodes[0]!.contentFingerprint = "redacted-pin-fingerprint";
+    readCachedBoardMock.mockImplementation(async (key: string) => key === "v6" ? baseline : current);
+    const output = await diffBoard({ boardId: "AbC123", compareTo: 1 });
+    const { unchangedClusters, ...changes } = output.stats;
+    expect(unchangedClusters).toBe(1);
+    expect(Object.values(changes).every((count) => count === 0)).toBe(true);
+    expect(output.nodeChanges).toEqual([]);
+    expect(output.summaryText).not.toContain("appearance changed");
+  });
+
+  it.each(["text", "name", "table"] as const)("still reports a %s edit across extraction versions", async (field) => {
+    readBoardHistoryMock.mockResolvedValue([
+      { cacheKey: "v6", nodeHash: "old", createdAt: 1000 },
+      { cacheKey: "v7", nodeHash: "new", createdAt: 2000 },
+    ]);
+    const baseline = { ...snapshot(1000, "Same"), extractionVersion: 6 };
+    const current = { ...snapshot(2000, "Same"), extractionVersion: 7 };
+    if (field === "text") current.nodes[0]!.text = "Edited";
+    if (field === "name") current.nodes[0]!.name = "Renamed";
+    if (field === "table") {
+      baseline.nodes[0]!.table = { cells: [{ id: "cell", text: "Before" }] };
+      current.nodes[0]!.table = { cells: [{ id: "cell", text: "After" }] };
+    }
+    readCachedBoardMock.mockImplementation(async (key: string) => key === "v6" ? baseline : current);
+    const output = await diffBoard({ boardId: "AbC123", compareTo: 1 });
+    expect(output.stats.editedNodes).toBe(1);
+    expect(output.stats.modifiedClusters).toBe(1);
+  });
+
   it("fails without ingest history", async () => {
     await expect(diffBoard({ boardId: "AbC123", compareTo: 1 })).rejects.toThrow(
       /No ingest history/,

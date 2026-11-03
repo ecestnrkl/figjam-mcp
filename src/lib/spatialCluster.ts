@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import type { NormalizedNode, Cluster } from "../types.js";
+import { compareCodeUnits } from "./stringOrder.js";
 
 /**
  * Board-level entry point. Pages have independent coordinate systems and
@@ -23,7 +24,7 @@ export function partitionedBoardClusters(
   }
   const result: Cluster[] = [];
   const budget: SpatialWorkBudget = { comparisons: 0, gridEntries: 0 };
-  for (const [partition, members] of [...partitions].sort(([a], [b]) => a.localeCompare(b))) {
+  for (const [partition, members] of [...partitions].sort(([a], [b]) => compareCodeUnits(a, b))) {
     for (const cluster of clusterNodes(members, options, budget)) {
       const identity = JSON.stringify([partition, [...cluster.nodeIds].sort()]);
       cluster.id = `cluster_${createHash("sha256").update(identity).digest("hex").slice(0, 24)}`;
@@ -448,7 +449,7 @@ function splitOversizedGroup(
       const primaryB = splitOnX ? b.x + b.width / 2 : b.y + b.height / 2;
       const secondaryA = splitOnX ? a.y + a.height / 2 : a.x + a.width / 2;
       const secondaryB = splitOnX ? b.y + b.height / 2 : b.x + b.width / 2;
-      return primaryA - primaryB || secondaryA - secondaryB || a.id.localeCompare(b.id);
+      return primaryA - primaryB || secondaryA - secondaryB || compareCodeUnits(a.id, b.id);
     });
     const midpoint = Math.ceil(sorted.length / 2);
     pending.push(sorted.slice(midpoint), sorted.slice(0, midpoint));
