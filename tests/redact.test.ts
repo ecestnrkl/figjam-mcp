@@ -229,6 +229,25 @@ describe("credential table context", () => {
     expect(redactTableCells(cells).map((cell) => cell.text)).toEqual(["Feature", "Value", "Owner", label, "[redacted]", "[redacted]"]);
   });
 
+  it.each([false, true])("preserves key/value labels when a credential row comes first (encoded IDs=%s)", (encoded) => {
+    const tableId = "key-value";
+    const indexed = makeCells([["Passwort", "Winter2027?"], ["Benutzer", "lea"], ["URL", "https://x.example"]]);
+    const cells = encoded ? indexed.map(({ row, column, text }) => ({ id: `T${tableId};r${row};c${column}`, text })) : indexed;
+    const expected = ["Passwort", "[redacted]", "Benutzer", "lea", "URL", "https://x.example"];
+    expect(redactTableCells(cells, tableId).map((cell) => cell.text)).toEqual(expected);
+    const table = flattenNodeTree({ document: { id: "root", name: "Document", type: "DOCUMENT", children: [{
+      id: tableId, name: "Table", type: "TABLE", children: cells.map((cell, index) => ({
+        id: cell.id, name: cell.text, type: "TABLE_CELL", characters: cell.text,
+        ...(encoded ? {} : { rowIndex: indexed[index]!.row, columnIndex: indexed[index]!.column }),
+      })),
+    }] } }).find((node) => node.id === tableId)!;
+    expect(table.table?.cells.map((cell) => cell.text)).toEqual(expected);
+    const legacy = evidenceBoard("KeyValueLegacyTable", [{ ...textNode(tableId, cells.map((cell) => cell.text).join("\n")), type: "TABLE", table: { cells } }]);
+    const redacted = redactBoard(legacy).nodes[0]!;
+    expect(redacted.table?.cells.map((cell) => cell.text)).toEqual(expected);
+    expect(redacted.text).toBe(table.text);
+  });
+
   it.each([
     [["Feature", "Value", "Effort", "Status"], ["Login", "Improved", "M", "Ready"]],
     [["Token", "Value"], ["color.primary", "blue"]],

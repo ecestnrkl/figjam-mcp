@@ -22,8 +22,8 @@ afterEach(async () => {
 function tree(pin: string, table = false) {
   const text = `PIN: ${pin}`;
   const cells = [
-    { id: "header", name: "Passwort", type: "TABLE_CELL", rowIndex: 0, columnIndex: 0, characters: "Passwort" },
-    { id: "value", name: pin, type: "TABLE_CELL", rowIndex: 1, columnIndex: 0, children: [
+    { id: "header", name: "Passwort", type: "TABLE_CELL", rowIndex: 0, columnIndex: 1, characters: "Passwort" },
+    { id: "value", name: pin, type: "TABLE_CELL", rowIndex: 1, columnIndex: 1, children: [
       { id: "nested", name: pin, type: "TEXT", characters: pin },
     ] },
   ];

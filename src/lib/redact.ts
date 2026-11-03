@@ -70,7 +70,7 @@ export function redactMessageCredentials(text: string): string {
 export function redactTableCells(cells: TableCell[], tableId?: string): TableCell[] {
   if (!isCredentialRedactionEnabled()) return cells;
   const positioned = tableId === undefined ? cells : tableCellPositions({ id: tableId, table: { cells } });
-  const secretColumns = new Set(positioned.filter((cell) => cell.row === 0 && TABLE_LABEL.test(cell.text.trim())).map((cell) => cell.column));
+  const secretColumns = new Set(positioned.filter((cell) => cell.row === 0 && cell.column !== undefined && cell.column >= 1 && TABLE_LABEL.test(cell.text.trim())).map((cell) => cell.column));
   const secretRows = new Set(positioned.filter((cell) => cell.column === 0 && TABLE_LABEL.test(cell.text.trim())).map((cell) => cell.row));
   return cells.map((original, index) => {
     const cell = positioned[index]!;

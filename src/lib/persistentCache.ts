@@ -76,7 +76,12 @@ export function hashClusterNodes(nodes: NormalizedNode[]): string {
   })).sort((a, b) => compareCodeUnits(a.id, b.id))));
 }
 export function hashNormalizedNodes(nodes: NormalizedNode[]): string {
-  return hash(stableStringify([...nodes].sort((a, b) => compareCodeUnits(a.id, b.id))));
+  return hashNormalizedNodesForVersion(nodes, EXTRACTION_VERSION);
+}
+/** Historical source identities must use the writer's ordering, including object keys. */
+function hashNormalizedNodesForVersion(nodes: NormalizedNode[], extractionVersion: number): string {
+  const compare = extractionVersion <= 6 ? (a: string, b: string) => a.localeCompare(b) : compareCodeUnits;
+  return hash(stableStringify([...nodes].sort((a, b) => compare(a.id, b.id)), compare));
 }
 export function buildSnapshotId(fileKey: string, nodeHash: string, extractionVersion = EXTRACTION_VERSION): string {
   return hash(JSON.stringify([fileKey, extractionVersion, nodeHash]));
@@ -92,7 +97,7 @@ export function buildBoardCacheKey(identity: BoardCacheIdentity): string {
 /** Sources are immutable and stored separately from provider-dependent refinements. */
 async function writeBoardLocked(cacheKey: string, revisionId: string, board: BoardData, signal?: AbortSignal): Promise<BoardData> {
   key.parse(cacheKey);
-  const nodeHash = board.nodeHash ?? hashNormalizedNodes(board.nodes);
+  const nodeHash = hashNormalizedNodes(board.nodes);
   const snapshotId = buildSnapshotId(board.fileKey, nodeHash);
   const normalized = boardSchema.parse({ ...board, schemaVersion: 4, extractionVersion: EXTRACTION_VERSION, snapshotId, nodeHash, cacheKey }) as BoardData;
   const { nodes, connectorEdges, ...derived } = normalized;
@@ -115,7 +120,7 @@ export async function readCachedBoard(cacheKey: string, fileKey?: string): Promi
     const envelope = z.object({ schemaVersion: z.literal(4), revisionId: key, snapshotId: key, derived: z.record(z.string(), z.unknown()) }).parse(await readJson(cachePath(revisionId)));
     const source = z.object({ schemaVersion: z.literal(4), extractionVersion: extractionVersionSchema, snapshotId: key, fileKey: key, nodes: z.array(nodeSchema).max(MAX_BOARD_NODES), connectorEdges: z.array(edgeSchema).optional() }).parse(await readJson(path.join(cacheDirectory(), `source-${envelope.snapshotId}.json`)));
     const board = boardSchema.parse({ ...envelope.derived, nodes: source.nodes, connectorEdges: source.connectorEdges }) as BoardData;
-    if (envelope.revisionId !== revisionId || (fileKey && (board.fileKey !== fileKey || board.cacheKey !== cacheKey)) || board.snapshotId !== envelope.snapshotId || board.snapshotId !== source.snapshotId || board.extractionVersion !== source.extractionVersion || board.fileKey !== source.fileKey || board.boardId !== board.fileKey || buildSnapshotId(board.fileKey, hashNormalizedNodes(board.nodes), board.extractionVersion) !== board.snapshotId) throw new Error("Cache identity mismatch");
+    if (envelope.revisionId !== revisionId || (fileKey && (board.fileKey !== fileKey || board.cacheKey !== cacheKey)) || board.snapshotId !== envelope.snapshotId || board.snapshotId !== source.snapshotId || board.extractionVersion !== source.extractionVersion || board.fileKey !== source.fileKey || board.boardId !== board.fileKey || buildSnapshotId(board.fileKey, hashNormalizedNodesForVersion(board.nodes, board.extractionVersion ?? 4), board.extractionVersion) !== board.snapshotId) throw new Error("Cache identity mismatch");
     return board;
   } catch (error) {
     if (!isMissing(error)) console.error("Persistent cache entry is invalid; run ingest_board to rebuild it.");
@@ -261,6 +266,6 @@ async function readJson(filename: string): Promise<unknown> {
 function isMissing(error: unknown): boolean { return (error as NodeJS.ErrnoException).code === "ENOENT"; }
 function hash(value: string): string { return createHash("sha256").update(value).digest("hex"); }
 
-function stableStringify(value: unknown): string {
-  return JSON.stringify(value, (_key, item: unknown) => item && typeof item === "object" && !Array.isArray(item) ? Object.fromEntries(Object.entries(item).sort(([a], [b]) => compareCodeUnits(a, b))) : item);
+function stableStringify(value: unknown, compare = compareCodeUnits): string {
+  return JSON.stringify(value, (_key, item: unknown) => item && typeof item === "object" && !Array.isArray(item) ? Object.fromEntries(Object.entries(item).sort(([a], [b]) => compare(a, b))) : item);
 }
