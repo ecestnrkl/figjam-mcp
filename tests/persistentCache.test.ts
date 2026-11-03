@@ -1,6 +1,4 @@
-import { mkdtemp, readFile, writeFile, readdir, stat, mkdir, rm } from "node:fs/promises";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
+import { mkdtemp, readFile, writeFile, readdir, stat, mkdir, rm, chmod, utimes } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -17,7 +15,7 @@ function board(text = "Original", name = "AbC123"): BoardData {
 }
 describe("v4 persistence", () => {
   it("resolves a home-relative cache directory when persistence is needed", async () => {
-    vi.doMock("node:os", () => ({ homedir: () => root }));
+    vi.doMock("node:os", async (importOriginal) => ({ ...await importOriginal<typeof import("node:os")>(), homedir: () => root }));
     try {
       const cache = await import("../src/lib/persistentCache.js");
       process.env.FIGJAM_MCP_CACHE_DIR = "~/private-cache";
@@ -171,20 +169,52 @@ describe("v4 persistence", () => {
     expect(await c.readBoardHistory("AbC123")).toEqual([]);
   });
 
-  it("serializes independent processes publishing to the same board without lost history", async () => {
-    const source = new URL("../src/lib/persistentCache.ts", import.meta.url).href;
-    const run = promisify(execFile);
-    await Promise.all(["left", "right"].map(worker => run(process.execPath, ["--import", "tsx", "--input-type=module", "--eval",
-      `import { persistBoard } from ${JSON.stringify(source)};
-       const base = ${JSON.stringify(board())};
-       for (let i=0;i<5;i++) {
-         const text=${JSON.stringify(worker)}+i;
-         await persistBoard({...base, cacheKey:text, nodes:[{...base.nodes[0],text}], createdAt:Date.now()});
-       }`], { env: { ...process.env, FIGJAM_MCP_CACHE_DIR: root }, timeout: 20_000 })));
-    const cache = await import("../src/lib/persistentCache.js");
-    const history = await cache.readBoardHistory("AbC123");
+  it("serializes independent server modules publishing to the same board without lost history", async () => {
+    const left = await import("../src/lib/persistentCache.js");
+    vi.resetModules();
+    const right = await import("../src/lib/persistentCache.js");
+    await Promise.all([left, right].map(async (cache, worker) => {
+      for (let i = 0; i < 5; i++) await cache.persistBoard({ ...board(`Worker${worker}Text${i}`), createdAt: i });
+    }));
+    const history = await left.readBoardHistory("AbC123");
     expect(history).toHaveLength(10);
     expect(new Set(history.map(entry => entry.cacheKey)).size).toBe(10);
-    expect(await cache.readLatestBoard("AbC123")).toBeDefined();
+    expect(await right.readLatestBoard("AbC123")).toBeDefined();
   }, 25_000);
+
+  it.each(["manifest", "refinement", "source"])("cleans unrelated artifacts while preserving a damaged %s of another board", async (artifact) => {
+    const cache = await import("../src/lib/persistentCache.js");
+    await cache.persistBoard(board("Other", "OtherBoard"));
+    const other = (await cache.readBoardHistory("OtherBoard"))[0]!;
+    const names = await readdir(path.join(root, "v4"));
+    const damagedName = artifact === "manifest" ? "board-OtherBoard.json" : artifact === "source"
+      ? `source-${other.snapshotId}.json` : `refinement-${other.refinementId}.json`;
+    await writeFile(path.join(root, "v4", damagedName), '{"schemaVersion":');
+    const orphanNames = [`source-${"a".repeat(64)}.json`, "refinement-orphan.json"];
+    for (const name of orphanNames) await writeFile(path.join(root, "v4", name), JSON.stringify({ fileKey: "AbC123" }));
+    const old = new Date(Date.now() - 120_000);
+    for (const name of [...names, ...orphanNames]) await utimes(path.join(root, "v4", name), old, old);
+    await cache.persistBoard(board());
+    const remaining = await readdir(path.join(root, "v4"));
+    for (const name of names) expect(remaining).toContain(name);
+    for (const name of orphanNames) expect(remaining).not.toContain(name);
+  });
+
+  it.each([{ age: 3_600_001, retained: false }, { age: 30_000, retained: true }])("collects temporary files only after one hour ($age ms)", async ({ age, retained }) => {
+    const cache = await import("../src/lib/persistentCache.js");
+    await mkdir(path.join(root, "v4"));
+    const filename = path.join(root, "v4", "refinement-abandoned.json.write.tmp");
+    await writeFile(filename, "partial");
+    const modified = new Date(Date.now() - age);
+    await utimes(filename, modified, modified);
+    await cache.persistBoard(board());
+    expect((await readdir(path.join(root, "v4"))).includes(path.basename(filename))).toBe(retained);
+  });
+
+  it.skipIf(process.platform === "win32" || process.getuid?.() === 0)("preserves permissions of an existing user-selected cache directory", async () => {
+    const cache = await import("../src/lib/persistentCache.js");
+    await chmod(root, 0o750);
+    await cache.persistBoard(board());
+    expect((await stat(root)).mode & 0o777).toBe(0o750);
+  });
 });

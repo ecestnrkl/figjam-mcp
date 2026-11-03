@@ -61,6 +61,7 @@ vi.mock("../src/lib/persistentCache.js", () => ({
   getRefinementSignature: () => "current-refinement",
   buildSnapshotId: () => "snapshot-id",
   readLatestBoard: readLatestBoardMock,
+  readBoardHead: async () => ({ damaged: false }),
 }));
 
 const { flattenNodeTree } = await import("../src/lib/nodeTree.js");
@@ -236,6 +237,34 @@ afterEach(() => {
 });
 
 describe("ingestBoard", () => {
+  it.each([
+    ["EACCES", "Snapshot could not be saved; EACCES: check permissions of FIGJAM_MCP_CACHE_DIR or the cache directory, then retry ingest_board."],
+    ["EPERM", "Snapshot could not be saved; EPERM: check permissions of FIGJAM_MCP_CACHE_DIR or the cache directory, then retry ingest_board."],
+    ["ENOSPC", "Snapshot could not be saved; ENOSPC: the disk is full; free disk space, then retry ingest_board."],
+    ["EBUSY", "Snapshot could not be saved; another server process is writing; retry ingest_board."],
+    ["EIO", "Snapshot could not be saved; EIO: write failed; retry ingest_board."],
+  ])("reports %s and its remedy in both persistence warning and summary", async (code, warning) => {
+    const previous = await ingestBoard({ figmaFileUrl: "https://www.figma.com/board/AbC123/Fixture", docStructureHint: "freeform", ingestMode: "max_speed" });
+    readLatestBoardMock.mockResolvedValue({ ...(persistBoardMock.mock.calls.at(-1)![0] as BoardData), snapshotId: "previous-snapshot" });
+    persistBoardMock.mockRejectedValueOnce(Object.assign(new Error("write failed"), { code }));
+    const result = await ingestBoard({ figmaFileUrl: "https://www.figma.com/board/AbC123/Fixture", docStructureHint: "freeform", ingestMode: "max_speed" });
+    expect(result.persistenceWarning).toBe(warning);
+    expect(result.summary).toContain(warning);
+    expect(result.summary).not.toContain("call diff_board");
+    expect(result.summary).not.toContain("since the previous ingest");
+    expect(previous.persistenceWarning).toBeUndefined();
+  });
+
+  it("redacts and bounds unexpected persistence errors", async () => {
+    vi.stubEnv("LLM_API_KEY", "synthetic-provider-secret-value");
+    persistBoardMock.mockRejectedValueOnce(Object.assign(new Error("write synthetic-provider-secret-value\n" + "x".repeat(250)), { code: "EIO" }));
+    const result = await ingestBoard({ figmaFileUrl: "https://www.figma.com/board/AbC123/Fixture", docStructureHint: "freeform", ingestMode: "max_speed" });
+    expect(result.persistenceWarning).toContain("EIO: write [redacted]");
+    expect(result.persistenceWarning).not.toMatch(/synthetic-provider-secret-value|\n/);
+    expect(result.persistenceWarning!.length).toBeLessThan(270);
+    expect(result.summary).toContain(result.persistenceWarning);
+  });
+
   it("parses only canonical Figma hosts and paths", () => {
     expect(
       parseFigmaFileKey("  https://workspace.figma.com/board/AbC123/Test?node-id=1-2  "),

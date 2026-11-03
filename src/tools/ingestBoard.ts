@@ -18,12 +18,12 @@ import { setBoard } from "../lib/cache.js";
 import { redactBoard } from "../lib/redact.js";
 import { readIntEnv } from "../lib/env.js";
 import { missingEnvironmentHint } from "../lib/envFile.js";
-import { validateHeaderSecret, withSecretScope } from "../lib/secrets.js";
+import { redactMessage, validateHeaderSecret, withSecretScope } from "../lib/secrets.js";
 import { getVisionMaxOutputTokens } from "../lib/llmOutputBudgets.js";
 import { getVisionRequestTimeoutMs } from "../lib/llmTimeouts.js";
 import { describeModelConfig } from "../lib/modelRegistry.js";
 import { sectionGuide } from "../lib/sections.js";
-import { enclosingIdsLookup } from "../lib/evidence.js";
+import { enclosingIdsLookup, retrieveEvidence } from "../lib/evidence.js";
 import {
   buildBoardCacheKey,
   extractFigmaLastModified,
@@ -31,6 +31,7 @@ import {
   hashNormalizedNodes,
   readCachedBoard,
   readLatestBoard,
+  readBoardHead,
   persistBoard,
   buildSnapshotId,
   getRefinementSignature,
@@ -165,16 +166,15 @@ async function performIngest(input: IngestBoardInput, options: OperationOptions)
       qualityReport: { ...buildQualityReport(clusters, clusters.length), figmaRequests: { imageFills: 0, renders: 0 },
         ...(focus ? { focus: focusReport(focus, clusters, clusterNodes, ingestMode) } : {}) } });
     await progress("persist", 4);
-    await publishBoard(board, signal);
+    const historyReset = await publishBoard(board, signal);
     await complete();
-    return ingestResult(board, contentChanged);
+    return ingestResult(board, contentChanged, historyReset);
   }
   await progress("cluster", 2);
   const reuseBoard = cached ?? previousBoard;
   const reuseIndex = reuseBoard?.extractionVersion !== EXTRACTION_VERSION || reuseBoard?.refinementSignature !== refinementSignature
     ? new Map<string, RefinedCluster>() : buildReuseIndex(reuseBoard);
   const clusters = partitionedBoardClusters(nodes);
-  if (!clusters.length) throw new Error(`Board ${fileKey} contains no content nodes to ingest`);
   const clusterNodesByIndex = clusterMembers(clusters, nodes);
   const contentHashes = clusterContentHashes(clusters, nodes);
   const clusterByNode = new Map(clusters.flatMap(cluster => cluster.nodeIds.map(id => [id, cluster.id] as const)));
@@ -369,28 +369,44 @@ async function performIngest(input: IngestBoardInput, options: OperationOptions)
     createdAt: previousBoard?.snapshotId === snapshotId ? previousBoard.createdAt : Date.now(),
   });
   await progress("persist", 4);
-  await publishBoard(board, signal);
+  const historyReset = await publishBoard(board, signal);
   await complete();
-  return ingestResult(board, contentChanged);
+  return ingestResult(board, contentChanged, historyReset);
 }
-async function publishBoard(board: BoardData, signal?: AbortSignal): Promise<void> {
+async function publishBoard(board: BoardData, signal?: AbortSignal): Promise<boolean> {
   signal?.throwIfAborted();
-  try { await persistBoard(board, signal); }
+  // Warnings describe this publication attempt, including a repaired cached ingest.
+  delete board.persistenceWarning;
+  let publication: Awaited<ReturnType<typeof persistBoard>> | undefined;
+  let failedRevision: string | null | undefined;
+  try { publication = await persistBoard(board, signal); }
   catch (error) {
     signal?.throwIfAborted();
-    board.persistenceWarning = "Ingest is available in this process, but persistence failed. The previous on-disk snapshot is intact; retry ingest_board.";
+    board.persistenceWarning = persistenceFailureMessage(error);
     console.error(board.persistenceWarning);
+    failedRevision = (await readBoardHead(board.boardId)).revisionId ?? null;
   }
-  setBoard(board.boardId, board);
+  setBoard(board.boardId, board, publication?.revisionId ?? failedRevision);
+  return publication?.historyReset ?? false;
 }
-function ingestResult(board: BoardData, contentChanged?: boolean): IngestBoardOutput {
+function persistenceFailureMessage(error: unknown): string {
+  const code = (error as NodeJS.ErrnoException | null)?.code;
+  const prefix = "Snapshot could not be saved; ";
+  if (code === "EBUSY") return prefix + "another server process is writing; retry ingest_board.";
+  if (code === "EACCES" || code === "EPERM") return prefix + `${code}: check permissions of FIGJAM_MCP_CACHE_DIR or the cache directory, then retry ingest_board.`;
+  if (code === "ENOSPC") return prefix + "ENOSPC: the disk is full; free disk space, then retry ingest_board.";
+  const message = redactMessage(error instanceof Error ? error.message : String(error)).replace(/\s+/g, " ").trim().slice(0, 200).replace(/[.!?]+$/, "");
+  return `${prefix}${code ? `${redactMessage(code)}: ` : ""}${message || "unknown error"}; retry ingest_board.`;
+}
+const HISTORY_RESET_NOTICE = "The cache manifest cannot be read (damaged file); snapshot history has restarted; run ingest_board again after edits to record changes.";
+function ingestResult(board: BoardData, contentChanged?: boolean, historyReset = false): IngestBoardOutput {
   const qualityReport = board.qualityReport ?? buildQualityReport(board.clusters, 0);
   return { boardId: board.boardId, ingestMode: board.ingestMode, clusterCount: board.clusters.length,
     relationCount: board.clusterRelations?.length ?? 0, qualityReport,
     snapshotId: board.snapshotId, figmaVersion: board.figmaVersion,
     freshnessCheckedAt: board.freshnessCheckedAt === undefined ? undefined : new Date(board.freshnessCheckedAt).toISOString(),
     persistenceWarning: board.persistenceWarning,
-    summary: buildSummary(board, qualityReport, contentChanged) };
+    summary: buildSummary(board, qualityReport, historyReset ? undefined : contentChanged) + (historyReset ? ` ${HISTORY_RESET_NOTICE}` : "") };
 }
 
 type VisionStage = "render" | "model";
@@ -868,7 +884,8 @@ function buildSummary(board: BoardData, qualityReport: IngestQualityReport, cont
   const labels = clusters.map((cluster) => `"${cluster.label}"`);
   const shownLabels = labels.slice(0, 8).join(", ") + (labels.length > 8 ? ", ..." : "");
   const settings = `(docStructureHint=${docStructureHint}${ingestMode ? `, ingestMode=${ingestMode}` : ""})`;
-  const overview = largestSections
+  const overview = !clusters.length && !retrieveEvidence(redactBoard(board)).evidence.length ? "The board contains no readable content."
+    : largestSections
     ? `${clusters.length} clusters ${settings}. ${largestSections} For overviews and summaries, read these sections with ` +
       "get_board_context and nodeIds; answer_from_board is for one specific question." +
       (outsideSections ? ` ${outsideSections} excerpt${outsideSections === 1 ? " lies" : "s lie"} outside sections; read ` +
@@ -880,7 +897,7 @@ function buildSummary(board: BoardData, qualityReport: IngestQualityReport, cont
         + ` Original extracted texts, tables and node references remain available for search.`
         + describeNextSteps(qualityReport)
       : "";
-  const changeNote = contentChanged === undefined ? ""
+  const changeNote = board.persistenceWarning || contentChanged === undefined ? ""
     : contentChanged ? ` The board content changed since the previous ingest; call diff_board with boardId ${fileKey} to see what changed.`
       : " The board content is unchanged since the previous ingest.";
   const cacheNote =
@@ -897,6 +914,7 @@ function buildSummary(board: BoardData, qualityReport: IngestQualityReport, cont
   return (
     `Ingested board ${fileKey}: ${overview}${changeNote}${cacheNote}${reuseNote}`
     + ` ${qualityReport.visionClusters} visually interpreted; ${qualityReport.deterministicClusters} use extracted text.${requestNote}${focusNote}${fallbackNote}`
+    + (board.persistenceWarning ? ` ${board.persistenceWarning}` : "")
   );
 }
 

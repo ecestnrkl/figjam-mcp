@@ -184,11 +184,15 @@ defaults are independent of the cluster's flags.
 | Windows | `%LOCALAPPDATA%\figjam-context-mcp` |
 | Linux | `$XDG_CACHE_HOME/figjam-context-mcp` or `~/.cache/figjam-context-mcp` |
 
-- Files live in the `v4/` subdirectory of the root. On Unix the root is
-  owner-only; on Windows the user profile's access rules apply.
+- Files live in the `v4/` subdirectory of the root. On Unix directories created
+  by the server are owner-only; existing directories keep their permissions.
+  On Windows the user profile's access rules apply.
 - The cache holds board text, node metadata, interpretations and up to 20
   snapshots per board; screenshots and tokens are never stored. A restarted
-  server reads the cache, so no re-ingest is needed.
+  server reads the cache, so no re-ingest is needed. Processes sharing the cache
+  check the manifest before using a board from memory and load newer snapshots.
+  Empty boards are saved too. If the latest snapshot is damaged, readers use the
+  newest readable snapshot and name its date; re-ingest to rebuild damaged files.
 - One atomic manifest replacement publishes a snapshot, its interpretations and
   the history together.
 - Legacy v3 caches (`.cache/figjam-mcp/` in the server's working directory, or
@@ -196,8 +200,13 @@ defaults are independent of the cluster's flags.
   `ingest_board` once per board after upgrading.
 - Writers take `v4/.write-lock`. A second writer waits up to 10 seconds; if the
   lock is still held, the ingest result carries a `persistenceWarning` and the
-  snapshot lives only in memory. If a server crashed while writing, stop every
-  server that uses this cache, delete only `v4/.write-lock` and restart. Saved
-  snapshots stay readable.
+  summary names the cause and remedy, and the snapshot lives only in memory.
+  Locks record the PID and hostname: a confirmed dead local owner is recovered
+  automatically, as is a lock without owner information older than 30 seconds.
+  Any lock directory older than 10 minutes by modification time is recovered
+  automatically, regardless of its owner information. Saved snapshots stay readable.
+- Cleanup skips damaged entries while collecting unreferenced snapshots and
+  temporary `*.tmp` files older than one hour. An unreadable manifest starts a
+  new history on the next ingest, with a notice in its summary.
 - To delete all data, stop the server and remove the cache root. Data already
   sent to an LLM provider is not affected.

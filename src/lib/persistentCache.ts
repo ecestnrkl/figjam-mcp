@@ -2,13 +2,13 @@ import { createHash, randomUUID } from "node:crypto";
 import { chmod, mkdir, open, readFile, readdir, rename, rm, stat, unlink } from "node:fs/promises";
 import { homedir } from "node:os";
 import path from "node:path";
-import { setTimeout as delay } from "node:timers/promises";
 import { z } from "zod";
 import type { BoardData, DocStructureHint, IngestMode, NormalizedNode } from "../types.js";
 import { getVisionConfigSignature } from "./modelRegistry.js";
 import { MAX_BOARD_NODES } from "./nodeTree.js";
 import { expandHomePath } from "./envFile.js";
 import { compareCodeUnits } from "./stringOrder.js";
+import { withCacheLock } from "./cacheLock.js";
 
 export const CACHE_SCHEMA_VERSION = 4;
 export const EXTRACTION_VERSION = 7;
@@ -107,39 +107,68 @@ async function writeBoardLocked(cacheKey: string, revisionId: string, board: Boa
   await atomicWrite(cachePath(revisionId), { schemaVersion: 4, revisionId, snapshotId, derived }, signal);
   return normalized;
 }
+export interface CachedBoardState { board?: BoardData; damaged: boolean }
+export interface BoardHead { revisionId?: string; createdAt?: number; snapshotId?: string; cacheKey?: string; damaged: boolean }
+export interface LatestBoardState extends CachedBoardState { revisionId?: string; warning?: string }
 export async function readCachedBoard(cacheKey: string, fileKey?: string): Promise<BoardData | undefined> {
+  return (await readCachedBoardState(cacheKey, fileKey)).board;
+}
+export async function readCachedBoardState(cacheKey: string, fileKey?: string): Promise<CachedBoardState> {
   try {
     key.parse(cacheKey);
     let revisionId = cacheKey;
     if (fileKey) {
       const manifest = await readManifest(fileKey);
       const entry = manifest?.history.findLast(item => item.cacheKey === cacheKey);
-      if (!entry) return undefined;
+      if (!entry) return { damaged: false };
       revisionId = entry.refinementId ?? entry.cacheKey;
     }
     const envelope = z.object({ schemaVersion: z.literal(4), revisionId: key, snapshotId: key, derived: z.record(z.string(), z.unknown()) }).parse(await readJson(cachePath(revisionId)));
     const source = z.object({ schemaVersion: z.literal(4), extractionVersion: extractionVersionSchema, snapshotId: key, fileKey: key, nodes: z.array(nodeSchema).max(MAX_BOARD_NODES), connectorEdges: z.array(edgeSchema).optional() }).parse(await readJson(path.join(cacheDirectory(), `source-${envelope.snapshotId}.json`)));
     const board = boardSchema.parse({ ...envelope.derived, nodes: source.nodes, connectorEdges: source.connectorEdges }) as BoardData;
     if (envelope.revisionId !== revisionId || (fileKey && (board.fileKey !== fileKey || board.cacheKey !== cacheKey)) || board.snapshotId !== envelope.snapshotId || board.snapshotId !== source.snapshotId || board.extractionVersion !== source.extractionVersion || board.fileKey !== source.fileKey || board.boardId !== board.fileKey || buildSnapshotId(board.fileKey, hashNormalizedNodesForVersion(board.nodes, board.extractionVersion ?? 4), board.extractionVersion) !== board.snapshotId) throw new Error("Cache identity mismatch");
-    return board;
+    return { board, damaged: false };
   } catch (error) {
     if (!isMissing(error)) console.error("Persistent cache entry is invalid; run ingest_board to rebuild it.");
-    return undefined;
+    return { damaged: !isMissing(error) };
   }
 }
+export async function readBoardHead(fileKey: string): Promise<BoardHead> {
+  const { manifest, damaged } = await readManifestState(fileKey);
+  const entry = manifest?.history.at(-1);
+  return { damaged, revisionId: manifest?.latestRevision ?? manifest?.latest,
+    createdAt: entry?.createdAt, snapshotId: entry?.snapshotId, cacheKey: entry?.cacheKey };
+}
 export async function readLatestBoard(fileKey: string): Promise<BoardData | undefined> {
-  const manifest = await readManifest(fileKey);
-  if (!manifest?.latest) return undefined;
-  const board = await readCachedBoard(manifest.latestRevision ?? manifest.latest);
-  return board?.fileKey === fileKey ? board : undefined;
+  return (await readLatestBoardState(fileKey)).board;
+}
+export async function readLatestBoardState(fileKey: string): Promise<LatestBoardState> {
+  const { manifest, damaged } = await readManifestState(fileKey);
+  if (!manifest?.latest) return { damaged };
+  const revisionId = manifest.latestRevision ?? manifest.latest;
+  const revisions = [...new Set([revisionId, ...manifest.history.toReversed().map(entry => entry.refinementId ?? entry.cacheKey)])];
+  for (const [index, revision] of revisions.entries()) {
+    const { board } = await readCachedBoardState(revision);
+    if (!board || board.fileKey !== fileKey) continue;
+    const warning = index > 0
+      ? `The latest cached snapshot cannot be read (damaged files); using the snapshot from ${new Date(board.createdAt).toISOString()}; run ingest_board to rebuild.`
+      : undefined;
+    return { board, revisionId, damaged: index > 0, ...(warning ? { warning } : {}) };
+  }
+  return { revisionId, damaged: true };
 }
 export async function readBoardSnapshot(fileKey: string, snapshotId: string): Promise<BoardData | undefined> {
+  return (await readBoardSnapshotState(fileKey, snapshotId)).board;
+}
+export async function readBoardSnapshotState(fileKey: string, snapshotId: string): Promise<LatestBoardState> {
   key.parse(snapshotId);
-  const manifest = await readManifest(fileKey);
+  const { manifest, damaged } = await readManifestState(fileKey);
   const entry = manifest?.history.findLast(item => item.snapshotId === snapshotId);
-  if (!entry) return undefined;
-  const board = await readCachedBoard(entry.refinementId ?? entry.cacheKey);
-  return board?.fileKey === fileKey && board.snapshotId === snapshotId ? board : undefined;
+  if (!entry) return { damaged };
+  const revisionId = entry.refinementId ?? entry.cacheKey;
+  const state = await readCachedBoardState(revisionId);
+  if (state.board && (state.board.fileKey !== fileKey || state.board.snapshotId !== snapshotId)) return { revisionId, damaged: true };
+  return { ...state, revisionId };
 }
 export async function hasLegacyBoard(fileKey: string): Promise<boolean> {
   key.parse(fileKey);
@@ -149,19 +178,21 @@ export async function readBoardHistory(fileKey: string): Promise<BoardHistoryEnt
   return (await readManifest(fileKey))?.history ?? [];
 }
 /** One manifest rename publishes sources, refinement, latest pointer and history together. */
-export async function persistBoard(board: BoardData, signal?: AbortSignal): Promise<void> {
+export async function persistBoard(board: BoardData, signal?: AbortSignal): Promise<{ historyReset: boolean; revisionId: string }> {
   if (!board.cacheKey) throw new Error("Cannot persist board without cacheKey");
-  await withMutation(async () => {
+  return withMutation(async () => {
     await garbageCollect().catch(() => console.error("Snapshot cleanup deferred; committed snapshots are intact."));
     signal?.throwIfAborted();
     const revisionId = hash(randomUUID());
     const normalized = await writeBoardLocked(board.cacheKey!, revisionId, board, signal);
-    const manifest = await readManifest(board.fileKey) ?? emptyManifest();
+    const state = await readManifestState(board.fileKey);
+    const manifest = state.manifest ?? emptyManifest();
     manifest.latest = board.cacheKey;
     manifest.latestRevision = revisionId;
     updateHistory(manifest, { cacheKey: board.cacheKey!, refinementId: revisionId, snapshotId: normalized.snapshotId, nodeHash: normalized.nodeHash!, createdAt: board.createdAt });
     signal?.throwIfAborted();
     await atomicWrite(manifestPath(board.fileKey), manifest, signal);
+    return { historyReset: state.damaged, revisionId };
   }, signal);
 }
 function updateHistory(manifest: Manifest, entry: BoardHistoryEntry): void {
@@ -173,42 +204,62 @@ function updateHistory(manifest: Manifest, entry: BoardHistoryEntry): void {
 }
 function emptyManifest(): Manifest { return { schemaVersion: 4, history: [] }; }
 async function readManifest(fileKey: string): Promise<Manifest | undefined> {
-  try { return manifestSchema.parse(await readJson(manifestPath(fileKey))); } catch (error) {
+  return (await readManifestState(fileKey)).manifest;
+}
+async function readManifestState(fileKey: string): Promise<{ manifest?: Manifest; damaged: boolean }> {
+  try { return { manifest: manifestSchema.parse(await readJson(manifestPath(fileKey))), damaged: false }; } catch (error) {
     if (!isMissing(error)) console.error("Board cache manifest is invalid; run ingest_board to rebuild it.");
-    return undefined;
+    return { damaged: !isMissing(error) };
   }
 }
 async function garbageCollect(): Promise<void> {
   const names = await readdir(cacheDirectory());
   const refinements = new Set<string>();
   const sources = new Set<string>();
-  // Fail closed if any manifest is damaged. Legacy v3 files are outside v4 and never touched.
-  try {
-    for (const name of names.filter(name => name.startsWith("board-") && name.endsWith(".json"))) {
+  const damagedBoards = new Set<string>();
+  for (const name of names.filter(name => name.startsWith("board-") && name.endsWith(".json"))) {
+    try {
       const manifest = manifestSchema.parse(await readJson(path.join(cacheDirectory(), name)));
       if (manifest.latest) refinements.add(manifest.latestRevision ?? manifest.latest);
-      for (const entry of manifest.history) refinements.add(entry.refinementId ?? entry.cacheKey);
+      for (const entry of manifest.history) {
+        refinements.add(entry.refinementId ?? entry.cacheKey);
+        if (entry.snapshotId) sources.add(entry.snapshotId);
+      }
+    } catch {
+      // Keep artifacts belonging to this board when its references cannot be read.
+      damagedBoards.add(name.slice("board-".length, -".json".length));
     }
-    for (const ref of refinements) {
+  }
+  for (const ref of refinements) {
+    try {
       const envelope = z.object({ schemaVersion: z.literal(4), snapshotId: key }).parse(await readJson(cachePath(ref)));
       sources.add(envelope.snapshotId);
-    }
-  } catch { console.error("Snapshot cleanup skipped: a cache reference is invalid."); return; }
-  // Only collect our versioned artifacts; preserve recent unpublished writes from compatibility callers.
+    } catch { /* A damaged entry must not stop cleanup for other boards. */ }
+  }
   for (const name of names) {
+    const filename = path.join(cacheDirectory(), name);
+    if (name.endsWith(".tmp")) {
+      if (Date.now() - (await stat(filename)).mtimeMs > 3_600_000) await unlink(filename);
+      continue;
+    }
     const sourceId = /^source-([a-f0-9]{64})\.json$/.exec(name)?.[1];
     const refinementId = /^refinement-([A-Za-z0-9_-]{1,128})\.json$/.exec(name)?.[1];
     if ((!sourceId || sources.has(sourceId)) && (!refinementId || refinements.has(refinementId))) continue;
-    const filename = path.join(cacheDirectory(), name);
     // A short grace period protects readers that captured the previous manifest before a publish.
     if (Date.now() - (await stat(filename)).mtimeMs < 60_000) continue;
+    if (damagedBoards.size > 0) {
+      try {
+        const artifact = await readJson(filename) as { fileKey?: string; derived?: { fileKey?: string } };
+        if (damagedBoards.has(artifact.fileKey ?? artifact.derived?.fileKey ?? "")) continue;
+      } catch { continue; }
+    }
     await unlink(filename);
   }
 }
 async function privateDirectory(): Promise<void> {
-  await mkdir(cacheDirectory(), { recursive: true, mode: 0o700 });
-  await chmod(cacheDirectory(), 0o700);
-  await chmod(cacheRoot(), 0o700);
+  // mkdir reports whether this server created the directory; user-owned modes stay intact.
+  if (await mkdir(cacheRoot(), { recursive: true, mode: 0o700 })) await chmod(cacheRoot(), 0o700);
+  if (await mkdir(cacheDirectory(), { recursive: true, mode: 0o700 })) await chmod(cacheDirectory(), 0o700);
 }
 async function atomicWrite(filename: string, value: unknown, signal?: AbortSignal): Promise<void> {
   const temporary = `${filename}.${randomUUID()}.tmp`;
@@ -228,30 +279,7 @@ async function withMutation<T>(operation: () => Promise<T>, signal?: AbortSignal
   const result = mutationQueue.then(async () => {
     signal?.throwIfAborted();
     await privateDirectory();
-    const lockPath = path.join(cacheDirectory(), ".write-lock");
-    const token = randomUUID();
-    const started = Date.now();
-    for (;;) {
-      signal?.throwIfAborted();
-      try {
-        await mkdir(lockPath, { mode: 0o700 });
-        try { await atomicWrite(path.join(lockPath, "owner.json"), { pid: process.pid, token }); }
-        catch (error) { await rm(lockPath, { recursive: true, force: true }); throw error; }
-        break;
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-        // Fail closed: deleting a seemingly stale lock races with another process
-        // acquiring it. Recovery requires stopping all servers before removing it.
-        if (Date.now() - started >= 10_000) throw new Error("Cache is busy in another process. Retry ingest_board. If a writer crashed, stop all servers before removing v4/.write-lock from the cache directory.");
-        await delay(20, undefined, { signal });
-      }
-    }
-    try { return await operation(); } finally {
-      try {
-        const owner = await readJson(path.join(lockPath, "owner.json")) as { token?: unknown };
-        if (owner.token === token) await rm(lockPath, { recursive: true, force: true });
-      } catch { console.error("Cache lock cleanup failed; stop all servers before removing v4/.write-lock."); }
-    }
+    return withCacheLock(cacheDirectory(), operation, signal);
   });
   mutationQueue = result.catch(() => undefined);
   return result;
