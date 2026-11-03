@@ -49,7 +49,6 @@ beforeEach(() => {
   for (const name of Object.keys(process.env)) if (environmentPattern.test(name)) vi.stubEnv(name, undefined);
   for (const [name, value] of Object.entries(offlineEnvironment)) vi.stubEnv(name, value);
   vi.stubEnv("FIGJAM_MCP_CACHE_DIR", cacheDirectory);
-  vi.spyOn(process, "cwd").mockReturnValue(directory);
   fetchMock = vi.fn(async () => { throw new Error("Unexpected network access in offline startup test"); });
   vi.stubGlobal("fetch", fetchMock);
 });
