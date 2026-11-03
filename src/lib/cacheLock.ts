@@ -54,15 +54,17 @@ export async function withCacheLock<T>(directory: string, operation: () => Promi
 async function reclaimAbandonedLock(lockPath: string): Promise<boolean> {
   try {
     const directory = await stat(lockPath);
-    let abandoned = false;
-    try {
-      const owner = JSON.parse(await readFile(path.join(lockPath, "owner.json"), "utf8")) as { pid?: unknown; hostname?: unknown };
-      if ((owner.hostname === undefined || owner.hostname === hostname()) && Number.isSafeInteger(owner.pid) && (owner.pid as number) > 0) {
-        try { process.kill(owner.pid as number, 0); } catch (error) { abandoned = code(error) === "ESRCH"; }
+    let abandoned = Date.now() - directory.mtimeMs > 600_000;
+    if (!abandoned) {
+      try {
+        const owner = JSON.parse(await readFile(path.join(lockPath, "owner.json"), "utf8")) as { pid?: unknown; hostname?: unknown };
+        if ((owner.hostname === undefined || owner.hostname === hostname()) && Number.isSafeInteger(owner.pid) && (owner.pid as number) > 0) {
+          try { process.kill(owner.pid as number, 0); } catch (error) { abandoned = code(error) === "ESRCH"; }
+        }
+      } catch (error) {
+        // A missing owner can be the small window between mkdir and owner publication.
+        abandoned = code(error) === "ENOENT" && Date.now() - directory.mtimeMs > 30_000;
       }
-    } catch (error) {
-      // A missing owner can be the small window between mkdir and owner publication.
-      abandoned = code(error) === "ENOENT" && Date.now() - directory.mtimeMs > 30_000;
     }
     if (!abandoned) return false;
     // Every observer of this directory uses the same destination. Keep it nonempty:

@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { mkdir, mkdtemp, rm, utimes, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, rm, utimes, writeFile } from "node:fs/promises";
 import { hostname, tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
@@ -101,6 +101,22 @@ it.each(["local", "legacy"])("recovers a %s lock owned by a terminated process w
   await cache.persistBoard(input);
   expect(waited).not.toHaveBeenCalled();
   expect(hooks.retired).toBe(1);
+  expect((await cache.readLatestBoard("locks"))?.nodes[0]?.text).toBe("first");
+});
+
+it.each(["live local owner", "remote hostname", "unreadable owner.json"])("recovers a lock older than ten minutes with %s without waiting", async (kind) => {
+  const lockPath = path.join(root, "v4", ".write-lock");
+  await writeFile(path.join(lockPath, "owner.json"), kind === "unreadable owner.json" ? "{" : JSON.stringify({
+    pid: process.pid, hostname: kind === "remote hostname" ? "another-host.invalid" : hostname(), token: "occupied",
+  }));
+  const stale = new Date(Date.now() - 601_000);
+  await utimes(lockPath, stale, stale);
+  const waited = vi.fn(() => { throw new Error("stale lock must not wait"); }); hooks.delay = waited;
+  const cache = await import("../src/lib/persistentCache.js");
+  await cache.persistBoard(input);
+  expect(waited).not.toHaveBeenCalled();
+  expect(hooks.retired).toBe(1);
+  expect((await readdir(path.join(root, "v4"))).filter(name => name.startsWith(".write-lock-") && name.endsWith(".retired"))).toHaveLength(1);
   expect((await cache.readLatestBoard("locks"))?.nodes[0]?.text).toBe("first");
 });
 

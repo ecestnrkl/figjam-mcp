@@ -203,8 +203,8 @@ defaults are independent of the cluster's flags.
   summary names the cause and remedy, and the snapshot lives only in memory.
   Locks record the PID and hostname: a confirmed dead local owner is recovered
   automatically, as is a lock without owner information older than 30 seconds.
-  If a lock belongs to a server on another computer, stop that server before
-  deleting only `v4/.write-lock`. Saved snapshots stay readable.
+  Any lock directory older than 10 minutes by modification time is recovered
+  automatically, regardless of its owner information. Saved snapshots stay readable.
 - Cleanup skips damaged entries while collecting unreferenced snapshots and
   temporary `*.tmp` files older than one hour. An unreadable manifest starts a
   new history on the next ingest, with a notice in its summary.

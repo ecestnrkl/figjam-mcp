@@ -2,7 +2,7 @@
 
 ## 0.12.0 — Unreleased
 
-- Failed snapshot saves name the cause and remedy in the warning and summary; locks left by crashed local servers are recovered automatically, and existing cache directory permissions are preserved.
+- Failed snapshot saves name the cause and remedy in the warning and summary; locks left by crashed local servers and all locks older than 10 minutes are recovered automatically, and existing cache directory permissions are preserved.
 - Processes sharing a cache refresh boards from the latest saved snapshot before reading from memory.
 - Empty boards are saved as empty snapshots, replacing old content and allowing comparisons with the previous state.
 - Damaged snapshots fall back to readable history with a notice; damaged manifests report a history restart, and cleanup skips damaged entries and removes old temporary files.
