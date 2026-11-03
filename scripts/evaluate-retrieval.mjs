@@ -150,10 +150,20 @@ function namedInText(fixture, summaryText) {
       .find((cell) => cell.id === fixture.changedCellId);
     const before = cellOf(fixture.before);
     const after = cellOf(fixture.after);
-    return line(` ${fixture.changedNodeId} `, `row ${after.row + 1}`, `column ${after.column + 1}`, `"${before.text}" → "${after.text}"`);
+    return line(` ${fixture.changedNodeId} `, `row ${after.row}`, `column ${after.column}`, `"${before.text}" → "${after.text}"`);
   }
-  const label = fixture.after.connectorEdges[0].label;
-  return line("- new: ", `"${label}"`) && line("- removed: ", `"${label}"`);
+  const arrow = (board) => {
+    const edge = board.connectorEdges.find((item) => item.connectorId === fixture.changedNodeId);
+    const end = (id) => {
+      const node = board.nodes.find((item) => item.id === id);
+      const text = (node.text?.trim() || node.name.trim()).replace(/\s+/g, " ");
+      const short = text.length <= 40 ? text : `${text.slice(0, 39)}…`;
+      return text ? `${id} «${short}»` : id;
+    };
+    const direction = { forward: "→", reverse: "←", bidirectional: "↔", undirected: "—" }[edge.direction ?? "forward"];
+    return `arrow ${edge.connectorId}: ${end(edge.fromNodeId)} ${direction} ${end(edge.toNodeId)}${edge.label ? ` (${edge.label})` : ""}`;
+  };
+  return line(`- new: ${arrow(fixture.after)}`) && line(`- removed: ${arrow(fixture.before)}`);
 }
 
 /** Excerpts that contain the expected node: its own, or the table row that holds an expected cell. */

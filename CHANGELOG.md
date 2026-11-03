@@ -2,6 +2,8 @@
 
 ## 0.12.0 — Unreleased
 
+- `diff_board` caps each cluster list at 20, arrow and table-cell lists at 50, and node changes at 100, with optional omitted counts, full totals and shortened cell texts; the text explains tables counted as edited only for cell changes.
+- `diff_board` reports section/frame renames and layout-only changes, distinguishes unmatched snapshot details from identical snapshots, notes unchanged re-ingests before the latest change, and uses 0-based table coordinates and arrow IDs with named endpoint IDs like `get_board_context`.
 - Failed snapshot saves name the cause and remedy in the warning and summary; locks left by crashed local servers and all locks older than 10 minutes are recovered automatically, and existing cache directory permissions are preserved.
 - Processes sharing a cache refresh boards from the latest saved snapshot before reading from memory.
 - Empty boards are saved as empty snapshots, replacing old content and allowing comparisons with the previous state.

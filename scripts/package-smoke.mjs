@@ -519,7 +519,7 @@ try {
     }]);
     assert.deepEqual(tableDiff.structuredContent.nodeChanges, [], "Changed cells explain the edited table");
     assert.match(tableDiff.content[0].text,
-      /\nTable cells \(1\):\n- table "Budget table" 2:1 outside sections, row 1 "Simulator", column 2: "Budget 100" → "Budget 999"\n/);
+      /\nTable cells \(1\):\n- table "Budget table" 2:1 outside sections, row 0 "Simulator", column 1: "Budget 100" → "Budget 999"\n/);
     // An image node is read from GET image fills (Tier 2) and its original download, without a render request.
     // focusNodeIds puts the image first; an unknown ID is reported, not rejected.
     const imageIngest = await ingestWithProgress(client, { figmaFileUrl: "https://www.figma.com/board/ImageBoard123/Smoke", ingestMode: "balanced",

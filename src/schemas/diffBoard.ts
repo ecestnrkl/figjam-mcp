@@ -64,10 +64,10 @@ export const diffBoardOutputShape = {
     changeType: z.enum(["added", "removed", "modified"]),
     previousText: z.string().optional(),
     currentText: z.string().optional(),
-    previousRow: z.number().int().nonnegative().optional(),
-    previousColumn: z.number().int().nonnegative().optional(),
-    currentRow: z.number().int().nonnegative().optional(),
-    currentColumn: z.number().int().nonnegative().optional(),
+    previousRow: z.number().int().nonnegative().optional().describe("0-based, as in get_board_context"),
+    previousColumn: z.number().int().nonnegative().optional().describe("0-based, as in get_board_context"),
+    currentRow: z.number().int().nonnegative().optional().describe("0-based, as in get_board_context"),
+    currentColumn: z.number().int().nonnegative().optional().describe("0-based, as in get_board_context"),
     tableName: z.string().optional(),
     rowLabel: z.string().optional().describe("Text of the first cell in the row"),
     columnLabel: z.string().optional().describe("Text of the cell in the first row of the column"),
@@ -86,6 +86,12 @@ export const diffBoardOutputShape = {
     changes: z.array(z.enum(["text", "name", "image", "rotation", "type", "appearance"])).optional(),
   })).optional().describe("Edited, added, then removed nodes in reading order; read whole texts with get_board_context and nodeIds"),
   nodeChangesOmitted: z.number().int().positive().optional().describe("Changed nodes beyond the first 100"),
+  newClustersOmitted: z.number().int().positive().optional().describe("New clusters beyond the first 20"),
+  removedClustersOmitted: z.number().int().positive().optional().describe("Removed clusters beyond the first 20"),
+  modifiedClustersOmitted: z.number().int().positive().optional().describe("Modified clusters beyond the first 20"),
+  addedConnectionsOmitted: z.number().int().positive().optional().describe("Added connections beyond the first 50"),
+  removedConnectionsOmitted: z.number().int().positive().optional().describe("Removed connections beyond the first 50"),
+  tableCellChangesOmitted: z.number().int().positive().optional().describe("Table cell changes beyond the first 50"),
 };
 
 export const diffBoardOutputSchema = z.object(diffBoardOutputShape);

@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { diffBoards } from "../src/lib/boardDiff.js";
+import { setBoard } from "../src/lib/cache.js";
+import { getBoardContext } from "../src/tools/getBoardContext.js";
 import type { BoardData, NormalizedNode, RefinedCluster } from "../src/types.js";
+import { largeDiffBoards } from "./fixtures/diff.js";
 
 function node(id: string, text?: string, overrides: Partial<NormalizedNode> = {}): NormalizedNode {
   return {
@@ -42,6 +45,81 @@ function board(nodes: NormalizedNode[], clusters: RefinedCluster[], createdAt: n
 }
 
 describe("diffBoards", () => {
+  it("caps every list while retaining complete counts and bounded cell excerpts", () => {
+    const [baseline, current] = largeDiffBoards();
+    expect(baseline.nodes).toHaveLength(4700);
+    expect(current.nodes).toHaveLength(4700);
+    const diff = diffBoards(baseline, current);
+    expect(diff.stats).toEqual({
+      addedNodes: 1020, removedNodes: 1020, editedNodes: 1086,
+      newClusters: 85, removedClusters: 85, modifiedClusters: 155, unchangedClusters: 0,
+      addedConnections: 455, removedConnections: 455,
+    });
+    const totals = {
+      newClusters: 85, removedClusters: 85, modifiedClusters: 155,
+      addedConnections: 455, removedConnections: 455, tableCellChanges: 780, nodeChanges: 3100,
+    };
+    for (const [key, total] of Object.entries(totals)) {
+      const list = key as keyof typeof totals;
+      const limit = list === "nodeChanges" ? 100 : list.endsWith("Clusters") ? 20 : 50;
+      expect(diff[list], list).toHaveLength(limit);
+      expect(diff[`${list}Omitted`], `${list}Omitted`).toBe(total - limit);
+    }
+    for (const change of diff.tableCellChanges) {
+      expect(change.previousText).toMatch(/^….* Monday .*…$/);
+      expect(change.currentText).toMatch(/^….* Tuesday .*…$/);
+      expect(change.previousText!.length).toBeLessThanOrEqual(300);
+      expect(change.currentText!.length).toBeLessThanOrEqual(300);
+    }
+    expect(diff.summaryText).toContain("Edited nodes (1060):");
+    expect(diff.summaryText).toContain("Table cells (780):");
+    expect(diff.summaryText).toContain("Nodes: +1020 added / -1020 removed / 1086 edited " +
+      "(26 of them tables with cell changes, listed under Table cells).");
+  });
+
+  it("omits all omission counters when every entry fits", () => {
+    const diff = diffBoards(board([], [], 1), board([node("new", "New")], [cluster("new", "New", ["new"])], 2));
+    expect(Object.keys(diff).filter((key) => key.endsWith("Omitted"))).toEqual([]);
+  });
+
+  it.each([
+    { type: "SECTION", textChanged: false, kind: "section" },
+    { type: "FRAME", textChanged: false, kind: "frame" },
+    { type: "SECTION", textChanged: true, kind: "section" },
+  ])("reports a renamed $type beside text change=$textChanged", ({ type, textChanged, kind }) => {
+    const container = node("5:9", undefined, { type, name: "3 · Ideas" });
+    const baseline = board([container, node("5:10", "Old text")], [], 1);
+    const current = board([{ ...container, name: "3 · Ideen" }, node("5:10", textChanged ? "New text" : "Old text")], [], 2);
+    const diff = diffBoards(baseline, current);
+    expect(diff.summaryText).toContain(`Renamed sections (1):\n- ${kind} 5:9: "3 · Ideas" → "3 · Ideen"`);
+    expect(diff.summaryText).not.toContain("identical");
+    expect(diff.stats.editedNodes).toBe(textChanged ? 1 : 0);
+    if (textChanged) expect(diff.summaryText).toContain('"Old text" → "New text"');
+  });
+
+  it("caps renamed sections at eight lines while reporting the full count", () => {
+    const sections = (suffix: string) => Array.from({ length: 11 }, (_, i) =>
+      node(`5:${i}`, undefined, { type: i % 2 ? "FRAME" : "SECTION", name: `Section ${i}${suffix}` }));
+    const diff = diffBoards(board(sections(""), [], 1), board(sections(" revised"), [], 2));
+    const lines = diff.summaryText.split("Renamed sections (11):\n")[1]!.split("\n");
+    expect(lines.slice(0, 8).every((line) => /^- (section|frame) 5:/.test(line))).toBe(true);
+    expect(lines[8]).toBe("- … and 3 more");
+  });
+
+  it.each(["order", "container style", "connector replacement"])("describes differing snapshots with only %s details", (detail) => {
+    const nodes = [node("5:1", "First"), node("5:2", "Second"), node("5:3", undefined, { type: "SECTION", name: "Ideas", contentFingerprint: "yellow" })];
+    const baseline = board(nodes, [], 1);
+    const current = board(nodes, [], 2);
+    if (detail === "order") current.nodes = [...nodes].reverse();
+    if (detail === "container style") current.nodes = nodes.map((item) => item.type === "SECTION" ? { ...item, contentFingerprint: "green" } : item);
+    if (detail === "connector replacement") {
+      baseline.connectorEdges = [{ connectorId: "old", fromNodeId: "5:1", toNodeId: "5:2" }];
+      current.connectorEdges = [{ ...baseline.connectorEdges[0]!, connectorId: "new" }];
+    }
+    expect(diffBoards(baseline, current).summaryText).toContain(
+      "No content, name or layout changes found; the snapshots differ only in details diff_board does not compare.");
+  });
+
   it("counts a changed table once and identifies changed, added and removed cells", () => {
     const baseline = board([node("table", undefined, {
       type: "TABLE", table: { cells: [
@@ -84,7 +162,7 @@ describe("diffBoards", () => {
     current.connectorEdges = [{ ...baseline.connectorEdges[0]!, direction: "reverse" }];
     const diff = diffBoards(baseline, current);
     expect(diff.stats).toMatchObject({ editedNodes: 1, modifiedClusters: 1, addedConnections: 1, removedConnections: 1 });
-    expect(diff.addedConnections[0]).toBe('"a" ← "Target"');
+    expect(diff.addedConnections[0]).toBe('arrow edge: a «a» ← b «Target»');
   });
 
   it("does not treat a reversed endpoint encoding as a changed directed meaning", () => {
@@ -111,7 +189,7 @@ describe("diffBoards", () => {
       modifiedClusters: 0,
       unchangedClusters: 1,
     });
-    expect(diff.summaryText).toContain("No changes");
+    expect(diff.summaryText).toContain("No changes — the board content is identical.");
   });
 
   it("classifies new, removed, modified, and unchanged clusters", () => {
@@ -205,7 +283,7 @@ describe("diffBoards", () => {
     expect(diff.summaryText).toContain('Removed clusters (3):\n- "4 · Decisions & next steps"\n- "A rather long section na...: Parking"\n- "Loose note"\n');
   });
 
-  it("diffs connector arrows with cluster labels", () => {
+  it("diffs connector arrows with node IDs and texts", () => {
     const nodes = [node("a", "Idea"), node("b", "Action")];
     const clusters = [
       cluster("cluster_1", "Ideas", ["a"]),
@@ -222,8 +300,31 @@ describe("diffBoards", () => {
     const diff = diffBoards(baseline, current);
 
     expect(diff.stats.addedConnections).toBe(1);
-    expect(diff.addedConnections).toEqual(['"Ideas" → "Actions" — "leads to"']);
+    expect(diff.addedConnections).toEqual(['arrow c1: a «Idea» → b «Action» (leads to)']);
     expect(diff.summaryText).toContain("Connections: +1 / -0");
+  });
+
+  it.each(["added", "removed"].flatMap((changeType) => [undefined, "blocks"].flatMap((label) =>
+    ["text", "name", "section"].map((endpoint) => ({ changeType, label, endpoint })))))
+  ("names $changeType arrows with $endpoint endpoints and label=$label from their snapshot", ({ changeType, label, endpoint }) => {
+    const longText = "Long queues at the counter during the synthetic workshop";
+    const target = node("5:95", endpoint === "text" ? "Ask campus IT" : undefined, {
+      type: endpoint === "section" ? "SECTION" : "STICKY",
+      name: endpoint === "section" ? "4 · Decisions & next steps" : "Ask campus IT",
+    });
+    const baselineNodes = [node("5:47", longText), target];
+    const currentNodes = baselineNodes.map((item) => ({ ...item, text: item.text ? `${item.text} revised` : undefined, name: `${item.name} revised` }));
+    const baseline = board(baselineNodes, [cluster("source", "Cluster source", ["5:47"]), cluster("target", "Cluster target", ["5:95"])], 1);
+    const current = board(currentNodes, baseline.clusters, 2);
+    const edge = { connectorId: "5:999", fromNodeId: "5:47", toNodeId: "5:95", label };
+    (changeType === "added" ? current : baseline).connectorEdges = [edge];
+    const diff = diffBoards(baseline, current);
+    const selected = changeType === "added" ? currentNodes : baselineNodes;
+    const from = `${selected[0]!.text!.slice(0, 39)}…`;
+    const to = selected[1]!.text ?? selected[1]!.name;
+    const expected = `arrow 5:999: 5:47 «${from}» → 5:95 «${to}»${label ? ` (${label})` : ""}`;
+    expect(changeType === "added" ? diff.addedConnections : diff.removedConnections).toEqual([expected]);
+    expect(diff.summaryText).toContain(`- ${changeType === "added" ? "new" : "removed"}: ${expected}`);
   });
 
   it("counts identical parallel connector arrows as a multiset", () => {
@@ -254,13 +355,13 @@ describe("diffBoards", () => {
     const removedDiff = diffBoards(baseline, oneRemoved);
     expect(removedDiff.stats.removedConnections).toBe(1);
     expect(removedDiff.removedConnections).toEqual([
-      '"Ideas" → "Actions" — "supports"',
+      'arrow old-2: a «Idea» → b «Action» (supports)',
     ]);
 
     const addedDiff = diffBoards(baseline, oneAdded);
     expect(addedDiff.stats.addedConnections).toBe(1);
     expect(addedDiff.addedConnections).toEqual([
-      '"Ideas" → "Actions" — "supports"',
+      'arrow new-3: a «Idea» → b «Action» (supports)',
     ]);
   });
 
@@ -288,21 +389,41 @@ describe("diffBoards", () => {
     expect(diff.stats.removedConnections).toBe(0);
   });
 
-  it("treats position-only moves as unchanged", () => {
+  it.each([
+    { kind: "position", overrides: { x: 5000, y: 5000 }, fingerprint: undefined, edited: 0 },
+    { kind: "size", overrides: { width: 5000, height: 5000 }, fingerprint: undefined, edited: 0 },
+    { kind: "size with fingerprint", overrides: { width: 5000, contentFingerprint: "resized" }, fingerprint: "original", edited: 1 },
+  ])("counts $kind-only changes in the layout line", ({ overrides, fingerprint, edited }) => {
     const baseline = board(
-      [node("a", "Sticky")],
+      [node("a", "Sticky", { contentFingerprint: fingerprint })],
       [cluster("cluster_1", "Group", ["a"])],
       1,
     );
     const current = board(
-      [node("a", "Sticky", { x: 5000, y: 5000 })],
+      [node("a", "Sticky", overrides)],
       [cluster("cluster_1", "Group", ["a"])],
       2,
     );
 
     const diff = diffBoards(baseline, current);
-    expect(diff.stats.editedNodes).toBe(0);
-    expect(diff.stats.unchangedClusters).toBe(1);
+    expect(diff.stats.editedNodes).toBe(edited);
+    expect(diff.stats.unchangedClusters).toBe(edited ? 0 : 1);
+    expect(diff.summaryText).toContain("Layout: 1 nodes moved or resized.");
+    expect(diff.summaryText).not.toContain("identical");
+  });
+
+  it("counts only surviving nodes with geometry-only changes in the layout line", () => {
+    const baseline = board([
+      node("moved", "Same"), node("edited", "Before"), node("removed", "Removed"),
+      node("arrow", undefined, { type: "CONNECTOR" }), node("section", undefined, { type: "SECTION" }),
+    ], [], 1);
+    const current = board([
+      node("moved", "Same", { x: 500 }), node("edited", "After", { x: 500 }), node("added", "Added", { x: 500 }),
+      node("arrow", undefined, { type: "CONNECTOR", x: 500 }), node("section", undefined, { type: "SECTION", width: 500 }),
+    ], [], 2);
+    const diff = diffBoards(baseline, current);
+    expect(diff.summaryText).toContain("Layout: 2 nodes moved or resized.");
+    expect(diff.stats).toMatchObject({ addedNodes: 1, removedNodes: 1, editedNodes: 1 });
   });
 
   it("reports no changed cluster when only the cluster labels differ", () => {
@@ -444,7 +565,7 @@ describe("diffBoards", () => {
       board([section, ...before], [cluster("ideas", "Ideas", before.map((item) => item.id))], 1),
       board([section, ...after], [cluster("ideas", "Ideas", after.map((item) => item.id))], 2));
 
-    it("names a changed cell with table, row and column from its ID", () => {
+    it("names a changed cell with the same zero-based row as get_board_context", async () => {
       const diff = pair([table(rows)], [table(edit(2, 3, "In pilot"))]);
       expect(diff.tableCellChanges).toEqual([{
         tableNodeId: "5:119", cellId: "T5:119;5:2;5:8", changeType: "modified", previousText: "In scope", currentText: "In pilot",
@@ -453,9 +574,39 @@ describe("diffBoards", () => {
       }]);
       expect(diff.nodeChanges).toEqual([]);
       expect(diff.summaryText).toContain("Table cells (1):\n" +
-        '- table "Feature priorities" 5:119 in "3 · Ideas", row 3 "Sold-out badges", column 4 "Status": "In scope" → "In pilot"\n' +
-        "Nodes: +0 added / -0 removed / 1 edited.");
+        '- table "Feature priorities" 5:119 in "3 · Ideas", row 2 "Sold-out badges", column 3 "Status": "In scope" → "In pilot"\n' +
+        "Nodes: +0 added / -0 removed / 1 edited (1 of them tables with cell changes, listed under Table cells).");
       expect(diff.summaryText).not.toContain("Edited nodes");
+      const current = {
+        ...board([section, table(edit(2, 3, "In pilot"))], [cluster("ideas", "Ideas", ["5:119"])], 2),
+        boardId: "SyntheticTableRows", fileKey: "SyntheticTableRows", snapshotId: "a".repeat(64),
+      };
+      setBoard(current.boardId, current);
+      const context = await getBoardContext({ boardId: current.boardId, snapshotId: current.snapshotId, nodeIds: ["5:119"], detail: "full" });
+      const contextRow = context.text.match(/row (\d+): Sold-out badges/)?.[1];
+      expect(contextRow).toBe("2");
+      expect(diff.summaryText).toContain(`row ${contextRow} "Sold-out badges", column 3 "Status"`);
+    });
+
+    it("uses zero-based coordinates in a cell's moved-from description", () => {
+      const located = (row: number, column: number) => node("table", undefined, {
+        type: "TABLE", table: { cells: [{ id: "cell", text: "Order ahead", row, column }] },
+      });
+      const diff = pair([located(1, 2)], [located(3, 4)]);
+      expect(diff.tableCellChanges[0]).toMatchObject({ previousRow: 1, previousColumn: 2, currentRow: 3, currentColumn: 4 });
+      expect(diff.summaryText).toContain('row 3, column 4: moved from row 1, column 2');
+    });
+
+    it.each(["added", "removed"].flatMap((changeType) => [160, 200].map((length) => ({ changeType, length }))))
+    ("bounds $changeType cell texts of $length characters like node texts", ({ changeType, length }) => {
+      const text = "x".repeat(length);
+      const content = (present: boolean) => node("table", undefined, {
+        type: "TABLE", table: { cells: present ? [{ id: "cell", text, row: 0, column: 0 }] : [] },
+      });
+      const diff = pair([content(changeType === "removed")], [content(changeType === "added")]);
+      const change = diff.tableCellChanges[0]!;
+      expect(change.changeType).toBe(changeType);
+      expect(changeType === "added" ? change.currentText : change.previousText).toBe(length <= 160 ? text : `${text.slice(0, 160)}…`);
     });
 
     it("gives a header cell no label of its own", () => {
@@ -467,14 +618,14 @@ describe("diffBoards", () => {
       expect(corner).not.toHaveProperty("columnLabel");
       const unnamed = pair([table(rows, undefined, "Table 3")], [table(edit(0, 0, "Item"), undefined, "Table 3")]);
       expect(unnamed.tableCellChanges[0]).not.toHaveProperty("tableName");
-      expect(unnamed.summaryText).toContain('- table 5:119 in "3 · Ideas", row 1, column 1: "Feature" → "Item"');
+      expect(unnamed.summaryText).toContain('- table 5:119 in "3 · Ideas", row 0, column 0: "Feature" → "Item"');
     });
 
     it("shows the start of a long cell that changed only in whitespace", () => {
       const words = Array.from({ length: 40 }, (_, index) => `word${index}`);
       const diff = pair([table(edit(2, 3, words.join("  ")))], [table(edit(2, 3, words.join(" ")))]);
       expect(diff.summaryText).toContain(
-        `column 4 "Status": text changed only in whitespace: "${words.join(" ").slice(0, 160)}…"`);
+        `column 3 "Status": text changed only in whitespace: "${words.join(" ").slice(0, 160)}…"`);
     });
 
     it("keeps a cell readable when the IDs form no complete rectangle", () => {
@@ -497,7 +648,7 @@ describe("diffBoards", () => {
         ["added", "T5:119;5:9;5:5", 1, 0], ["added", "T5:119;5:9;5:6", 1, 1],
         ["added", "T5:119;5:9;5:7", 1, 2], ["added", "T5:119;5:9;5:8", 1, 3],
       ]);
-      expect(diff.summaryText).toContain('- table "Feature priorities" 5:119 in "3 · Ideas", row 2 "Group orders", column 4 "Status": added "Idea"');
+      expect(diff.summaryText).toContain('- table "Feature priorities" 5:119 in "3 · Ideas", row 1 "Group orders", column 3 "Status": added "Idea"');
     });
 
     it("lists a new table once under added nodes", () => {
