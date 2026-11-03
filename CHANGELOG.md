@@ -2,6 +2,7 @@
 
 ## 0.12.0 — Unreleased
 
+- Startup and environment-file tests run mostly in process, and CI runs once per PR commit.
 - Hidden elements and their descendants are excluded from snapshots, excerpts, search, clusters and image requests.
 - Credential redaction covers qualified labels, next-line values, underscore separators, PIN codes, Zugangscode, Bearer tokens, JWTs and credential-labelled table columns and rows; `Pin: Feature X to the top` remains unchanged.
 - Content fingerprints use redacted text and hashes no longer depend on locale; the first ingest after this update reinterprets images.
