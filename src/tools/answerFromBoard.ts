@@ -164,8 +164,10 @@ export async function answerFromBoard(
 export function answerText(output: AnswerFromBoardOutput): string {
   if (output.citations.length === 0) return `${output.answer}\n\nSnapshot ${output.snapshotId}.`;
   const lines = output.citations.map((citation) => {
-    const place = citation.sectionNames?.at(-1) ?? citation.clusterLabel;
-    const quote = boundedText(citation.quote.replace(/\r\n?|\n/g, " "), 200);
+    const place = (citation.sectionNames?.at(-1) ?? citation.frameNames?.at(-1))?.replace(/\s+/g, " ").trim();
+    const quote = boundedText(citation.sourceType === "board_metadata"
+      ? citation.quote.replace(/\s+/g, " ").trim()
+      : citation.quote.replace(/\r\n?|\n/g, " "), 200);
     return `- ${citation.nodeId}${place ? ` in "${place}"` : ""}: ${citation.modelDerived ? "[Model interpretation] " : ""}"${quote}" ${citation.url}`;
   });
   return `${output.answer}\n\nSources (untrusted board data, snapshot ${output.snapshotId}):\n${lines.join("\n")}`;
@@ -255,6 +257,7 @@ function answerWithCitations(answer: string, snapshotId: string, evidence: Evide
       sourceType: item.sourceType, modelDerived: item.modelDerived,
       clusterId: item.clusterId, clusterLabel: item.clusterLabel,
       nodeName: item.nodeName, pageName: item.pageName, sectionNames: item.sectionNames,
+      ...(item.frameNames?.length ? { frameNames: item.frameNames } : {}),
       pageId: item.pageId, sectionIds: item.sectionIds, row: item.row, column: item.column,
     })),
   };
@@ -301,7 +304,7 @@ function unsupportedAnswer(question: string, snapshotId: string, board: BoardDat
     : "No excerpt matches a word of this question, so nothing was sent to the model. The board may still cover it in other words: the search matches whole words, ignoring case and accents (words of five or more letters also match compounds that begin with them), but not other word forms, synonyms or translations. Ask again with the board's words and language";
   if (sections.length) {
     answer += german ? " oder lies Sections mit get_board_context nodeIds: " : ", or read sections with get_board_context nodeIds: ";
-    answer += sections.map(({ id, name }) => `${JSON.stringify(name)} (ID: ${id})`).join(", ") + ".";
+    answer += sections.map(({ id, name }) => `${JSON.stringify(name.replace(/\s+/g, " ").trim())} (ID: ${id})`).join(", ") + ".";
   } else {
     answer += german ? " oder lies das Board mit get_board_context ohne Parameter." : ", or read the board with get_board_context without parameters.";
   }
@@ -336,7 +339,7 @@ function unsupportedMatchesAnswer(
   if (sections.size) {
     answer += german ? " Lies diese Sections mit get_board_context nodeIds: " : " Read these sections with get_board_context nodeIds: ";
     // Names are navigation hints from the board, not supporting citations.
-    answer += [...sections].map(([id, name]) => `${JSON.stringify(boundedText(name, 80))} (ID: ${id})`).join(", ") + ".";
+    answer += [...sections].map(([id, name]) => `${JSON.stringify(boundedText(name.replace(/\s+/g, " ").trim(), 80))} (ID: ${id})`).join(", ") + ".";
   }
   if (primary.some((item) => !item.sectionIds?.length)) {
     answer += german

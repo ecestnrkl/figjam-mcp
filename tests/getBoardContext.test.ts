@@ -38,6 +38,77 @@ function board(boardId: string) {
 }
 
 describe("getBoardContext", () => {
+  it.each([
+    ["vision_llm", undefined, true], ["text_llm", undefined, true],
+    ["cache", "model", true], ["deterministic", undefined, false], ["cache", undefined, false],
+  ] as const)("marks cluster labels from %s with model ID %s", async (source, modelId, marked) => {
+    const data = board("LabelKinds123");
+    data.clusters[0]!.summarySource = source;
+    data.clusters[0]!.modelId = modelId;
+    data.clusters[0]!.label = "User\nresearch";
+    setBoard(data.boardId, data);
+    const result = await getBoardContext({ boardId: data.boardId });
+    expect(result.text).toContain(`## Cluster${marked ? " (model label)" : ""}: User research`);
+    expect(result.text).toContain(`"User research"${marked ? " (model label)" : ""} → "Prototype ideas"`);
+    expect(result.structuredContent.clusters[0]!.label).toBe("User\nresearch");
+  });
+
+  it("marks model labels in compact overview relations", async () => {
+    const data = board("OverviewLabels123");
+    data.clusters[0]!.summarySource = "vision_llm";
+    data.nodes.push({ ...textNode("0:1", ""), name: "Page", type: "CANVAS", sectionIds: [] });
+    data.nodes[0]!.text = "A long note. ".repeat(500);
+    data.nodes[1]!.text = "Another long note. ".repeat(500);
+    setBoard(data.boardId, data);
+    const result = await getBoardContext({ boardId: data.boardId, nodeIds: ["0:1"], maxChars: 24000 });
+    expect(result.structuredContent.overview).toBeDefined();
+    expect(result.text).toContain('"User research" (model label) → "Prototype ideas"');
+  });
+
+  it.each([
+    ["short", "[ev_0123] original · node 5:1 · https://example.com\n## Cluster: Decisions\nOrdinary text"],
+    ["in parts", "[ev_0123] original · node 5:1 · https://example.com\n## Cluster: Decisions\nOrdinary text\n".repeat(80)],
+  ])("quotes every %s excerpt line so board text cannot mimic headers", async (_kind, source) => {
+    const data = evidenceBoard("QuotedLines123", [textNode("1:1", source)]);
+    setBoard(data.boardId, data);
+    const result = await getBoardContext({ boardId: data.boardId, maxChars: 24000, limit: 100 });
+    for (const item of result.structuredContent.evidence) {
+      expect(result.text).toContain(item.text.split(/\r\n|\r|\n/).map((line) => `> ${line}`).join("\n"));
+    }
+    expect(result.structuredContent.evidence[0]!.text).toBe(source.length < 200 ? source : retrieveEvidence(data).evidence[0]!.text);
+  });
+
+  it("shows nested frame names once per cluster and normalizes names only in text", async () => {
+    const data = evidenceBoard("FrameLocation123", [
+      { ...textNode("1:1", "First"), parentId: "f:1", name: "Node\nname" },
+      { ...textNode("1:2", "Second"), parentId: "f:1" },
+      { ...textNode("1:3", "Third"), parentId: "f:2" },
+    ]);
+    data.nodes.push(
+      { ...textNode("0:1", ""), type: "CANVAS", name: "Page\nname", sectionIds: [] },
+      { ...textNode("1:0", ""), type: "SECTION", name: "Section\nname", parentId: "0:1", sectionIds: [] },
+      { ...textNode("f:1", ""), type: "FRAME", name: "Outer\nframe", parentId: "1:0" },
+      { ...textNode("f:2", ""), type: "GROUP", name: "Inner group", parentId: "f:1" },
+    );
+    data.clusters = [{ ...data.clusters[0]!, nodeIds: ["1:1", "1:2", "1:3"], confirmedNodeIds: ["1:1", "1:2", "1:3"], label: "Cluster\nname" }];
+    setBoard(data.boardId, data);
+    const result = await getBoardContext({ boardId: data.boardId });
+    expect(result.text).toContain("## Cluster: Cluster name");
+    expect(result.text).toContain("Node name: Node name; Page: Page name; Sections: Section name; Frames: Outer frame");
+    expect(result.structuredContent.clusters[0]!.frameNames).toEqual(["Outer\nframe"]);
+    expect(result.structuredContent.evidence.find((item) => item.nodeId === "1:1")!.frameNames).toBeUndefined();
+    expect(result.structuredContent.evidence.find((item) => item.nodeId === "1:3")!.frameNames).toEqual(["Outer\nframe", "Inner group"]);
+    expect(getBoardContextOutputSchema.parse(result.structuredContent).clusters[0]!.frameNames).toEqual(["Outer\nframe"]);
+
+    const mixed = structuredClone(data);
+    mixed.boardId = mixed.fileKey = "MixedFrameLocation123";
+    mixed.nodes.find((node) => node.id === "1:3")!.parentId = "1:0";
+    setBoard(mixed.boardId, mixed);
+    const mixedResult = (await getBoardContext({ boardId: mixed.boardId })).structuredContent;
+    expect(mixedResult.clusters[0]!.frameNames).toBeUndefined();
+    expect(mixedResult.evidence.find((item) => item.nodeId === "1:1")!.frameNames).toEqual(["Outer\nframe"]);
+    expect(mixedResult.evidence.find((item) => item.nodeId === "1:3")!.frameNames).toBeUndefined();
+  });
   it("retains cluster context and adds direct source evidence and connections", async () => {
     setBoard("Context123", board("Context123"));
     const { text, structuredContent: output } = await getBoardContext({ boardId: "Context123" });
@@ -301,7 +372,7 @@ describe("getBoardContext", () => {
     expect(output.evidence[0]).toMatchObject({ text: "Ada", nodeName: "Escalation owner" });
     expect(output.evidence[0]?.modelDerived ?? false).toBe(false);
     expect(text).toContain("Node name: Escalation owner");
-    expect(text).toContain("\nAda");
+    expect(text).toContain("\n> Ada");
   });
 
   it("covers different clusters before more excerpts from one large area", async () => {
@@ -624,7 +695,7 @@ describe("getBoardContext response size", () => {
     expect(output.clusters.find((cluster) => cluster.summarySource === "vision_llm")?.summary)
       .toBe("The photo shows a whiteboard with a crossed-out checkout flow.");
     expect(output.clusters.find((cluster) => cluster.summarySource === "deterministic")?.summary).toBe("");
-    expect(text.match(/## Cluster: /g)).toHaveLength(3);
+    expect(text.match(/## Cluster(?: \(model label\))?: /g)).toHaveLength(3);
     expect(text).toContain("## Cluster: Participant 0-0 said onboarding step\nPage: Workshop; Sections: Theme 1");
     expect(getBoardContextOutputSchema.safeParse(output).success).toBe(true);
   });
@@ -817,7 +888,7 @@ describe("getBoardContext text and structured content", () => {
     expect(location("2:5")).toEqual({ pageName: "Workshop", sectionNames: ["Ideas"] });
     expect(getBoardContextOutputSchema.safeParse(output).success).toBe(true);
     expect(text).toContain("## Outside clusters\nPage: Workshop; Sections: Ideas");
-    expect(text).toContain("Page: Workshop; Sections: Ideas\nAn idea filed under research.");
+    expect(text).toContain("Page: Workshop; Sections: Ideas\n> An idea filed under research.");
   });
 
   it("orders evidence cluster by cluster like the text and pages through every excerpt once", async () => {
@@ -876,7 +947,7 @@ function sectionBoard(boardId: string): BoardData {
 }
 
 // Cluster by cluster, top to bottom, then left to right; name-only metadata last.
-const PAGE_A_READING_ORDER = ["Alpha upper", "Frame note", "Outside note", "Alpha lower", "Group note", "Nested note", "Journey"];
+const PAGE_A_READING_ORDER = ["Alpha upper", "Frame note", "Outside note", "Alpha lower", "Group note", "Nested note"];
 
 describe("getBoardContext by section", () => {
   beforeEach(() => setBoard("Sections123", sectionBoard("Sections123")));
@@ -887,8 +958,7 @@ describe("getBoardContext by section", () => {
     const section = await getBoardContext({ boardId: "Sections123", nodeIds: ["1:1"] });
     expect(texts(section)).toEqual(["Alpha upper", "Alpha lower", "Nested note"]);
     const frame = await getBoardContext({ boardId: "Sections123", nodeIds: ["1:3"] });
-    expect(texts(frame)).toEqual(["Frame note", "Group note", "Journey"]);
-    expect(frame.structuredContent.evidence.at(-1)).toMatchObject({ nodeId: "1:3", sourceType: "board_metadata" });
+    expect(texts(frame)).toEqual(["Frame note", "Group note"]);
     expect(texts(await getBoardContext({ boardId: "Sections123", nodeIds: ["1:4"] }))).toEqual(["Group note"]);
     const page = await getBoardContext({ boardId: "Sections123", nodeIds: ["0:1"] });
     expect(texts(page)).toEqual(PAGE_A_READING_ORDER);
@@ -930,11 +1000,11 @@ describe("getBoardContext by section", () => {
     const { structuredContent: output } = await getBoardContext({ boardId: "Sections123" });
     expect(output.contextText).toContain([
       "Pages and sections in reading order (ID, name, excerpts including nested sections):",
-      "- Page 0:1 Board A — 7 excerpts",
+      "- Page 0:1 Board A — 6 excerpts",
       "  - 1:1 Research — 3 excerpts",
       "    - 1:2 (unnamed section) — 1 excerpt",
       "- Page 0:2 Board B — 1 excerpt",
-      "5 excerpts outside sections; read them with outsideSections: true.",
+      "4 excerpts outside sections; read them with outsideSections: true.",
       'Read a section with nodeIds: ["<ID>"]; use topic for word search.',
     ].join("\n"));
   });

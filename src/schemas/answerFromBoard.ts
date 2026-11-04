@@ -25,6 +25,7 @@ export const answerFromBoardOutputShape = {
     modelDerived: z.boolean(), clusterId: z.string().optional(), clusterLabel: z.string().optional(),
     nodeName: z.string().max(160).optional(), pageName: z.string().max(160).optional(),
     sectionNames: z.array(z.string().max(80)).max(16).optional(),
+    frameNames: z.array(z.string().max(80)).max(16).optional().describe("Names of enclosing frames and groups, outermost first"),
     pageId: z.string().optional(), sectionIds: z.array(z.string()).optional(),
     row: z.number().optional(), column: z.number().optional(),
   })),

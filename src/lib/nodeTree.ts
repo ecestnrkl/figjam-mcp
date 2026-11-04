@@ -27,7 +27,7 @@ export const MAX_BOARD_NODES = 100_000;
 const GENERIC_NODE_NAMES = new Set([
   "arrow", "boolean", "circle", "code block", "component", "connector", "connector line", "ellipse", "embed",
   "exclude", "frame", "group", "image", "instance", "intersect", "line", "page", "polygon", "rectangle",
-  "section", "shape", "slice", "stamp", "star", "sticky", "subtract", "table", "text", "union", "vector",
+  "section", "shape", "shape with text", "link preview", "slice", "stamp", "star", "sticky", "subtract", "table", "text", "union", "vector",
   "washi tape",
   // FigJam shape defaults
   "arrow left", "arrow right", "chevron", "cross", "cylinder", "diamond", "document multiple",

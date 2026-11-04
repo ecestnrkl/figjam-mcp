@@ -213,7 +213,7 @@ Problems: [troubleshooting](https://github.com/ecestnrkl/figjam-mcp/blob/main/do
    every call. `get_board_context` and `answer_from_board` read the saved
    snapshot without a new request.
 2. **Normalize.** Nodes become text, table cells, images and connectors, with
-   their pages and sections. Tables are read row by row: row and column come
+   their pages, sections and named enclosing frames and groups. Tables are read row by row: row and column come
    from the cell IDs, and each row becomes one excerpt.
 3. **Cluster.** Nearby nodes are grouped by rotation-aware distance. Arrows
    between groups become directed relations. Clusters without a model label
@@ -247,12 +247,15 @@ Problems: [troubleshooting](https://github.com/ecestnrkl/figjam-mcp/blob/main/do
    overview when the first full page would leave unread excerpts. Text is shortened
    to a shared 50–120-character prefix with `…`; the host writes the summary.
    Topic searches, `outsideSections`, single leaf/table/cell IDs and small
-   containers stay full.
+   containers stay full. Full-view excerpt text is quoted with `> ` on every
+   line, and model-generated cluster labels are marked as model labels.
    Text `content` is the readable page; `structuredContent` holds each excerpt
    once, in `overview.text` (with empty `evidence` and `clusters`) or in `evidence`
-   for the full view. In full excerpts, only `snapshotId` is inherited from the
-   response: absent `chunkIndex` means 0 and absent `truncated` or `modelDerived`
-   means false, with no inheritance of these flags from a cluster.
+   for the full view. Full excerpts inherit `snapshotId` from the response;
+   absent `chunkIndex` means 0 and absent `truncated` or `modelDerived` means
+   false, with no inheritance of these flags from a cluster. Named frames and
+   groups appear in `frameNames` on clusters and on excerpts whose location
+   differs; their names also participate in search.
 
 ## Models and cost
 

@@ -381,8 +381,8 @@ export async function getBoardContext(input: GetBoardContextInput): Promise<Boar
       };
       const extra = [
         ...(connections.length ? [`## Source connections\n${connections.map(formatEvidenceConnection).join("\n")}`] : []),
-        ...(relations.length ? [`## Connections between clusters\n${relations.map((relation) =>
-          `${relation.from} → ${relation.to}${relation.label ? ` — ${relation.label}` : ""}`).join("\n")}`] : []),
+        ...(relations.length ? [`## Connections between clusters\n${relations.map((relation, index) =>
+          `${relationName(relation.from, clustersById.get(allRelations[index]!.fromClusterId))} → ${relationName(relation.to, clustersById.get(allRelations[index]!.toClusterId))}${relation.label ? ` — ${whitespace(relation.label)}` : ""}`).join("\n")}`] : []),
       ];
       return {
         text: [contextText, overviewText, ...extra].filter(Boolean).join("\n\n"),
@@ -591,19 +591,20 @@ export async function getBoardContext(input: GetBoardContextInput): Promise<Boar
   function buildResult({ evidence, consumed }: Page, connectionLimit: number, relationLimit: number): BoardContextResult {
     const groups = groupByCluster(evidence);
     const labels = new Map<string, string>();
-    const clusterLocations = new Map<string, string>();
+    const clusterLocations = new Map<string, Location>();
     const clusters = groups.flatMap(([clusterId, items]) => {
       const cluster = clustersById.get(clusterId);
       if (!cluster) return [];
       const label = boundedText(cluster.label, 160);
-      const { pageName, sectionNames } = commonLocation(items);
+      const { pageName, sectionNames, frameNames } = commonLocation(items);
       labels.set(clusterId, label);
-      clusterLocations.set(clusterId, locationKey({ pageName, sectionNames }));
+      clusterLocations.set(clusterId, { pageName, sectionNames, frameNames });
       return [{
         label,
         phase: cluster.phase ? boundedText(cluster.phase, 80) : undefined,
         ...(pageName ? { pageName } : {}),
         ...(sectionNames?.length ? { sectionNames } : {}),
+        ...(frameNames?.length ? { frameNames } : {}),
         summary: view.summaries ? compactSummary(cluster) : "",
         summarySource: cluster.summarySource ?? "unknown" as const,
         modelDerived: cluster.summarySource !== "deterministic" || Boolean(cluster.modelId),
@@ -672,8 +673,8 @@ export async function getBoardContext(input: GetBoardContextInput): Promise<Boar
       parts.push(`## Source connections (including arrows within a cluster; «text» names an end not on this page)\n${connections.map((connection) => `- ${formatEvidenceConnection(connection)}`).join("\n")}`);
     }
     if (relations.length > 0) {
-      parts.push(`## Connections between clusters\n${relations.map((relation) =>
-        `- "${relation.from}" → "${relation.to}"${relation.label ? ` — "${relation.label}"` : ""}`).join("\n")}`);
+      parts.push(`## Connections between clusters\n${relations.map((relation, index) =>
+        `- ${relationName(relation.from, clustersById.get(allRelations[index]!.fromClusterId))} → ${relationName(relation.to, clustersById.get(allRelations[index]!.toClusterId))}${relation.label ? ` — "${whitespace(relation.label)}"` : ""}`).join("\n")}`);
     }
     // Under a small budget the pointer yields to source text together with the page position.
     const contextText = [...orientation, ...(evidence.length > 0 && view.position ? [EVIDENCE_POINTER] : [])].join("\n\n");
@@ -725,7 +726,7 @@ export async function getBoardContext(input: GetBoardContextInput): Promise<Boar
       const cluster = clustersById.get(clusterId);
       const locations = new Set(items.map(location));
       const sharedLocation = locations.size === 1 ? [...locations][0]! : "";
-      const heading = cluster ? `## Cluster: ${boundedText(cluster.label, 160)}` : "## Outside clusters";
+      const heading = cluster ? `## Cluster${isModelLabel(cluster) ? " (model label)" : ""}: ${boundedText(whitespace(cluster.label), 160)}` : "## Outside clusters";
       const blocks = [sharedLocation ? `${heading}\n${sharedLocation}` : heading];
       for (let start = 0; start < items.length;) {
         const item = items[start]!;
@@ -750,7 +751,7 @@ export async function getBoardContext(input: GetBoardContextInput): Promise<Boar
   function renderTable(rows: Evidence[], locationShown: boolean, rowsOnPage: Set<number>): string {
     const table = rows[0]!;
     const metadata = [
-      table.nodeName && !nameRepeatsText(table) ? `Node name: ${table.nodeName}` : undefined,
+      table.nodeName && !nameRepeatsText(table) ? `Node name: ${whitespace(table.nodeName)}` : undefined,
       locationShown ? undefined : location(table) || undefined,
     ].filter(Boolean).join("; ");
     const allRows = rowsOnPage.size < tableRowCount(table.nodeId) && !requestNamesTable(table.nodeId)
@@ -807,7 +808,7 @@ export async function getBoardContext(input: GetBoardContextInput): Promise<Boar
     const provenance = item.modelDerived ? "MODEL INTERPRETATION — verify against original" :
       item.sourceType === "board_metadata" ? "original metadata" : "original";
     const metadata = [
-      item.nodeName && !nameRepeatsText(item) ? `Node name: ${item.nodeName}` : undefined,
+      item.nodeName && !nameRepeatsText(item) ? `Node name: ${whitespace(item.nodeName)}` : undefined,
       locationShown ? undefined : location(item) || undefined,
       item.sourceType === "table_cell" && item.renderNodeId ? `Table node: ${item.renderNodeId}` : undefined,
       item.row !== undefined ? `Row index: ${item.row}` : undefined,
@@ -815,7 +816,7 @@ export async function getBoardContext(input: GetBoardContextInput): Promise<Boar
     ].filter(Boolean).join("; ");
     const lines = [`[${item.evidenceId}] ${provenance} · node ${item.nodeId} · ${item.url}`];
     if (metadata) lines.push(metadata);
-    lines.push(item.text);
+    lines.push(item.text.split(/\r\n|\r|\n/).map((line) => `> ${line}`).join("\n"));
     if (item.truncated) lines.push(partHint(item));
     return lines.join("\n");
   }
@@ -858,12 +859,12 @@ export async function getBoardContext(input: GetBoardContextInput): Promise<Boar
    * Optional fields that repeat information elsewhere in the same response are left out.
    * The location stays only outside a listed cluster or where it differs from the cluster's.
    */
-  function compactEvidence(item: Evidence, clusterLocation: string | undefined): ContextEvidence {
+  function compactEvidence(item: Evidence, clusterLocation: Location | undefined): ContextEvidence {
     const {
-      nodeName, pageId: _pageId, sectionIds: _sectionIds, clusterId: _clusterId, clusterLabel: _clusterLabel,
-      renderNodeId, pageName, sectionNames, snapshotId: _snapshotId, chunkIndex, truncated, modelDerived, ...rest
+      nodeName, pageId: _pageId, sectionIds: _sectionIds, clusterId: _clusterId, clusterLabel: _clusterLabel, clusterLabelModel: _clusterLabelModel,
+      renderNodeId, pageName, sectionNames, frameNames, snapshotId: _snapshotId, chunkIndex, truncated, modelDerived, ...rest
     } = item;
-    const ownLocation = clusterLocation === undefined || locationKey(item) !== clusterLocation;
+    const ownLocation = clusterLocation === undefined || locationKey(item) !== locationKey(clusterLocation);
     return {
       ...rest,
       ...(chunkIndex !== 0 ? { chunkIndex } : {}),
@@ -873,6 +874,7 @@ export async function getBoardContext(input: GetBoardContextInput): Promise<Boar
       ...(ownLocation && pageName ? { pageName } : {}),
       // An empty list marks an excerpt outside sections in a cluster that has some.
       ...(ownLocation && (sectionNames?.length || clusterLocation !== undefined) ? { sectionNames: sectionNames ?? [] } : {}),
+      ...(frameNames?.length && JSON.stringify(frameNames) !== JSON.stringify(clusterLocation?.frameNames ?? []) ? { frameNames } : {}),
       ...((item.sourceType === "table_cell" || item.sourceType === "table_row") && renderNodeId ? { renderNodeId } : {}),
     };
   }
@@ -890,10 +892,10 @@ function groupByCluster(evidence: Evidence[]): Array<[string, Evidence[]]> {
   return [...groups];
 }
 
-type Location = Pick<Evidence, "pageName" | "sectionNames">;
+type Location = Pick<Evidence, "pageName" | "sectionNames" | "frameNames">;
 
-function locationKey({ pageName, sectionNames }: Location): string {
-  return JSON.stringify([pageName ?? "", sectionNames ?? []]);
+function locationKey({ pageName, sectionNames, frameNames }: Location): string {
+  return JSON.stringify([pageName ?? "", sectionNames ?? [], frameNames ?? []]);
 }
 
 /** The location most excerpts of a cluster share on this page; ties go to the first. */
@@ -901,14 +903,27 @@ function commonLocation(items: Evidence[]): Location {
   const counts = new Map<string, number>();
   for (const item of items) counts.set(locationKey(item), (counts.get(locationKey(item)) ?? 0) + 1);
   const common = items.reduce((best, item) => counts.get(locationKey(item))! > counts.get(locationKey(best))! ? item : best);
-  return { pageName: common.pageName, sectionNames: common.sectionNames };
+  // An empty frameNames field cannot override a cluster location, because the
+  // public field is present only when nonempty. In that case keep frame paths
+  // on the individual excerpts instead of implying one for an outside excerpt.
+  const frameNames = items.some((item) => !item.frameNames?.length) ? undefined : common.frameNames;
+  return { pageName: common.pageName, sectionNames: common.sectionNames, frameNames };
 }
 
 function location(item: Evidence): string {
   return [
-    item.pageName ? `Page: ${item.pageName}` : undefined,
-    item.sectionNames?.length ? `Sections: ${item.sectionNames.join(" / ")}` : undefined,
+    item.pageName ? `Page: ${whitespace(item.pageName)}` : undefined,
+    item.sectionNames?.length ? `Sections: ${item.sectionNames.map(whitespace).join(" / ")}` : undefined,
+    item.frameNames?.length ? `Frames: ${item.frameNames.map(whitespace).join(" / ")}` : undefined,
   ].filter(Boolean).join("; ");
+}
+
+function isModelLabel(cluster: RefinedCluster | undefined): boolean {
+  return Boolean(cluster && (cluster.summarySource === "vision_llm" || cluster.summarySource === "text_llm" || cluster.modelId));
+}
+
+function relationName(label: string, cluster: RefinedCluster | undefined): string {
+  return `"${whitespace(label)}"${isModelLabel(cluster) ? " (model label)" : ""}`;
 }
 
 /** Deterministic summaries only count and repeat text that the excerpts already carry. */

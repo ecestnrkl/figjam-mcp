@@ -7,6 +7,88 @@ import type { NormalizedNode, TableCell } from "../src/types.js";
 const LOOSE_CELL: TableCell = { id: "cell:loose", text: "Loose note" };
 
 describe("source evidence", () => {
+  it.each(["Shape with text", "shape with text 2", "Link preview", "LINK PREVIEW 3"])("omits default node name %s", (name) => {
+    const board = evidenceBoard("DefaultName", [{ ...textNode("n", ""), type: "SHAPE_WITH_TEXT", name }]);
+    board.clusters = [];
+    expect(retrieveEvidence(board).evidence).toEqual([]);
+  });
+
+  it.each([
+    ["sketch.PNG", false], ["x.jpg", false], ["x.jpeg", false], ["x.gif", false], ["x.webp", false],
+    ["x.heic", false], ["x.heif", false], ["x.svg", false], ["x.bmp", false], ["x.tif", false],
+    ["x.tiff", false], ["x.pdf", false], ["Screenshot 2026", false], ["Screen Shot 2026", false],
+    ["Bildschirmfoto 2026", false], ["Capture d’écran 2026", false], ["IMG_123", false], ["IMG-123", false],
+    ["IMG 123", false], ["image 123", false], ["Bild 123", false], ["Paper prototype v1", true],
+    ["image concept", true], ["IMG_overview", true],
+  ])("filters image name %s", (name, retained) => {
+    const board = evidenceBoard("ImageNames", [{ ...textNode("image", ""), type: "RECTANGLE", name, imageRef: "image" }]);
+    board.clusters = [];
+    expect(retrieveEvidence(board).evidence.map((item) => item.text)).toEqual(retained ? [name] : []);
+  });
+
+  it.each(["FRAME", "GROUP"])("uses named %s as provenance when it contains an excerpt and retains names with only textless content", (type) => {
+    const nodes = [
+      { ...textNode("full", ""), name: "Full container", type },
+      { ...textNode("empty", ""), name: "Textless container", type },
+      { ...textNode("note", "A decision"), parentId: "full" },
+      { ...textNode("shape", ""), name: "Rectangle", type: "RECTANGLE", parentId: "empty" },
+    ];
+    const board = evidenceBoard("Containers", nodes);
+    board.clusters = [];
+    const result = retrieveEvidence(board).evidence;
+    expect(result.map((item) => item.nodeId)).toEqual(["note", "empty"]);
+    expect(result.find((item) => item.nodeId === "note")?.frameNames).toEqual(["Full container"]);
+    expect(result.find((item) => item.nodeId === "empty")?.frameNames).toBeUndefined();
+  });
+
+  it("indexes nested frame names in the section field with bounded outer-first provenance", () => {
+    const nodes = [
+      { ...textNode("section", ""), name: "Planning", type: "SECTION", sectionIds: ["section"] },
+      { ...textNode("outer", ""), name: "Outer frame", type: "FRAME", parentId: "section", sectionIds: ["section"] },
+      { ...textNode("inner", ""), name: "Inner group", type: "GROUP", parentId: "outer", sectionIds: ["section"] },
+      { ...textNode("note", "The final decision"), parentId: "inner", sectionIds: ["section"] },
+    ];
+    const board = evidenceBoard("Nested", nodes);
+    board.clusters = [];
+    for (const query of ["Outer frame", "Inner group"]) {
+      expect(retrieveEvidence(board, { query }).evidence).toMatchObject([{ nodeId: "note", sectionNames: ["Planning"], frameNames: ["Outer frame", "Inner group"] }]);
+    }
+  });
+
+  it("bounds frame provenance while retaining the innermost names", () => {
+    const frames = Array.from({ length: 20 }, (_, i) => ({ ...textNode(`f${i}`, ""), name: `FrameName${i}`.repeat(20), type: "FRAME", parentId: i ? `f${i - 1}` : undefined }));
+    const board = evidenceBoard("BoundedFrames", [...frames, { ...textNode("note", "Fact"), parentId: "f19" }]);
+    board.clusters = [];
+    const source = retrieveEvidence(board, { nodeIds: ["note"] }).evidence[0]!;
+    expect(source.frameNames).toHaveLength(16);
+    expect(source.frameNames![0]).toContain("FrameName4");
+    expect(source.frameNames!.at(-1)).toContain("FrameName19");
+    expect(source.frameNames!.every((name) => name.length <= 80)).toBe(true);
+  });
+
+  it("counts metadata and frame provenance on a synthetic mixed board", () => {
+    const board = evidenceBoard("SyntheticCounts", [
+      { ...textNode("shape", ""), type: "SHAPE_WITH_TEXT", name: "Shape with text" },
+      { ...textNode("link", ""), type: "EMBED", name: "Link preview" },
+      { ...textNode("file", ""), type: "RECTANGLE", name: "sketch.png", imageRef: "one" },
+      { ...textNode("image", ""), type: "RECTANGLE", name: "Paper prototype v1", imageRef: "two" },
+      { ...textNode("frame-full", ""), type: "FRAME", name: "Full frame" },
+      { ...textNode("frame-empty", ""), type: "FRAME", name: "Textless frame" },
+      { ...textNode("group-full", ""), type: "GROUP", name: "Full group" },
+      { ...textNode("group-empty", ""), type: "GROUP", name: "Textless group" },
+      { ...textNode("note-frame", "Decision one"), parentId: "frame-full" },
+      { ...textNode("note-group", "Decision two"), parentId: "group-full" },
+      { ...textNode("shape-frame", ""), name: "Rectangle", type: "RECTANGLE", parentId: "frame-empty" },
+      { ...textNode("shape-group", ""), name: "Rectangle", type: "RECTANGLE", parentId: "group-empty" },
+    ]);
+    board.clusters = [];
+    const evidence = retrieveEvidence(board).evidence;
+    expect(evidence.filter((item) => item.sourceType === "board_metadata").map((item) => item.nodeId).sort())
+      .toEqual(["frame-empty", "group-empty", "image"]);
+    expect(evidence.filter((item) => item.frameNames?.length).map((item) => item.nodeId).sort())
+      .toEqual(["note-frame", "note-group"]);
+  });
+
   it.each(["both", "either"] as const)("omits unlabeled self-loops from connections and counts with %s ends", (ends) => {
     const board = evidenceBoard("SelfLoops123", [textNode("1:1", "Note"), textNode("1:2", "Other note")]);
     board.connectorEdges = [

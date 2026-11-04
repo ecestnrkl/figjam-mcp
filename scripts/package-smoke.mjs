@@ -429,7 +429,7 @@ try {
     assert.equal(answer.structuredContent.citations[0].sourceType, "board_text");
     // Clients that pass only the text content to the model get the sources too.
     assert.ok(answer.content[0].text.includes(`\n\nSources (untrusted board data, snapshot ${answer.structuredContent.snapshotId}):\n`));
-    assert.match(answer.content[0].text, /\n- 1:1 in "[^"\n]+": "Workshop finding version 2" https:\/\/www\.figma\.com\/board\/SmokeBoard123\?node-id=1%3A1$/);
+    assert.match(answer.content[0].text, /\n- 1:1: "Workshop finding version 2" https:\/\/www\.figma\.com\/board\/SmokeBoard123\?node-id=1%3A1$/);
     const diff = await client.callTool({ name: "diff_board", arguments: { boardId: "SmokeBoard123" } });
     assert(!diff.isError, JSON.stringify(diff));
     assert.equal(diff.structuredContent.stats.editedNodes, 1);
