@@ -165,8 +165,7 @@ export function flattenNodeTree(rawFigmaJson: unknown): NormalizedNode[] {
       pageId: raw.type === "CANVAS" || raw.type === "PAGE" ? raw.id : parent?.pageId,
       sectionIds, depth, children: [],
       tableOwner: parent?.raw.type === "TABLE" ? item.parent : parent?.tableOwner,
-      keep: !STRUCTURAL_TYPES.has(raw.type) || Boolean(raw.characters?.trim()) || Boolean(extractImageRef(raw)) ||
-        ((raw.type === "FRAME" || raw.type === "GROUP") && Boolean(raw.name.trim()) && !isGenericNodeName(raw.name)),
+      keep: !STRUCTURAL_TYPES.has(raw.type) || Boolean(raw.characters?.trim()) || Boolean(extractImageRef(raw)),
     };
     entries.push(entry);
     parent?.children.push(index);

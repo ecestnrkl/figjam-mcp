@@ -101,18 +101,12 @@ const sampleFigmaFile = {
 };
 
 describe("flattenNodeTree", () => {
-  it.each(["FRAME", "GROUP"])("retains an empty named %s so its name can be read", (type) => {
-    const raw = { document: { id: "doc", name: "Document", type: "DOCUMENT", children: [
-      { id: "named", name: "Design area", type }, { id: "default", name: type === "FRAME" ? "Frame" : "Group", type },
-    ] } };
-    expect(flattenNodeTree(raw).map((node) => node.id)).toEqual(["named"]);
-  });
   it("flattens a nested Figma document tree into NormalizedNode[]", () => {
     const nodes = flattenNodeTree(sampleFigmaFile);
     // canvas + sticky + group + nested sticky + rotated sticky + image shape
-    // + table (kept whole, its cells dropped), named empty frame and group,
-    // and the group's enclosing section.
-    expect(nodes).toHaveLength(10);
+    // + table (kept whole, its cells dropped); the empty frame/section/group
+    // are filtered out.
+    expect(nodes).toHaveLength(7);
 
     const sticky = nodes.find((n) => n.id === "1:2");
     expect(sticky).toMatchObject({
@@ -149,12 +143,12 @@ describe("flattenNodeTree", () => {
     expect(nodes.find((n) => n.id === "1:2")?.imageRef).toBeUndefined();
   });
 
-  it("retains named empty containers and their enclosing section", () => {
+  it("drops empty structural nodes (frames/groups/sections without content)", () => {
     const nodes = flattenNodeTree(sampleFigmaFile);
     const ids = nodes.map((n) => n.id);
-    expect(ids).toContain("1:7");
-    expect(ids).toContain("1:8");
-    expect(ids).toContain("1:9");
+    expect(ids).not.toContain("1:7"); // empty frame
+    expect(ids).not.toContain("1:8"); // section with only an empty group
+    expect(ids).not.toContain("1:9"); // the empty group itself
     expect(ids).toContain("1:3"); // group WITH contentful child stays
   });
 

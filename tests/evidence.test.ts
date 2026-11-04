@@ -26,11 +26,12 @@ describe("source evidence", () => {
     expect(retrieveEvidence(board).evidence.map((item) => item.text)).toEqual(retained ? [name] : []);
   });
 
-  it.each(["FRAME", "GROUP"])("uses named %s as provenance when it contains an excerpt and retains empty names", (type) => {
+  it.each(["FRAME", "GROUP"])("uses named %s as provenance when it contains an excerpt and retains names with only textless content", (type) => {
     const nodes = [
       { ...textNode("full", ""), name: "Full container", type },
-      { ...textNode("empty", ""), name: "Empty container", type },
+      { ...textNode("empty", ""), name: "Textless container", type },
       { ...textNode("note", "A decision"), parentId: "full" },
+      { ...textNode("shape", ""), name: "Rectangle", type: "RECTANGLE", parentId: "empty" },
     ];
     const board = evidenceBoard("Containers", nodes);
     board.clusters = [];
@@ -72,11 +73,13 @@ describe("source evidence", () => {
       { ...textNode("file", ""), type: "RECTANGLE", name: "sketch.png", imageRef: "one" },
       { ...textNode("image", ""), type: "RECTANGLE", name: "Paper prototype v1", imageRef: "two" },
       { ...textNode("frame-full", ""), type: "FRAME", name: "Full frame" },
-      { ...textNode("frame-empty", ""), type: "FRAME", name: "Empty frame" },
+      { ...textNode("frame-empty", ""), type: "FRAME", name: "Textless frame" },
       { ...textNode("group-full", ""), type: "GROUP", name: "Full group" },
-      { ...textNode("group-empty", ""), type: "GROUP", name: "Empty group" },
+      { ...textNode("group-empty", ""), type: "GROUP", name: "Textless group" },
       { ...textNode("note-frame", "Decision one"), parentId: "frame-full" },
       { ...textNode("note-group", "Decision two"), parentId: "group-full" },
+      { ...textNode("shape-frame", ""), name: "Rectangle", type: "RECTANGLE", parentId: "frame-empty" },
+      { ...textNode("shape-group", ""), name: "Rectangle", type: "RECTANGLE", parentId: "group-empty" },
     ]);
     board.clusters = [];
     const evidence = retrieveEvidence(board).evidence;
