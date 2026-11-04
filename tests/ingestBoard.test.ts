@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { BoardData, Cluster, NormalizedNode } from "../src/types.js";
 import { FigmaApiError, FigmaDownloadBudgetError, FigmaTimeoutError } from "../src/lib/figmaApi.js";
-import { LLMConfigurationError, LlmInvalidJsonError, LlmRequestError, LlmTimeoutError } from "../src/lib/llmClient.js";
+import { LLMConfigurationError, LlmBaseUrlError, LlmInvalidJsonError, LlmRequestError, LlmTimeoutError } from "../src/lib/llmClient.js";
 import { cornerColours, gifHeader, jpegHeader, markedJpeg, pngHeader, syntheticJpeg, syntheticPng, withOrientation } from "./fixtures/images.js";
 
 const {
@@ -458,6 +458,8 @@ describe("ingestBoard", () => {
     ["render", new FigmaApiError("private provider body", 429), "rate_limit"],
     ["model", new LlmRequestError("private provider body", 429), "rate_limit"],
     ["model", new LlmInvalidJsonError("private provider body", "private reply text"), "invalid_reply"],
+    ["model", new LlmBaseUrlError("private provider body"), "base_url"],
+    ["model", new LlmBaseUrlError("private provider body", 404), "base_url"],
     ["download", new FigmaDownloadBudgetError(), "download_budget"],
   ] as const)("classifies %s failure without exposing provider text (case %#)", async (stage, error, reason) => {
     fetchFileTreeMock.mockResolvedValueOnce(drawingTree());
@@ -490,6 +492,39 @@ describe("ingestBoard", () => {
     expect(output.summary).toContain("incomplete for 8 clusters: the model provider's rate limit was reached.");
     expect(output.qualityReport?.nextRetryAt).toBeGreaterThanOrEqual(before + 90_000);
     expect(output.summary).toContain("Retry after");
+  });
+
+  it("stops new image requests after LLM_BASE_URL fails and sends the user to LLM_BASE_URL and diagnose_llm_config", async () => {
+    const tree = rawTree();
+    tree.document.children[0]!.children = Array.from({ length: 8 }, (_, index) => ({
+      id: `image:${index}`, name: "Image", type: "SHAPE_WITH_TEXT",
+      absoluteBoundingBox: { x: index * 1000, y: 0, width: 100, height: 100 },
+      fills: [{ type: "IMAGE", imageRef: `image-${index}` }],
+    }));
+    fetchFileTreeMock.mockResolvedValueOnce(tree);
+    refineClusterWithVisionMock.mockRejectedValue(new LlmBaseUrlError("private provider body"));
+    const output = await ingestBoard({ figmaFileUrl: "https://www.figma.com/board/AbC123/Test",
+      docStructureHint: "freeform", ingestMode: "balanced" });
+    expect(fetchImageRefsMock).toHaveBeenCalledTimes(1);
+    expect(downloadFetchMock).toHaveBeenCalledTimes(3);
+    expect(refineClusterWithVisionMock).toHaveBeenCalledTimes(3);
+    expect(output.qualityReport?.fallbackReasons).toEqual({ base_url: 8 });
+    expect(output.summary).toContain("incomplete for 8 clusters: LLM_BASE_URL does not lead to a reachable OpenAI-compatible API.");
+    expect(output.summary).toContain("Check LLM_BASE_URL, then run diagnose_llm_config.");
+    expect(output.summary).not.toContain("private provider body");
+  });
+
+  it("names the LLM_BASE_URL problem as the next step of a config failure", async () => {
+    vi.stubEnv("LLM_BASE_URL", "api.example.com/v1");
+    fetchFileTreeMock.mockResolvedValueOnce(drawingTree());
+    const output = await ingestBoard({ figmaFileUrl: "https://www.figma.com/board/AbC123/Test",
+      docStructureHint: "freeform", ingestMode: "balanced" });
+    expect(refineClusterWithVisionMock).not.toHaveBeenCalled();
+    expect(output.qualityReport?.fallbackReasons).toEqual({ config: 1 });
+    expect(output.summary).toContain("LLM_BASE_URL must be an absolute http or https URL of the API root, without /chat/completions, for example https://openrouter.ai/api/v1.");
+    expect(output.summary).toContain("diagnose_llm_config can test the configured model provider.");
+    expect(output.summary).not.toContain("api.example.com");
+    expect(output.summary).not.toContain("Check the model settings.");
   });
 
   function imageClusterTree(count: number) {

@@ -341,7 +341,7 @@ describe("chatJson", () => {
     },
   );
 
-  it.each([400, 401, 403, 422, 429, 503])("keeps the existing generic message for HTTP %s", async status => {
+  it.each([400, 422, 503])("keeps the existing generic message for HTTP %s", async status => {
     vi.stubEnv("LLM_RATE_LIMIT_RETRIES", "0");
     createMock.mockRejectedValue(providerError(status, "Synthetic failure"));
     await expect(chatJson("only-model", MESSAGES, SCHEMA_OPTIONS)).rejects.toMatchObject({ status,

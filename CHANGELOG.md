@@ -27,6 +27,7 @@
 - `FIGJAM_MCP_CACHE_DIR` and `FIGJAM_MCP_ENV_FILE` expand a leading `~` or `~/` to the home directory.
 - Removed the unused `LLM_MAX_OUTPUT_TOKENS` setting.
 - `answer_from_board` and the other model requests end at their request deadline even when the provider stops sending an error response body.
+- Model-provider errors say what to do and point to `diagnose_llm_config`: HTTP 401 and 403, a missing connection, a wrong path (HTTP 404/405 without a JSON error) and HTTP 429 with the time from `Retry-After` or `X-RateLimit-Reset`, which is retried only when `LLM_RATE_LIMIT_MAX_BACKOFF_MS` allows. `LLM_BASE_URL` must be an absolute http(s) URL without `/chat/completions`; ingest reports these failures as the new reason `base_url`.
 
 ## 0.11.0 — 2026-10-26
 

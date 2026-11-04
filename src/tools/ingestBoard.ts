@@ -5,7 +5,7 @@ import type { Cluster, IngestFocusReport, IngestMode, IngestQualityReport, Norma
 import { fetchFileTree, fetchRenderUrls, downloadRenders, fetchImageRefs, downloadOriginals, FigmaApiError, FigmaDownloadBudgetError,
   FigmaTimeoutError, IMAGE_MAX_BYTES, INGEST_IMAGE_MAX_BYTES, type OriginalImage, type RenderUrls } from "../lib/figmaApi.js";
 import {
-  LLMConfigurationError, LlmInvalidJsonError, LlmRequestError, LlmTimeoutError, missingLlmConfigurationMessage, validateLlmConfiguration,
+  LLMConfigurationError, LlmBaseUrlError, LlmInvalidJsonError, LlmRequestError, LlmTimeoutError, llmBaseUrlProblem, missingLlmConfigurationMessage, validateLlmConfiguration,
   validateLlmRuntimeConfiguration,
 } from "../lib/llmClient.js";
 import { flattenNodeTree, isGenericNodeName } from "../lib/nodeTree.js";
@@ -113,7 +113,8 @@ async function performIngest(input: IngestBoardInput, options: OperationOptions)
     getVisionRequestTimeoutMs();
     readIntEnv("FIGMA_REQUEST_TIMEOUT_MS", 15000, 1000);
     readIntEnv("FIGMA_SCREENSHOT_DOWNLOAD_CONCURRENCY", 3, 1);
-    if (!missingLlmConfigurationMessage()) validateLlmRuntimeConfiguration();
+    // A missing or invalid value leaves the text ingest to finish; the images report it as reason "config".
+    if (!missingLlmConfigurationMessage() && !llmBaseUrlProblem()) validateLlmRuntimeConfiguration();
   }
   const progress = async (phase: string, completed: number) => {
     // Let stdio cancellation notifications run between bounded CPU phases.
@@ -344,7 +345,7 @@ async function performIngest(input: IngestBoardInput, options: OperationOptions)
         const retryDelay = reason !== "payment" && (error instanceof FigmaApiError || error instanceof LlmRequestError) ? error.retryAfter : undefined;
         const retryAfter = retryDelay && Number.isFinite(retryDelay) && retryDelay > 0
           ? Date.now() + retryDelay * 1000 : reason === "rate_limit" ? Date.now() + 60_000 : undefined;
-        if (reason === "rate_limit" || reason === "config" || reason === "auth" || reason === "payment") sharedFailure = { reason, retryAfter };
+        if (reason === "rate_limit" || reason === "config" || reason === "auth" || reason === "payment" || reason === "base_url") sharedFailure = { reason, retryAfter };
         fallback(index, reason, retryAfter);
         console.error(`Vision refinement incomplete (${reason}); original sources are retained.`);
       } finally {
@@ -410,7 +411,7 @@ function ingestResult(board: BoardData, contentChanged?: boolean, historyReset =
 }
 
 type VisionStage = "render" | "model";
-type VisionFallbackReason = "config" | "auth" | "payment" | "rate_limit" | "timeout" | "invalid_reply"
+type VisionFallbackReason = "config" | "base_url" | "auth" | "payment" | "rate_limit" | "timeout" | "invalid_reply"
   | "download_budget" | "render_failed" | "model_failed" | "time_budget";
 
 function classifyVisionFailure(error: unknown, stage: VisionStage): VisionFallbackReason {
@@ -418,6 +419,7 @@ function classifyVisionFailure(error: unknown, stage: VisionStage): VisionFallba
   if (error instanceof FigmaDownloadBudgetError) return "download_budget";
   if (error instanceof VisionDeadlineExceededError || error instanceof FigmaTimeoutError || error instanceof LlmTimeoutError) return "timeout";
   if (error instanceof LlmInvalidJsonError) return "invalid_reply";
+  if (error instanceof LlmBaseUrlError) return "base_url";
   if (error instanceof LlmRequestError && error.status === 402) return "payment";
   if (error instanceof FigmaApiError || error instanceof LlmRequestError) {
     if (error.status === 429) return "rate_limit";
@@ -939,6 +941,7 @@ function describeFallbackReasons(reasons?: Record<string, number>): string {
   const labels: Record<string, string> = {
     time_budget: "the time for images in this run ran out", vision_budget: "the time for images in an earlier run ran out",
     timeout: "the model did not answer in time", config: "the model settings are missing or invalid",
+    base_url: "LLM_BASE_URL does not lead to a reachable OpenAI-compatible API",
     auth: "Figma or the model provider denied access", rate_limit: "the model provider's rate limit was reached",
     payment: "the model provider requires payment or more credits",
     invalid_reply: "the model's reply was unusable", download_budget: "the images were too large to download",
@@ -954,7 +957,8 @@ function describeFallbackReasons(reasons?: Record<string, number>): string {
 function describeNextSteps(report: IngestQualityReport): string {
   const reasons = report.fallbackReasons ?? {};
   const instructions: string[] = [];
-  if (reasons.config) instructions.push(`${missingLlmConfigurationMessage() ?? "Check the model settings."} diagnose_llm_config can test the configured model provider.`);
+  if (reasons.config) instructions.push(`${missingLlmConfigurationMessage() ?? llmBaseUrlProblem() ?? "Check the model settings."} diagnose_llm_config can test the configured model provider.`);
+  if (reasons.base_url) instructions.push("Check LLM_BASE_URL, then run diagnose_llm_config.");
   if (reasons.auth) instructions.push("Check Figma and model-provider access permissions; diagnose_llm_config can test the configured model provider.");
   if (reasons.payment) instructions.push("Add credits or raise the API key's credit limit at the model provider, or choose a free model; diagnose_llm_config can test the configured model provider.");
   if (report.nextRetryAt) instructions.push(`Retry after ${new Date(report.nextRetryAt).toISOString()} for the pending provider cooldown.`);

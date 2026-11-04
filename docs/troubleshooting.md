@@ -36,7 +36,8 @@ cause. Original text and table rows stay searchable in every case.
 | `time_budget` | Not started before the vision deadline | Run `ingest_board` again |
 | `timeout` | A Figma or model request ran past its deadline | Run again or choose a faster model |
 | `rate_limit` | Figma or the provider returned 429 | Wait until `qualityReport.nextRetryAt` |
-| `config` | `LLM_BASE_URL` or `LLM_API_KEY` missing | Set both, then restart the server |
+| `config` | `LLM_BASE_URL` or `LLM_API_KEY` missing or invalid | Fix the named setting, then restart the server |
+| `base_url` | `LLM_BASE_URL` leads to no reachable OpenAI-compatible API: no connection, a wrong path, or a reply that is no chat completion | Check `LLM_BASE_URL`, then run `diagnose_llm_config`; no further image requests are sent |
 | `auth` | Figma or the provider rejected the credentials | Check the token, scopes and file access |
 | `payment` | The model provider returned HTTP 402 (payment or more credits required) | Add credits, raise the API key's credit limit, or choose a free model |
 | `invalid_reply` | The model returned no usable JSON | Choose another model |
@@ -96,8 +97,13 @@ configuration, then restart the server in the client.
 | `Figma API rate limit exceeded (429). …` | Figma limits requests by seat and plan; see [rate limits](https://developers.figma.com/docs/rest-api/rate-limits/). `max_speed` makes no image requests; the other modes need one image fills request per ingest and renders only for drawings without an image. |
 | `Figma download exceeds the configured byte budget` | The board's file data is larger than 64 MiB. Split the board into smaller files. |
 | `LLM_BASE_URL and LLM_API_KEY are not set. …` | Set `LLM_API_KEY` and `LLM_BASE_URL` in the client's `env` and restart. A Figma token does not replace the provider key. |
+| `LLM_BASE_URL must be an absolute http or https URL of the API root, without /chat/completions, …` | Use the API root, for example `https://openrouter.ai/api/v1`, with the scheme and without `/chat/completions`; the SDK adds that path. The value itself is never printed. |
+| `LLM request failed (HTTP 401): the model provider rejected LLM_API_KEY. …` | Check the key in the MCP client configuration and restart the server. |
+| `LLM request failed (HTTP 403): the model provider denies access to the model or rejects the request, … moderation. …` | Check the key's permissions and the configured models; some providers also block a request for its content. |
+| `LLM request failed: could not connect to https://host (connection refused). …` | The message names the origin of `LLM_BASE_URL` and the cause: host not found, connection refused, TLS error, host unreachable or another network error. Check the URL (scheme, host, port) and the network; no other model is tried. |
+| `LLM request failed (HTTP 404): the answer was no JSON error, so LLM_BASE_URL probably points to a wrong path. …` | HTTP 404 or 405 with an HTML or text body: the URL is not an OpenAI-compatible API root. Such APIs usually end in `/v1`. One request is made; no other model is tried. |
 | `LLM request failed (HTTP 404). …` | No configured model was available. A 404 or 410, or OpenRouter's "Provider returned error", moves the request to the next candidate in `LLM_TEXT_MODELS` / `LLM_VISION_MODELS`; this error means every candidate failed. `openrouter/free` and `openrouter/auto` get a second request first, which may reach another model. `diagnose_llm_config` lists every attempt in `attempts` with the provider's message. |
-| `LLM request failed (HTTP 429). …` | Free OpenRouter models allow 20 requests per minute and 50 or 1,000 per day. Wait, or configure your own model. |
+| `LLM request failed (HTTP 429): the model provider's request limit is reached; it accepts requests again at about 2026-11-05 00:00 UTC. …` | Free OpenRouter models allow 20 requests per minute and 50 or 1,000 per day. The time comes from `Retry-After` or, when `X-RateLimit-Remaining` is 0, from `X-RateLimit-Reset`; `qualityReport.nextRetryAt` carries it. A wait up to `LLM_RATE_LIMIT_MAX_BACKOFF_MS` is retried, a longer one fails at once. Wait, or configure your own model or key. |
 | `LLM request timed out after 20s. …` | The model was too slow. Retry, choose another model or raise `LLM_REQUEST_TIMEOUT_MS` / `LLM_VISION_REQUEST_TIMEOUT_MS`. |
 | `LLM (…) did not return valid JSON. The reply was cut off at max_tokens …` | A reasoning model used up its output tokens. Choose another model or raise the output limit. |
 | `LLM (openrouter/free) returned an empty response` | The free router chose a model that returned no text. Retry, or set `LLM_VISION_MODELS` / `LLM_TEXT_MODELS` to a specific model. |

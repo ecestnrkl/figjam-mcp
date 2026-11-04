@@ -20,7 +20,18 @@ let client: OpenAI | undefined;
 let clientConfig: string | undefined;
 
 export class LlmRequestError extends Error {
+  /** retryAfter is the wait in seconds the provider named, if any. */
   constructor(message: string, readonly status?: number, readonly retryAfter?: number) { super(message); }
+}
+/**
+ * LLM_BASE_URL does not lead to a working OpenAI-compatible API: no connection, a wrong path, or a reply that is no
+ * chat completion. Another model at the same URL cannot help, unless only the reply was odd (otherModelMayWork).
+ */
+export class LlmBaseUrlError extends LlmRequestError {
+  constructor(message: string, status?: number, readonly otherModelMayWork = false) {
+    super(message, status);
+    this.name = "LlmBaseUrlError";
+  }
 }
 export class LLMConfigurationError extends Error {
   constructor(message: string) { super(message); this.name = "LLMConfigurationError"; }
@@ -103,12 +114,29 @@ export function missingLlmConfigurationMessage(): string | undefined {
     + missingEnvironmentHint();
 }
 
+/** What is wrong with a set LLM_BASE_URL, without its value; undefined when it is unset (reported elsewhere) or fine. */
+export function llmBaseUrlProblem(): string | undefined {
+  const value = process.env.LLM_BASE_URL?.trim();
+  if (!value) return undefined;
+  let url: URL | undefined;
+  try { url = new URL(value); } catch { /* reported below */ }
+  if (url && (url.protocol === "http:" || url.protocol === "https:") && url.hostname && !/\/chat\/completions\/*$/i.test(url.pathname)) {
+    return undefined;
+  }
+  return "LLM_BASE_URL must be an absolute http or https URL of the API root, without /chat/completions, "
+    + `for example ${EXAMPLE_BASE_URL}. Fix it in "env" of this server in your MCP client configuration, then restart the server.`;
+}
+
+const EXAMPLE_BASE_URL = "https://openrouter.ai/api/v1";
+
 /** Validate required settings before spending Figma requests on vision input. */
 export function validateLlmConfiguration(): void {
   const missing = missingLlmConfigurationMessage();
   if (missing) throw new LLMConfigurationError(redactMessage(missing));
   try { validateHeaderSecret(process.env.LLM_API_KEY!, "LLM_API_KEY"); }
   catch (error) { throw new LLMConfigurationError((error as Error).message); }
+  const problem = llmBaseUrlProblem();
+  if (problem) throw new LLMConfigurationError(problem);
 }
 
 /** Lazily constructs (and caches) the OpenAI-compatible client. */
@@ -207,7 +235,8 @@ export async function chatJson(
           throw abortReason(options.signal, error);
         }
         errors.push(error);
-        options.onModelFailed?.(candidate, describeProviderError(error) ?? errorMessage(normalizeLlmError(error)));
+        options.onModelFailed?.(candidate, describeProviderError(error)
+          ?? withoutDiagnoseHint(errorMessage(normalizeLlmError(error))));
         const recoverable = shouldTryNextModel(error) && remainingMs(requestOptions) >= MIN_REQUEST_TIMEOUT_MS;
         // A router picks a model per request, so one more request can reach a working one.
         // Rate limits have their own backoff in createCompletion.
@@ -394,6 +423,8 @@ function describeProviderError(error: unknown): string | undefined {
  */
 function shouldTryNextModel(error: unknown): boolean {
   if ((error instanceof LlmRequestError || error instanceof OpenAI.APIError) && error.status === 402) return false;
+  // Every candidate uses the same URL.
+  if (error instanceof LlmBaseUrlError) return error.otherModelMayWork;
   if (error instanceof LlmRequestError) {
     return [404, 410, 429].includes(error.status ?? 0) || (error.status ?? 0) >= 500 || isProviderReturnedError(error);
   }
@@ -421,15 +452,88 @@ function isRateLimitError(error: unknown): boolean {
   return error instanceof Error && /429|rate limit/i.test(error.message);
 }
 
+/** The closing sentence of provider messages; diagnose_llm_config leaves it out of its own output. */
+const DIAGNOSE_HINT = "diagnose_llm_config can test the configured model provider.";
+
+function withoutDiagnoseHint(message: string): string {
+  return message.endsWith(` ${DIAGNOSE_HINT}`) ? message.slice(0, -DIAGNOSE_HINT.length - 1) : message;
+}
+
 function normalizeLlmError(error: unknown): unknown {
   if (!(error instanceof OpenAI.APIError)) return redactError(error);
-  const retryAfter = Number(error.headers?.get("retry-after"));
-  const message = error.status === 402
+  const { status } = error;
+  const waitMs = status === 429 ? rateLimitWaitMs(error.headers, error.error)
+    : parseRetryAfter(headerValue("retry-after", error.headers, error.error));
+  const message = status === 402
     ? "LLM request failed (HTTP 402): the model provider requires payment or more credits for this model. "
       + "Add credits or raise the API key's credit limit, or use a free model."
-    : `LLM request failed (HTTP ${error.status ?? "unknown"}). Check provider availability and configuration.`;
-  return new LlmRequestError(redactMessage(message), error.status,
-    Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter : undefined);
+    : status === 401
+      ? "LLM request failed (HTTP 401): the model provider rejected LLM_API_KEY. "
+        + `Check the key in your MCP client configuration and restart the server. ${DIAGNOSE_HINT}`
+    : status === 403
+      ? "LLM request failed (HTTP 403): the model provider denies access to the model or rejects the request, "
+        + `for example because of moderation. Check the API key's permissions and the configured models. ${DIAGNOSE_HINT}`
+    : status === 429 ? rateLimitMessage(waitMs)
+    : `LLM request failed (HTTP ${status ?? "unknown"}). Check provider availability and configuration.`;
+  return new LlmRequestError(redactMessage(message), status, waitMs === undefined ? undefined : Math.ceil(waitMs / 1000));
+}
+
+function rateLimitMessage(waitMs: number | undefined): string {
+  const when = waitMs === undefined ? "" : `; it accepts requests again at about ${utcTime(Date.now() + waitMs)}`;
+  return `LLM request failed (HTTP 429): the model provider's request limit is reached${when}. `
+    + `Wait, or use another model or API key. ${DIAGNOSE_HINT}`;
+}
+
+/** Rounded up to the minute, so that a retry at the named time is not too early. */
+function utcTime(ms: number): string {
+  return `${new Date(Math.ceil(ms / 60_000) * 60_000).toISOString().slice(0, 16).replace("T", " ")} UTC`;
+}
+
+/**
+ * Failures that mean LLM_BASE_URL itself is wrong: no connection at all, or a 404/405 whose body is no JSON error
+ * object (HTML or text). A missing model answers with a JSON error object and is not meant here.
+ */
+function baseUrlFailure(error: unknown): LlmBaseUrlError | undefined {
+  if (typeof OpenAI.APIConnectionError === "function" && error instanceof OpenAI.APIConnectionError) {
+    return new LlmBaseUrlError(redactMessage(`LLM request failed: could not connect to ${baseUrlOrigin()} (${describeConnectionCause(error)}). `
+      + `Check LLM_BASE_URL and your network connection. ${DIAGNOSE_HINT}`));
+  }
+  if (error instanceof OpenAI.APIError && (error.status === 404 || error.status === 405) && (error.error === undefined || error.error === null)) {
+    return new LlmBaseUrlError(redactMessage(`LLM request failed (HTTP ${error.status}): the answer was no JSON error, so LLM_BASE_URL probably points to a wrong path. `
+      + `OpenAI-compatible APIs usually end in /v1, for example ${EXAMPLE_BASE_URL}. Check LLM_BASE_URL. ${DIAGNOSE_HINT}`), error.status);
+  }
+  return undefined;
+}
+
+/** Scheme, host and port of LLM_BASE_URL; never its credentials, path or query. */
+function baseUrlOrigin(): string {
+  try { return new URL(process.env.LLM_BASE_URL!.trim()).origin; }
+  catch { return "LLM_BASE_URL"; }
+}
+
+const TLS_CODES = /^(?:CERT_|DEPTH_ZERO_|SELF_SIGNED_|UNABLE_TO_|ERR_TLS_|ERR_SSL_|ERR_OSSL_|HOSTNAME_MISMATCH)/;
+
+function describeConnectionCause(error: unknown): string {
+  let code: string | undefined;
+  let text = "";
+  for (let current: unknown = error, depth = 0; current && typeof current === "object" && depth < 5; depth++) {
+    const link = current as { code?: unknown; message?: unknown; cause?: unknown; errors?: unknown };
+    if (!code && typeof link.code === "string") code = link.code;
+    if (!code && Array.isArray(link.errors)) {
+      const inner = link.errors.find((item: unknown) => typeof (item as { code?: unknown } | undefined)?.code === "string") as { code: string } | undefined;
+      code = inner?.code;
+    }
+    if (typeof link.message === "string") text += ` ${link.message}`;
+    current = link.cause;
+  }
+  if (code && /^(?:ENOTFOUND|EAI_AGAIN|EAI_NODATA|EAI_NONAME)$/.test(code)) return "host not found";
+  if (code === "ECONNREFUSED") return "connection refused";
+  if (code && /^(?:EHOSTUNREACH|ENETUNREACH|ENETDOWN|EHOSTDOWN)$/.test(code)) return "host unreachable";
+  if ((code && TLS_CODES.test(code)) || /\b(?:certificate|ssl|tls)\b/i.test(text)) {
+    return "TLS error; check the certificate and whether the URL should use http or https";
+  }
+  if (code && /^(?:ECONNRESET|EPIPE|UND_ERR_SOCKET)$/.test(code)) return "connection closed unexpectedly";
+  return "network error";
 }
 
 /**
@@ -444,7 +548,7 @@ interface EmbeddedErrorEnvelope {
   error?: {
     message?: string;
     code?: number | string;
-    metadata?: { error_type?: string; provider_name?: string };
+    metadata?: { error_type?: string; provider_name?: string; headers?: Record<string, unknown> };
   };
 }
 
@@ -501,10 +605,14 @@ async function createCompletion(
             `Check the model, output-token budget and caller deadline, or adjust ${setting}.`,
         );
       }
+      const unreachable = baseUrlFailure(error);
+      if (unreachable) throw unreachable;
       if (!(error instanceof OpenAI.RateLimitError) || attempt >= readIntEnv("LLM_RATE_LIMIT_RETRIES", 1, 0)) {
         throw error;
       }
-      await backoff(retryDelayMs(error, attempt), attempt, signal);
+      const waitMs = rateLimitWaitMs(error.headers, error.error);
+      if (waitMs !== undefined && !fitsRetryWindow(waitMs, options)) throw error;
+      await backoff(waitMs ?? 2 ** attempt * 2000, attempt, signal);
       continue;
     }
 
@@ -514,12 +622,17 @@ async function createCompletion(
     if (!embedded) {
       return completion;
     }
-    if (isRateLimit(embedded) && attempt < readIntEnv("LLM_RATE_LIMIT_RETRIES", 1, 0)) {
-      await backoff(2 ** attempt * 2000, attempt, signal);
-      continue;
+    if (isRateLimit(embedded)) {
+      const waitMs = rateLimitWaitMs(undefined, embedded);
+      if (attempt < readIntEnv("LLM_RATE_LIMIT_RETRIES", 1, 0) && (waitMs === undefined || fitsRetryWindow(waitMs, options))) {
+        await backoff(waitMs ?? 2 ** attempt * 2000, attempt, signal);
+        continue;
+      }
+      const limited = new LlmRequestError(redactMessage(rateLimitMessage(waitMs)), 429, waitMs === undefined ? undefined : Math.ceil(waitMs / 1000));
+      embeddedErrors.set(limited, embedded);
+      throw limited;
     }
-    const failure = new LlmRequestError(`LLM request failed: ${isRateLimit(embedded) ? "rate limit exceeded (429)" : "response contained no choices"}`,
-      isRateLimit(embedded) ? 429 : Number(embedded.code) || 502);
+    const failure = new LlmRequestError("LLM request failed: response contained no choices", Number(embedded.code) || 502);
     embeddedErrors.set(failure, embedded);
     throw failure;
   }
@@ -566,10 +679,43 @@ async function backoff(
   await sleep(cappedWaitMs, signal);
 }
 
-/** Retry-After header (seconds) if the provider sent one, else exponential backoff from 2s. */
-function retryDelayMs(error: InstanceType<typeof OpenAI.RateLimitError>, attempt: number): number {
-  const retryAfter = Number(error.headers?.get("retry-after"));
-  return Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter * 1000 : 2 ** attempt * 2000;
+/** A header of the response, else of OpenRouter's error.metadata.headers; names are case-insensitive. */
+function headerValue(name: string, headers: Headers | null | undefined, body: unknown): string | undefined {
+  const direct = headers?.get(name);
+  if (direct) return direct;
+  const metadata = body && typeof body === "object" ? (body as { metadata?: unknown }).metadata : undefined;
+  const nested = metadata && typeof metadata === "object" ? (metadata as { headers?: unknown }).headers : undefined;
+  if (!nested || typeof nested !== "object") return undefined;
+  const entries = Object.entries(nested as Record<string, unknown>);
+  const value = entries.find(([key]) => key.toLowerCase() === name)?.[1];
+  return typeof value === "string" || typeof value === "number" ? String(value) : undefined;
+}
+
+/** Retry-After in seconds or as an HTTP date, as milliseconds from now; undefined when absent, zero or past. */
+function parseRetryAfter(value: string | undefined, now = Date.now()): number | undefined {
+  const text = value?.trim();
+  if (!text) return undefined;
+  if (/^\d+(?:\.\d+)?$/.test(text)) return Number(text) > 0 ? Number(text) * 1000 : undefined;
+  const at = Date.parse(text);
+  return Number.isFinite(at) && at > now ? at - now : undefined;
+}
+
+/**
+ * How long the provider asks to wait after a 429, in milliseconds from now: Retry-After, or when X-RateLimit-Remaining
+ * is 0, X-RateLimit-Reset (milliseconds since 1970). Undefined when it names no time.
+ */
+function rateLimitWaitMs(headers: Headers | null | undefined, body: unknown, now = Date.now()): number | undefined {
+  const retryAfter = parseRetryAfter(headerValue("retry-after", headers, body), now);
+  if (retryAfter !== undefined) return retryAfter;
+  const remaining = headerValue("x-ratelimit-remaining", headers, body)?.trim();
+  const reset = Number(headerValue("x-ratelimit-reset", headers, body)?.trim() || NaN);
+  if (!remaining || Number(remaining) !== 0 || !Number.isFinite(reset) || reset <= now) return undefined;
+  return reset - now;
+}
+
+/** A retry waits only up to LLM_RATE_LIMIT_MAX_BACKOFF_MS and only when a request still fits into the deadline after it. */
+function fitsRetryWindow(waitMs: number, options: RequestOptions): boolean {
+  return waitMs <= readIntEnv("LLM_RATE_LIMIT_MAX_BACKOFF_MS", 5000, 0) && waitMs + MIN_REQUEST_TIMEOUT_MS <= remainingMs(options);
 }
 
 function remainingMs(options: RequestOptions): number {
