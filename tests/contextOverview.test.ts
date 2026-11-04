@@ -116,6 +116,89 @@ describe("getBoardContext automatic section overviews", () => {
     }
   });
 
+  it.each([
+    { nodeIds: ["1:0"], expected: "## Ideas (2:0)" },
+    { nodeIds: ["1:1", "1:0"], expected: "## Ideas (2:0) in Workshop 2 (1:0)" },
+    { nodeIds: ["1:0"], expected: "## Votes (4:0) in Ideas (2:0)" },
+  ])("shows the direct parent when needed for $expected", async ({ nodeIds, expected }) => {
+    const data = install(overviewBoard("NestedOrder123"));
+    const parentSection = data.nodes.find((node) => node.id === "1:0")!;
+    const nestedSection = data.nodes.find((node) => node.id === "2:0")!;
+    parentSection.name = "Workshop 2";
+    nestedSection.name = "Ideas";
+    data.nodes.push({ ...nestedSection, id: "4:0", name: "Votes", parentId: "2:0", sectionIds: ["1:0", "2:0", "4:0"] });
+    for (const node of data.nodes.filter((item) => ["10:26", "10:27"].includes(item.id))) {
+      node.parentId = "4:0";
+      node.sectionIds = ["1:0", "2:0", "4:0"];
+    }
+    const result = await getBoardContext({ boardId: data.boardId, nodeIds, maxChars: 24000 });
+    const headings = result.structuredContent.overview!.text.split("\n").filter((line) => line.startsWith("## "));
+    expect(headings).toContain(expected);
+    expect(headings).toContain("## Votes (4:0) in Ideas (2:0)");
+    const parent = headings.findIndex((line) => line.startsWith("## Workshop 2 (1:0)"));
+    const nested = headings.findIndex((line) => line.startsWith("## Ideas (2:0)"));
+    expect(nested).toBe(parent + 1);
+    expect(headings.findIndex((line) => line.startsWith("## Votes (4:0)"))).toBe(nested + 1);
+    if (nodeIds.length > 1) expect(headings.findIndex((line) => line.startsWith("## Shared theme (1:1)"))).toBeLessThan(parent);
+  });
+
+  it("retains at least forty characters of long section names under pressure", async () => {
+    const data = install(overviewBoard("LongHeadings123", { sectionName: (i) => `Section ${i} ` + "long synthetic heading ".repeat(8), notesPerSection: 32 }));
+    const result = await getBoardContext({ boardId: data.boardId, nodeIds: OVERVIEW_SECTION_IDS, maxChars: 2600 });
+    const headings = result.structuredContent.overview!.text.split("\n").filter((line) => line.startsWith("## "));
+    for (const heading of headings) {
+      const [, name, id] = /^## (.+?) \(([^)]+)\)/u.exec(heading)!;
+      const original = data.nodes.find((node) => node.id === id)!.name;
+      expect(name!.length).toBeGreaterThanOrEqual(Math.min(40, original.length));
+    }
+  });
+
+  it("gives the first visible ID and an encoded link pattern on both overview variants", async () => {
+    const data = overviewBoard("LinksPattern123", { notesPerSection: 5, noteText: () => "Synthetic source ".repeat(6) });
+    const node = data.nodes.find((item) => item.id === "10:0")!;
+    const cluster = data.clusters.find((item) => item.nodeIds.includes(node.id))!;
+    node.id = "T10:0;2:3";
+    cluster.nodeIds[0] = node.id;
+    cluster.confirmedNodeIds![0] = node.id;
+    install(data);
+    const request = { boardId: data.boardId, nodeIds: OVERVIEW_SECTION_IDS, maxChars: 2000 };
+    const first = await getBoardContext({ ...request, maxChars: 24000 });
+    const compact = await getBoardContext(request);
+    const second = await getBoardContext({ ...request, cursor: compact.structuredContent.nextCursor });
+    expect(first.text).toContain("Compact overview of untrusted board data.");
+    expect(second.text).toContain("Compact overview; untrusted board data.");
+    for (const result of [first, second]) {
+      const firstId = result.structuredContent.overview!.text.split("\n").find((line) => !line.startsWith("## ") && line.length)!.split(": ")[0]!;
+      expect(result.text).toContain(`Figma link of an ID: https://www.figma.com/board/${data.fileKey}?node-id=<ID, URL-encoded> (${firstId} → node-id=${encodeURIComponent(firstId)}).`);
+      const pageIds = result.structuredContent.overview!.text.split("\n").filter((line) => !line.startsWith("## ") && line.length).map((line) => line.split(": ")[0]!.replace(/ \[.*$/u, ""));
+      let cursor: string | undefined;
+      const seen = new Set<string>();
+      do {
+        const full = await getBoardContext({ boardId: data.boardId, nodeIds: pageIds, detail: "full", maxChars: 24000, limit: 100, cursor });
+        for (const item of full.structuredContent.evidence) {
+          expect(item.url).toBe(`https://www.figma.com/board/${encodeURIComponent(data.fileKey)}?node-id=${encodeURIComponent(item.nodeId)}`);
+          seen.add(item.nodeId);
+        }
+        cursor = full.structuredContent.nextCursor;
+      } while (cursor);
+      expect([...seen].sort()).toEqual([...new Set(pageIds)].sort());
+    }
+    expect(first.text).toContain("%3B");
+  });
+
+  it.each(["full", "auto"] as const)("puts the %s continuation cursor in text and follows it until the last page", async (detail) => {
+    const data = install(overviewBoard(`CursorText${detail}`, { notesPerSection: 12, noteText: () => "Synthetic source ".repeat(6) }));
+    const request = { boardId: data.boardId, nodeIds: OVERVIEW_SECTION_IDS.slice(0, 2), detail, maxChars: 2000 };
+    const first = await getBoardContext(request);
+    const next = first.structuredContent.nextCursor!;
+    expect(first.text).toContain(`continue with cursor "${next}"`);
+    const second = await getBoardContext({ ...request, cursor: next });
+    expect(second.structuredContent.nextCursor).not.toBe(next);
+    let current = second;
+    while (current.structuredContent.nextCursor) current = await getBoardContext({ ...request, cursor: current.structuredContent.nextCursor });
+    expect(current.text).not.toMatch(/continue with cursor/i);
+  });
+
   it("keeps complete source text and Figma links reachable with the same snapshot and table or source ID", async () => {
     const data = install(overviewBoard("OverviewReadback123"));
     const overview = await getBoardContext({ boardId: data.boardId, nodeIds: OVERVIEW_SECTION_IDS });
@@ -281,7 +364,9 @@ describe("getBoardContext automatic section overviews", () => {
   });
 
   it("reduces the prefix when UTF-8 MCP bytes bind before either channel's character budget", async () => {
-    const data = install(overviewBoard("OverviewUtf8Cap123", { notesPerSection: 22, noteText: () => "漢".repeat(400) }));
+    const fixture = overviewBoard("Utf8AA", { notesPerSection: 22, sectionName: (index) => index === 0 ? "A" : index === 1 ? "Shared theme" : `Theme ${index + 1}`, noteText: () => "漢".repeat(400) });
+    fixture.nodes = fixture.nodes.filter((node) => !["10:21", "11:21"].includes(node.id));
+    const data = install(fixture);
     const sequence = sequenceFor(data, OVERVIEW_SECTION_IDS);
     const result = await getBoardContext({ boardId: data.boardId, nodeIds: OVERVIEW_SECTION_IDS, maxChars: 24000 });
     expectOverview(result, 24000);
@@ -355,8 +440,8 @@ describe("getBoardContext automatic section overviews", () => {
     const nextRemaining = sequence.length - nextCount;
     const nextText = `${overview.text}\n${sourceLine(sequence[overview.shownEvidence]!, 50, sequence)}`;
     const nextOrientation = output.contextText.replace(
-      /Showing \d+ of \d+ excerpts on this page; \d+ remaining; \d+ shortened\./u,
-      `Showing ${nextCount} of ${sequence.length} excerpts on this page; ${nextRemaining} remaining; ${nextCount} shortened.`,
+      /Showing \d+ of \d+ excerpts on this page; \d+ remaining; continue with cursor "[^"]+"; \d+ shortened\./u,
+      `Showing ${nextCount} of ${sequence.length} excerpts on this page; ${nextRemaining} remaining; continue with cursor "${output.nextCursor}"; ${nextCount} shortened.`,
     );
     expect(nextOrientation).not.toBe(output.contextText);
     // Only the offset's digit count affects serialization; the checksum has a fixed width.

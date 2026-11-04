@@ -57,6 +57,8 @@ export async function diffBoard(input: DiffBoardInput): Promise<DiffBoardOutput>
   // A baseline cached before redaction existed must not leak through the diff.
   const diff = diffBoards(redactBoard(baseline), redactBoard(current));
 
+  const [header, ...body] = diff.summaryText.split("\n\n");
+
   return {
     ...diff,
     boardId: input.boardId,
@@ -65,12 +67,12 @@ export async function diffBoard(input: DiffBoardInput): Promise<DiffBoardOutput>
     baselineCreatedAt: new Date(baselineEntry.createdAt).toISOString(),
     currentCreatedAt: new Date(currentEntry.createdAt).toISOString(),
     summaryText: unchanged
-      ? `No changes: the board content is the same as at ${new Date(currentEntry.createdAt).toISOString()}; ` +
+      ? `${header}\n\nNo changes: the board content is the same as at ${new Date(currentEntry.createdAt).toISOString()}; ` +
         `the last ingest at ${new Date(singleSnapshot!.freshnessCheckedAt!).toISOString()} found it unchanged.`
       : (current.freshnessCheckedAt !== undefined && current.freshnessCheckedAt > currentEntry.createdAt
-        ? `No changes since ${new Date(currentEntry.createdAt).toISOString()}: ` +
+        ? `${header}\n\nNo changes since ${new Date(currentEntry.createdAt).toISOString()}: ` +
           `the last ingest at ${new Date(current.freshnessCheckedAt).toISOString()} found the board unchanged. ` +
-          `The latest change follows.\n\n${diff.summaryText}`
+          `The latest change follows.\n\n${body.join("\n\n")}`
         : diff.summaryText),
   };
 }

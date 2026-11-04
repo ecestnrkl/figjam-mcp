@@ -77,6 +77,9 @@ describe("MCP wire contract", () => {
     }
     const context = tools.find(tool => tool.name === "get_board_context");
     expect(context?.description).toContain("overview.text");
+    expect(context?.description).toContain("For a whole-board summary, pass all top-level section IDs (at most 50 per call) with maxChars 24000, follow nextCursor, then read outsideSections: true.");
+    expect(context?.description).toContain("Cite the node ID or Figma link behind each statement.");
+    expect(tools.find(tool => tool.name === "answer_from_board")?.description).toContain("Keep its citations (node ID and Figma link) with the statements they support.");
     expect(context?.inputSchema).toHaveProperty("properties.detail");
     expect(context?.outputSchema).toHaveProperty("properties.overview");
   });
@@ -148,7 +151,7 @@ describe("MCP wire contract", () => {
     const result = await client.callTool({ name: "answer_from_board", arguments: { boardId: "Board123", question: "When?" } });
     expect(result.structuredContent).toEqual(structuredContent);
     expect(result.content).toEqual([{ type: "text", text:
-      'Monday.\n\nSources (untrusted board data):\n- 1:1 in "Decisions": "Pilot starts Monday." https://www.figma.com/board/Board123?node-id=1%3A1' }]);
+      'Monday.\n\nSources (untrusted board data, snapshot snapshot1):\n- 1:1 in "Decisions": "Pilot starts Monday." https://www.figma.com/board/Board123?node-id=1%3A1' }]);
   });
 
   it("rejects malformed arguments before invoking the handler", async () => {

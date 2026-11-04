@@ -159,7 +159,7 @@ describe("diffBoard", () => {
     expect(output.tableCellChanges).toEqual([]);
     expect(output.stats.editedNodes).toBe(1);
     expect(output.stats.modifiedClusters).toBe(1);
-    expect(output.summaryText).toContain("changes from");
+    expect(output.summaryText).toContain("changes from 1970-01-01T00:00:01Z (snapshot snapshot-1000) to 1970-01-01T00:00:02Z (snapshot snapshot-2000):");
   });
 
   it("returns a schema-valid empty diff after a later unchanged ingest", async () => {
@@ -182,7 +182,7 @@ describe("diffBoard", () => {
     expect(Object.values(changeCounts).every((value) => value === 0)).toBe(true);
     for (const list of [output.newClusters, output.removedClusters, output.modifiedClusters,
       output.addedConnections, output.removedConnections, output.tableCellChanges, output.nodeChanges]) expect(list).toEqual([]);
-    expect(output.summaryText).toBe("No changes: the board content is the same as at 1970-01-01T00:00:01.000Z; " +
+    expect(output.summaryText).toBe("FigJam board AbC123 — changes from 1970-01-01T00:00:01Z (snapshot snapshot-1000) to 1970-01-01T00:00:01Z (snapshot snapshot-1000):\n\nNo changes: the board content is the same as at 1970-01-01T00:00:01.000Z; " +
       "the last ingest at 1970-01-01T00:00:02.000Z found it unchanged.");
   });
 
@@ -193,8 +193,9 @@ describe("diffBoard", () => {
       const output = await diffBoard({ boardId: "AbC123", compareTo: compareTo });
       const createdAt = new Date(length * 1000).toISOString();
       const checkedAt = new Date((length + 1) * 1000).toISOString();
-      expect(output.summaryText.startsWith(`No changes since ${createdAt}: the last ingest at ${checkedAt} ` +
-        "found the board unchanged. The latest change follows.\n\n")).toBe(true);
+      expect(output.summaryText).toContain(`No changes since ${createdAt}: the last ingest at ${checkedAt} ` +
+        "found the board unchanged. The latest change follows.\n\n");
+      expect(output.summaryText).toMatch(/^FigJam board .*snapshot .* to .*snapshot .*:/);
       expect(output.summaryText).toContain(`"Synthetic version ${length - compareTo}" → "Synthetic version ${length}"`);
       expect(output.baselineCreatedAt).toBe(new Date((length - compareTo) * 1000).toISOString());
       expect(output.currentCreatedAt).toBe(createdAt);

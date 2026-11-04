@@ -42,7 +42,7 @@ function connectorDirection(node: NormalizedNode): NonNullable<ConnectorEdge["di
   if (node.connectorStartArrowhead === undefined && node.connectorEndArrowhead === undefined) {
     return "forward";
   }
-  const hasArrow = (cap: string | undefined) => Boolean(cap?.startsWith("ARROW_") || cap === "TRIANGLE_FILLED" || cap === "LINE_ARROW");
+  const hasArrow = (cap: string | undefined) => Boolean(cap?.startsWith("ARROW_") || (cap === "TRIANGLE_FILLED" || cap === "TRIANGLE_ARROW") || cap === "LINE_ARROW");
   const start = hasArrow(node.connectorStartArrowhead);
   const end = hasArrow(node.connectorEndArrowhead);
   return start && end ? "bidirectional" : start ? "reverse" : end ? "forward" : "undirected";

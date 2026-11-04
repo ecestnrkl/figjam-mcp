@@ -172,7 +172,9 @@ deferred by the budget go before clusters that failed. Raise
 Compact overviews group one excerpt per line by section and shorten only the text
 to a shared 50–120-character prefix, marking cuts with `…`. In structured output,
 the text appears once in `overview.text`; empty `evidence` and `clusters` then mean
-the excerpts are in that field. Follow `nextCursor` for any remaining excerpts.
+the excerpts are in that field. Follow the cursor in the text (also `nextCursor`
+in structured output) with the same arguments for any remaining excerpts. The
+overview gives the Figma link pattern for its node IDs; URL-encode the ID.
 Read complete text and a Figma link with `get_board_context`, the same `boardId`
 and `snapshotId`, `nodeIds: ["<ID>"]`, and `detail: "full"`; use the table ID for
 a table row. Full excerpts inherit only `snapshotId` from the response. Missing

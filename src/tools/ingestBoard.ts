@@ -824,7 +824,7 @@ function fallbackSummary(
 
   if (imageCount > 0) {
     parts.push(
-      `It includes ${imageCount} image element${imageCount === 1 ? "" : "s"} that have not been visually interpreted in this summary.`,
+      `It includes ${imageCount} image element${imageCount === 1 ? "" : "s"} that ${imageCount === 1 ? "has" : "have"} not been visually interpreted in this summary.`,
     );
   }
 
@@ -878,7 +878,7 @@ function buildQualityReport(
 const LARGEST_SECTIONS_IN_SUMMARY = 8;
 
 function buildSummary(board: BoardData, qualityReport: IngestQualityReport, contentChanged?: boolean): string {
-  const { fileKey, clusters, docStructureHint, ingestMode } = board;
+  const { fileKey, snapshotId, clusters, docStructureHint, ingestMode } = board;
   // get_board_context reads redactBoard(board); counting on that object builds its search index once.
   const { largestLine: largestSections, outsideSections } = sectionGuide(redactBoard(board), LARGEST_SECTIONS_IN_SUMMARY);
   const labels = clusters.map((cluster) => `"${cluster.label}"`);
@@ -886,11 +886,11 @@ function buildSummary(board: BoardData, qualityReport: IngestQualityReport, cont
   const settings = `(docStructureHint=${docStructureHint}${ingestMode ? `, ingestMode=${ingestMode}` : ""})`;
   const overview = !clusters.length && !retrieveEvidence(redactBoard(board)).evidence.length ? "The board contains no readable content."
     : largestSections
-    ? `${clusters.length} clusters ${settings}. ${largestSections} For overviews and summaries, read these sections with ` +
-      "get_board_context and nodeIds; answer_from_board is for one specific question." +
+    ? `${clusters.length} cluster${clusters.length === 1 ? "" : "s"} ${settings}. ${largestSections} ` +
+      "get_board_context without parameters lists all sections with IDs. For a summary of the whole board, pass all top-level section IDs from that list as nodeIds (at most 50 per call) with maxChars 24000, follow the cursor, then read outsideSections: true; answer_from_board is for one specific question." +
       (outsideSections ? ` ${outsideSections} excerpt${outsideSections === 1 ? " lies" : "s lie"} outside sections; read ` +
         `${outsideSections === 1 ? "it" : "them"} with get_board_context and outsideSections: true.` : "")
-    : `${clusters.length} clusters - ${shownLabels} ${settings}.`;
+    : `${clusters.length} cluster${clusters.length === 1 ? "" : "s"} - ${shownLabels} ${settings}.`;
   const fallbackNote =
     qualityReport.fallbackCount > 0
       ? ` Visual interpretation is incomplete for ${qualityReport.fallbackCount} cluster${qualityReport.fallbackCount === 1 ? "" : "s"}: ${describeFallbackReasons(qualityReport.fallbackReasons)}.`
@@ -901,7 +901,7 @@ function buildSummary(board: BoardData, qualityReport: IngestQualityReport, cont
     : contentChanged ? ` The board content changed since the previous ingest; call diff_board with boardId ${fileKey} to see what changed.`
       : " The board content is unchanged since the previous ingest.";
   const cacheNote =
-    qualityReport.cachedClusters > 0 ? ` Loaded ${qualityReport.cachedClusters} clusters from cache.` : "";
+    qualityReport.cachedClusters > 0 ? ` Loaded ${qualityReport.cachedClusters} cluster${qualityReport.cachedClusters === 1 ? "" : "s"} from cache.` : "";
   const reuseNote =
     (qualityReport.reusedClusters ?? 0) > 0
       ? ` Reused ${qualityReport.reusedClusters} unchanged cluster${qualityReport.reusedClusters === 1 ? "" : "s"} from the previous ingest.`
@@ -912,8 +912,8 @@ function buildSummary(board: BoardData, qualityReport: IngestQualityReport, cont
       + ` ${requests.renders} render request${requests.renders === 1 ? "" : "s"} (Tier 1).` : "";
   const focusNote = qualityReport.focus ? describeFocus(qualityReport.focus, ingestMode) : "";
   return (
-    `Ingested board ${fileKey}: ${overview}${changeNote}${cacheNote}${reuseNote}`
-    + ` ${qualityReport.visionClusters} visually interpreted; ${qualityReport.deterministicClusters} use extracted text.${requestNote}${focusNote}${fallbackNote}`
+    `Ingested board ${fileKey} (snapshot ${snapshotId}): ${overview}${changeNote}${cacheNote}${reuseNote}`
+    + ` ${qualityReport.visionClusters} visually interpreted; ${qualityReport.deterministicClusters} ${qualityReport.deterministicClusters === 1 ? "uses" : "use"} extracted text.${requestNote}${focusNote}${fallbackNote}`
     + (board.persistenceWarning ? ` ${board.persistenceWarning}` : "")
   );
 }

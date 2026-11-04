@@ -37,7 +37,7 @@ async function figmaFetch(fileKey: string, apiPath: string, token: string, timeo
       ? `Figma access denied (${response.status}). Check FIGMA_ACCESS_TOKEN: it must be a valid token with the scope `
         + `file_content:read, and its account must be able to open the file.`
       : response.status === 404 ? `Figma file not found (404): ${fileKey}. Check the file key in the board URL.`
-      : response.status === 429 ? `Figma API rate limit exceeded (429).${retryAfter > 0 ? ` Retry after ${retryAfter} seconds.` : " Retry later."}`
+      : response.status === 429 ? `Figma API rate limit exceeded (429).${retryAfter > 0 ? ` Retry after ${retryAfter} second${retryAfter === 1 ? "" : "s"}.` : " Retry later."}`
       : `Figma API request failed (${response.status} ${response.statusText}): ${apiPath}`;
     await response.body?.cancel();
     throw new FigmaApiError(redactMessage(message, [token]), response.status, retryAfter > 0 ? retryAfter : undefined);

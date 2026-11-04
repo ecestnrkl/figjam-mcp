@@ -31,7 +31,7 @@ describe("answer retrieval configuration", () => {
     vi.stubEnv("LLM_ANSWER_TOP_K", value);
     const { count, output } = await ask();
     expect(count).toBe(expected);
-    expect(output.answer).toContain(`The ${count} best-matching excerpts`);
+    expect(output.answer).toContain(`The ${count} best-matching excerpt${count === 1 ? "" : "s"}`);
   });
 
   it.each([["", 40000], ["4096", 4096], ["60000", 60000], ["99999", 60000]])("PROMPT_MAX_CHARS=%s bounds the entire prompt at %i", async (value, expected) => {
@@ -42,7 +42,7 @@ describe("answer retrieval configuration", () => {
     const length = messages.reduce((sum, message) => sum + message.content.length, 0);
     expect(length).toBeLessThanOrEqual(expected);
     expect(length).toBeGreaterThan(expected * 0.8);
-    expect(output.answer).toContain(`The ${count} best-matching excerpts`);
+    expect(output.answer).toContain(`The ${count} best-matching excerpt${count === 1 ? "" : "s"}`);
     expect(output.citations).toEqual([]);
     if (expected === 4096) expect(count).toBeLessThan(30);
   });

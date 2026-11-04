@@ -78,6 +78,9 @@ describe("extractConnectorEdges", () => {
     ["LINE_ARROW", "LINE_ARROW", "bidirectional", "↔", [["one", "two"], ["two", "one"]]],
     ["NONE", "NONE", "undirected", "—", []],
     ["NONE", "TRIANGLE_FILLED", "forward", "→", [["one", "two"]]],
+    ["NONE", "TRIANGLE_ARROW", "forward", "→", [["one", "two"]]],
+    ["TRIANGLE_ARROW", "NONE", "reverse", "←", [["two", "one"]]],
+    ["TRIANGLE_ARROW", "TRIANGLE_ARROW", "bidirectional", "↔", [["one", "two"], ["two", "one"]]],
   ] as const)("keeps %s / %s caps consistent in node and cluster evidence", (start, end, direction, arrow, pairs) => {
     const nodes = [node("a"), node("b"), { ...connector("edge", "a", "b"),
       connectorStartArrowhead: start, connectorEndArrowhead: end }];

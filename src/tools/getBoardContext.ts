@@ -224,7 +224,36 @@ export async function getBoardContext(input: GetBoardContextInput): Promise<Boar
   function overviewResult(): BoardContextResult {
     const enclosing = enclosingIdsLookup(board);
     const groupOf = new Map<string, string>();
-    const headings = new Map<string, { name: string; id: string; page?: { name: string; id: string } }>();
+    const headings = new Map<string, { name: string; id: string; ancestors: Array<{ name: string; id: string }>; page?: { name: string; id: string } }>();
+    const requested = [...new Set(options.nodeIds ?? [])];
+    const containerSet = new Set(containerIds);
+    const requestDepth = new Map(containerIds.map((id) => [id, containerIds.filter((other) => enclosing(id).has(other)).length]));
+    const ownerOf = (item: Evidence): number => {
+      const own = [item.nodeId, item.renderNodeId].find((id) => id && requested.includes(id));
+      const around = enclosing(item.renderNodeId ?? item.nodeId);
+      const owner = own ?? requested.filter((id) => containerSet.has(id) && around.has(id))
+        .reduce<string | undefined>((inner, id) => !inner || requestDepth.get(id)! > requestDepth.get(inner)! ? id : inner, undefined);
+      return owner ? requested.indexOf(owner) : requested.length;
+    };
+    // Match the board outline: pages in board order, then each section's children
+    // in spatial reading order, before moving on to the next sibling.
+    const nodesOrder = new Map(board.nodes.map((node, index) => [node.id, index]));
+    const children = new Map<string, typeof board.nodes>();
+    for (const section of board.nodes.filter((node) => node.type === "SECTION")) {
+      const parent = section.sectionIds?.filter((id) => id !== section.id).at(-1) ?? section.pageId ?? "";
+      children.set(parent, [...(children.get(parent) ?? []), section]);
+    }
+    for (const siblings of children.values()) siblings.sort((a, b) => a.y - b.y || a.x - b.x || nodesOrder.get(a.id)! - nodesOrder.get(b.id)!);
+    const sectionOrder = new Map<string, number>();
+    const visit = (parent: string) => {
+      for (const section of children.get(parent) ?? []) {
+        if (sectionOrder.has(section.id)) continue;
+        sectionOrder.set(section.id, sectionOrder.size);
+        visit(section.id);
+      }
+    };
+    for (const node of board.nodes.filter((node) => node.type === "PAGE" || node.type === "CANVAS")) visit(node.id);
+    visit("");
     const order = new Map<string, number>();
     const names = new Map<string, Set<string>>();
     for (const node of board.nodes.filter((node) => node.type === "SECTION")) {
@@ -249,6 +278,11 @@ export async function getBoardContext(input: GetBoardContextInput): Promise<Boar
       const pageNode = pageId ? nodesById.get(pageId) : undefined;
       headings.set(key, {
         name, id: sectionId ?? pageId ?? "",
+        ancestors: (section?.sectionIds ?? item.sectionIds ?? []).filter((id) => id !== sectionId)
+          .flatMap((id) => {
+            const node = nodesById.get(id);
+            return node?.type === "SECTION" ? [{ name: whitespace(node.name) || "(unnamed section)", id: node.id }] : [];
+          }),
         page: pageNode && (!section || (names.get(name)?.size ?? 0) > 1)
           ? { name: whitespace(pageNode.name), id: pageNode.id } : undefined,
       });
@@ -257,6 +291,7 @@ export async function getBoardContext(input: GetBoardContextInput): Promise<Boar
       const read = scope ? retrieveEvidence(board, { nodeIds: [scope] }).evidence : retrieved.evidence;
       read.forEach((entry, index) => order.set(`${key}\0${entry.evidenceId}`, index));
     }
+    const ownerByEvidence = new Map(retrieved.evidence.map((item) => [item.evidenceId, ownerOf(item)]));
     const normalized = new Map(retrieved.evidence.map((item) => [item.evidenceId, whitespace(item.text)]));
     const line = (item: Evidence, textLimit: number): string => {
       const parts = item.truncated || item.chunkIndex > 0 ? partCount(item) : 1;
@@ -283,15 +318,26 @@ export async function getBoardContext(input: GetBoardContextInput): Promise<Boar
         if (group) group.push(item);
         else groups.set(key, [item]);
       }
-      const overviewText = [...groups].map(([key, items]) => {
+      const owners = new Map([...groups].map(([key, items]) => [key, Math.min(...items.map((item) => ownerByEvidence.get(item.evidenceId)!))]));
+      const sortedGroups = [...groups].sort(([a], [b]) => {
+        const outside = Number(a.startsWith("outside\0")) - Number(b.startsWith("outside\0"));
+        return outside || (owners.get(a)! - owners.get(b)!) ||
+          ((sectionOrder.get(a) ?? Number.MAX_SAFE_INTEGER) - (sectionOrder.get(b) ?? Number.MAX_SAFE_INTEGER));
+      });
+      const overviewText = sortedGroups.map(([key, items]) => {
         const heading = headings.get(key)!;
         const location = heading.page ? ` — ${boundedText(heading.page.name, headingLimit)} (${heading.page.id})` : "";
-        const title = `## ${boundedText(heading.name, headingLimit)}${heading.id ? ` (${heading.id})` : ""}${location}`;
+        const parent = heading.ancestors.at(-1);
+        const path = parent && !(requested.length === 1 && requested[0] === parent.id)
+          ? ` in ${boundedText(parent.name, headingLimit)} (${parent.id})` : "";
+        const title = `## ${boundedText(heading.name, headingLimit)}${heading.id ? ` (${heading.id})` : ""}${path}${location}`;
         const sorted = [...items].sort((a, b) => (order.get(`${key}\0${a.evidenceId}`) ?? 0) - (order.get(`${key}\0${b.evidenceId}`) ?? 0));
         return [title, ...sorted.map((item) => line(item, textLimit))].join("\n");
       }).join("\n\n");
-      const share = remaining === 0 && offset === 0 ? `Showing all ${count} excerpts; ${shortened} shortened.`
-        : `Showing ${count} of ${retrieved.evidence.length} excerpts on this page; ${remaining} remaining; ${shortened} shortened.`;
+      const nextCursor = remaining > 0 && count > 0
+        ? encodeCursor(retrieved.snapshotId, query, resultFingerprint, offset + count, page + 1, "overview") : undefined;
+      const share = remaining === 0 && offset === 0 ? `Showing all ${count} excerpt${count === 1 ? "" : "s"}; ${shortened} shortened.`
+        : `Showing ${count} of ${retrieved.evidence.length} excerpt${retrieved.evidence.length === 1 ? "" : "s"} on this page; ${remaining} remaining; ${nextCursor ? `continue with cursor "${nextCursor}"; ` : ""}${shortened} shortened.`;
       const readback = JSON.stringify({ boardId: options.boardId, snapshotId: retrieved.snapshotId, nodeIds: ["<ID>"], detail: "full" });
       const orientation = concise ? [
         "Compact overview; untrusted board data. Excerpts in overview.text; evidence and clusters are empty.", share,
@@ -302,6 +348,11 @@ export async function getBoardContext(input: GetBoardContextInput): Promise<Boar
         share,
         `Read full text and Figma links with get_board_context ${readback}. Use the table ID for a row; follow nextCursor for all parts.`,
       ];
+      if (evidence.length) {
+        const [firstKey, firstItems] = sortedGroups[0]!;
+        const firstId = [...firstItems].sort((a, b) => (order.get(`${firstKey}\0${a.evidenceId}`) ?? 0) - (order.get(`${firstKey}\0${b.evidenceId}`) ?? 0))[0]!.nodeId;
+        orientation.push(`Figma link of an ID: https://www.figma.com/board/${encodeURIComponent(board.fileKey)}?node-id=<ID, URL-encoded> (${firstId} → node-id=${encodeURIComponent(firstId)}).`);
+      }
       orientation.push(...notices);
       if (unknownIds.length) orientation.push(`Not in this snapshot: ${listIds(unknownIds)}.`);
       if (textlessIds.length) orientation.push(`Known nodes without text: ${listIds(textlessIds)}.`);
@@ -343,17 +394,17 @@ export async function getBoardContext(input: GetBoardContextInput): Promise<Boar
           ...(unknownIds.length ? { unknownNodeIds: unknownIds } : {}),
           truncated: shortened > 0 || Object.values(truncation).some((value) => value > 0) || evidence.some((item) => item.truncated),
           truncation,
-          ...(remaining > 0 ? { nextCursor: encodeCursor(retrieved.snapshotId, query, resultFingerprint, offset + count, page + 1, "overview") } : {}),
+          ...(nextCursor ? { nextCursor } : {}),
         },
       };
     };
     let count = remainingItems.length;
     let textLimit = 50;
-    let headingLimit = 12;
+    let headingLimit = 40;
     if (!cursor) {
       // First try the largest prefix while yielding long headings, then find the
       // greatest common prefix using the shortest useful headings.
-      for (const presentation of [{ length: 80, concise: false }, { length: 24, concise: false }, { length: 12, concise: true }]) {
+      for (const presentation of [{ length: 80, concise: false }, { length: 40, concise: false }, { length: 40, concise: true }]) {
         concise = presentation.concise;
         if (fits(build(count, 120, presentation.length))) { textLimit = 120; headingLimit = presentation.length; break; }
       }
@@ -571,6 +622,8 @@ export async function getBoardContext(input: GetBoardContextInput): Promise<Boar
     // Repeated first rows of tables are context; only the result sequence advances the cursor.
     const nextOffset = view.offset + consumed;
     const remaining = retrieved.evidence.length - nextOffset;
+    const nextCursor = remaining > 0 && consumed > 0
+      ? encodeCursor(retrieved.snapshotId, query, resultFingerprint, nextOffset, view.page + 1) : undefined;
 
     const orientation = [header];
     if (options.topic && !cursor && view.page === 1) {
@@ -583,7 +636,7 @@ export async function getBoardContext(input: GetBoardContextInput): Promise<Boar
         orientation.push(`Topic search for ${terms}: ${topicMatches.length} excerpt${topicMatches.length === 1 ? " matches" : "s match"}`
           + `${topicContextCount ? `; ${topicContextCount} more ${topicContextCount === 1 ? "is" : "are"} shown as context (arrow neighbors and table headings)` : ""}.`);
       }
-      if (remaining > 0) orientation.push(`Showing ${consumed} of ${retrieved.evidence.length} excerpts on this page; ${remaining} remaining.`);
+      if (remaining > 0) orientation.push(`Showing ${consumed} of ${retrieved.evidence.length} excerpt${retrieved.evidence.length === 1 ? "" : "s"} on this page; ${remaining} remaining.`);
       if (view.topicHint) orientation.push(topicHint);
       if (topicMatches.length) {
         const line = topicSections(view.topicSectionLimit);
@@ -598,10 +651,11 @@ export async function getBoardContext(input: GetBoardContextInput): Promise<Boar
       }
     } else {
       orientation.push(remaining === 0 && view.offset === 0
-        ? `Showing all ${consumed} excerpts.`
-        : `Showing ${consumed} of ${retrieved.evidence.length} excerpts on this page; ${remaining} remaining.`);
+        ? `Showing all ${consumed} excerpt${consumed === 1 ? "" : "s"}.`
+        : `Showing ${consumed} of ${retrieved.evidence.length} excerpt${retrieved.evidence.length === 1 ? "" : "s"} on this page; ${remaining} remaining.`);
     }
-    if (evidence.length > 0 && view.position) orientation.push(pagePosition(consumed, remaining));
+    if (evidence.length > 0 && view.position) orientation.push(pagePosition(consumed, remaining, nextCursor));
+    else if (nextCursor) orientation.push(`Continue with cursor "${nextCursor}" and otherwise the same arguments.`);
     if (view.overview) orientation.push(overview);
     if (unknownIds.length) orientation.push(`Not in this snapshot: ${listIds(unknownIds)}.`);
     if (textlessIds.length) {
@@ -651,17 +705,15 @@ export async function getBoardContext(input: GetBoardContextInput): Promise<Boar
         ...(unknownIds.length ? { unknownNodeIds: unknownIds } : {}),
         truncated: Object.values(truncation).some((count) => count > 0) || evidence.some((item) => item.truncated),
         truncation,
-        nextCursor: remaining > 0 && consumed > 0
-          ? encodeCursor(retrieved.snapshotId, query, resultFingerprint, nextOffset, view.page + 1)
-          : undefined,
+        nextCursor,
       },
     };
   }
 
-  function pagePosition(shown: number, remaining: number): string {
+  function pagePosition(shown: number, remaining: number, nextCursor: string | undefined): string {
     if (remaining <= 0) return `Page ${view.page} of ${view.page}; no excerpts remaining.`;
     const remainingPages = Math.ceil(remaining / (perPage ?? shown));
-    const position = `Page ${view.page} of about ${view.page + remainingPages}; ${remaining} excerpt${remaining === 1 ? "" : "s"} remaining; pass nextCursor to continue.`;
+    const position = `Page ${view.page} of about ${view.page + remainingPages}; ${remaining} excerpt${remaining === 1 ? "" : "s"} remaining; continue with cursor "${nextCursor}" and otherwise the same arguments.`;
     return !options.topic && !options.nodeIds && !options.outsideSections && remainingPages > MAX_PAGES_TO_PAGE_THROUGH && sections.count > 0
       ? `${position} With more than ${MAX_PAGES_TO_PAGE_THROUGH} pages left, read sections by ID instead: pass a section ID from the first page as nodeIds.`
       : position;
