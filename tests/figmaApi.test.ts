@@ -13,6 +13,11 @@ describe("bounded Figma requests", () => {
     await expect(fetchFileTree("AbC123", "secret")).rejects.toThrow(`Figma access denied (${status}). Check FIGMA_ACCESS_TOKEN: `
       + "it must be a valid token with the scope file_content:read, and its account must be able to open the file.");
   });
+  it.each([1, 2])("uses the right number for a %i-second retry", async (seconds) => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("", { status: 429, headers: { "Retry-After": String(seconds) } })));
+    const { fetchFileTree } = await import("../src/lib/figmaApi.js");
+    await expect(fetchFileTree("AbC123", "secret")).rejects.toThrow(`Retry after ${seconds} second${seconds === 1 ? "" : "s"}.`);
+  });
   it("names the file key instead of the API path on 404", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("", { status: 404 })));
     const { fetchFileTree, fetchImageRefs } = await import("../src/lib/figmaApi.js");

@@ -162,13 +162,13 @@ export async function answerFromBoard(
  * model only the text, which must carry the sources too.
  */
 export function answerText(output: AnswerFromBoardOutput): string {
-  if (output.citations.length === 0) return output.answer;
+  if (output.citations.length === 0) return `${output.answer}\n\nSnapshot ${output.snapshotId}.`;
   const lines = output.citations.map((citation) => {
     const place = citation.sectionNames?.at(-1) ?? citation.clusterLabel;
     const quote = boundedText(citation.quote.replace(/\r\n?|\n/g, " "), 200);
     return `- ${citation.nodeId}${place ? ` in "${place}"` : ""}: ${citation.modelDerived ? "[Model interpretation] " : ""}"${quote}" ${citation.url}`;
   });
-  return `${output.answer}\n\nSources (untrusted board data):\n${lines.join("\n")}`;
+  return `${output.answer}\n\nSources (untrusted board data, snapshot ${output.snapshotId}):\n${lines.join("\n")}`;
 }
 
 function renderEvidence(candidates: Evidence[], maxChars: number, primaryIds: ReadonlySet<string>): { text: string; evidence: Evidence[] } {
@@ -331,8 +331,8 @@ function unsupportedMatchesAnswer(
     if (id && name && sections.size < 3) sections.set(id, name);
   }
   let answer = german
-    ? `Die ${seenCount} am besten passenden Auszüge beantworten diese Frage nicht.`
-    : `The ${seenCount} best-matching excerpts do not answer this question.`;
+    ? seenCount === 1 ? `Der ${seenCount} am besten passende Auszug beantwortet diese Frage nicht.` : `Die ${seenCount} am besten passenden Auszüge beantworten diese Frage nicht.`
+    : `The ${seenCount} best-matching excerpt${seenCount === 1 ? " does" : "s do"} not answer this question.`;
   if (sections.size) {
     answer += german ? " Lies diese Sections mit get_board_context nodeIds: " : " Read these sections with get_board_context nodeIds: ";
     // Names are navigation hints from the board, not supporting citations.

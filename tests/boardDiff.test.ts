@@ -192,6 +192,14 @@ describe("diffBoards", () => {
     expect(diff.summaryText).toContain("No changes — the board content is identical.");
   });
 
+  it.each(["added", "removed"] as const)("uses a singular node in the %s cluster change", (kind) => {
+    const one = board([node("a", "A")], [cluster("c", "Group", ["a"])], 1);
+    const two = board([node("a", "A"), node("b", "B")], [cluster("c", "Group", ["a", "b"])], 2);
+    const text = kind === "added" ? diffBoards(one, two).summaryText : diffBoards(two, one).summaryText;
+    expect(text).toContain(kind === "added" ? "+1 node" : "-1 node");
+    expect(text).not.toMatch(/[+-]1 nodes/);
+  });
+
   it("classifies new, removed, modified, and unchanged clusters", () => {
     const baseline = board(
       [
@@ -408,7 +416,7 @@ describe("diffBoards", () => {
     const diff = diffBoards(baseline, current);
     expect(diff.stats.editedNodes).toBe(edited);
     expect(diff.stats.unchangedClusters).toBe(edited ? 0 : 1);
-    expect(diff.summaryText).toContain("Layout: 1 nodes moved or resized.");
+    expect(diff.summaryText).toContain("Layout: 1 node moved or resized.");
     expect(diff.summaryText).not.toContain("identical");
   });
 
@@ -575,7 +583,7 @@ describe("diffBoards", () => {
       expect(diff.nodeChanges).toEqual([]);
       expect(diff.summaryText).toContain("Table cells (1):\n" +
         '- table "Feature priorities" 5:119 in "3 · Ideas", row 2 "Sold-out badges", column 3 "Status": "In scope" → "In pilot"\n' +
-        "Nodes: +0 added / -0 removed / 1 edited (1 of them tables with cell changes, listed under Table cells).");
+        "Nodes: +0 added / -0 removed / 1 edited (1 of them a table with cell changes, listed under Table cells).");
       expect(diff.summaryText).not.toContain("Edited nodes");
       const current = {
         ...board([section, table(edit(2, 3, "In pilot"))], [cluster("ideas", "Ideas", ["5:119"])], 2),

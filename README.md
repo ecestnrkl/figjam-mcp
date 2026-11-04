@@ -239,7 +239,10 @@ Problems: [troubleshooting](https://github.com/ecestnrkl/figjam-mcp/blob/main/do
    does not prove the board lacks the topic. The first `get_board_context` page
    includes a size-limited section overview with IDs; pass a page, section,
    frame or group ID as `nodeIds` to read everything inside it; several IDs in
-   one call take turns in request order. With default `detail: "auto"`,
+   one call take turns in request order. For a whole-board summary, pass all
+   top-level section IDs (up to 50 per call) with `maxChars: 24000`, follow the
+   cursor in the text with the same arguments, then read `outsideSections: true`.
+   Compact overviews show the Figma link pattern for their node IDs. With default `detail: "auto"`,
    reads of multiple distinct IDs or one container use a compact overview when
    the first full page would leave unread excerpts. Text is shortened to a shared
    50–120-character prefix with `…`; the host writes the summary. Topic searches,

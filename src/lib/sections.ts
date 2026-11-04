@@ -84,6 +84,7 @@ export class SectionIndex {
       ...(this.sections.length ? [`${this.outsideSections} excerpt${plural(this.outsideSections)} outside sections` +
         `${this.outsideSections ? `; read ${this.outsideSections === 1 ? "it" : "them"} with outsideSections: true` : ""}.`] : []),
       `Read a ${this.sections.length ? "section" : "page"} with nodeIds: ["<ID>"]; use topic for word search.`,
+      ...(this.sections.length ? ["For a summary of the whole board, pass all top-level section IDs from this list as nodeIds (at most 50 per call) with maxChars 24000, follow the cursor, then read outsideSections: true."] : []),
     ];
     // The largest sections belong to the header, so a small budget shortens the tree first.
     const largest = this.largestLine(LARGEST_SECTIONS_IN_OVERVIEW);
@@ -112,9 +113,10 @@ export class SectionIndex {
     const largest = this.largestSections(limit);
     if (!largest.length) return "";
     const covered = largest.reduce((sum, section) => sum + section.count, 0);
-    return `Largest sections (ID, name, excerpts): ${largest.map((section) =>
+    const heading = largest.length === this.count ? "Sections" : `Largest sections, ${largest.length} of ${this.count}`;
+    return `${heading} (ID, name, excerpts): ${largest.map((section) =>
       `${section.id} ${section.name} — ${section.count}`).join("; ")}. ` +
-      `Together they hold ${covered} of the board's ${this.evidence.length} excerpts.`;
+      `${largest.length === 1 ? "It holds" : "Together they hold"} ${covered} of the board's ${this.evidence.length} excerpt${plural(this.evidence.length)}.`;
   }
 
   /** First page of an outsideSections request; its excerpts are the evidence of this index. */
@@ -123,7 +125,7 @@ export class SectionIndex {
     const clusters = new Set(this.evidence.flatMap((item) => item.clusterId ? [item.clusterId] : [])).size;
     const size = `${excerpts} excerpt${plural(excerpts)} in ${clusters} cluster${plural(clusters)}`;
     const text = ["## Outside sections", this.count
-      ? `${size} lie outside sections; they follow cluster by cluster in reading order.`
+      ? `${size} ${excerpts === 1 ? "lies" : "lie"} outside sections; ${excerpts === 1 ? "it follows" : "they follow"} cluster by cluster in reading order.`
       : `The board has no sections: all ${size}, cluster by cluster in reading order.`].join("\n");
     return JSON.stringify(text).length - 2 <= budget ? text : "";
   }

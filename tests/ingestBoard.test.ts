@@ -70,7 +70,8 @@ const { ingestBoard, parseFigmaFileKey, getVisionConcurrency } = await import(".
 const { getBoardContext } = await import("../src/tools/getBoardContext.js");
 const { getBoard } = await import("../src/lib/cache.js");
 const { redactBoard } = await import("../src/lib/redact.js");
-const { hasEvidenceIndex } = await import("../src/lib/evidence.js");
+const { hasEvidenceIndex, retrieveEvidence } = await import("../src/lib/evidence.js");
+const { sectionGuide, SectionIndex } = await import("../src/lib/sections.js");
 const { imageSize, resizeToJpeg } = await import("../src/lib/imageResize.js");
 
 /** A 100 px JPEG original whose bytes name its URL, so tests can check which cluster receives it. */
@@ -384,6 +385,7 @@ describe("ingestBoard", () => {
     expect(output.summary).toContain("ingestMode=max_speed");
     const persisted = persistBoardMock.mock.calls[0]?.[0] as BoardData;
     expect(persisted.clusters.some(cluster => cluster.summary.includes("timeout-safe"))).toBe(false);
+    expect(persisted.clusters.some(cluster => cluster.summary.includes("1 image element that has not been visually interpreted"))).toBe(true);
   });
 
   it("reports missing model configuration before requesting any screenshots", async () => {
@@ -1331,16 +1333,45 @@ describe("ingestBoard", () => {
     const output = await ingestBoard({ figmaFileUrl: "https://www.figma.com/board/Sections123/Test", docStructureHint: "freeform", ingestMode: "max_speed" });
 
     const largest = Array.from({ length: 8 }, (_, index) => `5:${9 - index} Topic ${9 - index} — ${9 - index}`).join("; ");
-    expect(output.summary).toContain(`Largest sections (ID, name, excerpts): ${largest}. Together they hold 44 of the board's 46 excerpts.`);
-    expect(output.summary).toContain("For overviews and summaries, read these sections with get_board_context and nodeIds; answer_from_board is for one specific question." +
+    expect(output.summary).toContain("Ingested board Sections123 (snapshot snapshot-id):");
+    expect(output.summary).toContain(`Largest sections, 8 of 9 (ID, name, excerpts): ${largest}. Together they hold 44 of the board's 46 excerpts.`);
+    expect(output.summary).toContain("get_board_context without parameters lists all sections with IDs. For a summary of the whole board, pass all top-level section IDs from that list as nodeIds (at most 50 per call) with maxChars 24000, follow the cursor, then read outsideSections: true; answer_from_board is for one specific question." +
       " 1 excerpt lies outside sections; read it with get_board_context and outsideSections: true.");
     expect(output.summary).not.toContain("Topic 1 —");
     expect(output.summary).not.toContain('"Note');
     // The first get_board_context call reads the index the summary built.
     expect(hasEvidenceIndex(redactBoard(getBoard("Sections123")!))).toBe(true);
     const { contextText } = (await getBoardContext({ boardId: "Sections123" })).structuredContent;
-    expect(contextText).toContain(`Largest sections (ID, name, excerpts): ${largest}; 5:1 Topic 1 — 1. Together they hold 45 of the board's 46 excerpts.`);
+    expect(contextText).toContain(`Sections (ID, name, excerpts): ${largest}; 5:1 Topic 1 — 1. Together they hold 45 of the board's 46 excerpts.`);
     expect(contextText).toContain("1 excerpt outside sections; read it with outsideSections: true.");
+    expect(contextText).toContain('Read a section with nodeIds: ["<ID>"]; use topic for word search.\nFor a summary of the whole board, pass all top-level section IDs from this list as nodeIds (at most 50 per call) with maxChars 24000, follow the cursor, then read outsideSections: true.');
+    expect(sectionGuide(getBoard("Sections123")!, 8).largestLine).toContain("Largest sections, 8 of 9 (ID, name, excerpts):");
+    expect(sectionGuide(getBoard("Sections123")!, 9).largestLine).toContain("Sections (ID, name, excerpts):");
+  });
+
+  it.each([
+    { count: 1, cluster: "1 cluster -", verb: "1 uses extracted text.", outside: "1 excerpt in 1 cluster lies outside sections; it follows", covered: "It holds 1 of the board's 1 excerpt.", cache: "Loaded 1 cluster from cache." },
+    { count: 2, cluster: "2 clusters -", verb: "2 use extracted text.", outside: "2 excerpts in 1 cluster lie outside sections; they follow", covered: "It holds 2 of the board's 2 excerpts.", cache: "Loaded 2 clusters from cache." },
+  ])("uses the right nouns and verbs for $count excerpts and clusters", async ({ count, cluster, verb, outside, covered, cache }) => {
+    const tree = rawTree();
+    tree.document.children[0]!.children = tree.document.children[0]!.children.slice(0, count);
+    fetchFileTreeMock.mockResolvedValue(tree);
+    const output = await ingestBoard({ figmaFileUrl: "https://www.figma.com/board/One123/Test", docStructureHint: "freeform", ingestMode: "max_speed" });
+    expect(output.summary).toContain(cluster);
+    expect(output.summary).toContain(verb);
+    const board = getBoard("One123")!;
+    const section = { ...board.nodes[1]!, id: "9:1", type: "SECTION", name: "Empty" };
+    const withEmptySection = { ...board, nodes: [...board.nodes, section] };
+    const evidence = retrieveEvidence(withEmptySection).evidence.slice(0, count);
+    const index = new SectionIndex(withEmptySection, evidence);
+    expect(index.outsideOverview(1000)).toContain(outside);
+    const sectionWithExcerpt = { ...board, nodes: [...board.nodes.map(node => evidence.some(item => node.id === (item.renderNodeId ?? item.nodeId))
+      ? { ...node, sectionIds: [section.id] } : node), section] };
+    const insideIndex = new SectionIndex(sectionWithExcerpt, evidence);
+    expect(insideIndex.largestLine(8)).toContain(covered);
+    readCachedBoardMock.mockResolvedValue({ ...board, clusters: board.clusters });
+    const cached = await ingestBoard({ figmaFileUrl: "https://www.figma.com/board/One123/Test", docStructureHint: "freeform", ingestMode: "max_speed" });
+    expect(cached.summary).toContain(cache);
   });
 
   it("reuses unchanged clusters from the previous ingest", async () => {

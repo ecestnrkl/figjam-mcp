@@ -686,7 +686,7 @@ function buildSummaryText(
   tableCells: TableCellChange[],
 ): string {
   const lines: string[] = [
-    `FigJam board ${current.fileKey} — changes from ${timestamp(baseline.createdAt)} to ${timestamp(current.createdAt)}:`,
+    `FigJam board ${current.fileKey} — changes from ${timestamp(baseline.createdAt)} (snapshot ${snapshotIdForBoard(baseline)}) to ${timestamp(current.createdAt)} (snapshot ${snapshotIdForBoard(current)}):`,
     "",
   ];
   const renames = renamedSections(baseline, current);
@@ -705,7 +705,7 @@ function buildSummaryText(
   }
 
   if (renames.length > 0) lines.push(`Renamed sections (${renames.length}):`, ...capped(renames, (line) => line));
-  if (layoutChanges > 0) lines.push(`Layout: ${layoutChanges} nodes moved or resized.`);
+  if (layoutChanges > 0) lines.push(`Layout: ${layoutChanges} node${layoutChanges === 1 ? "" : "s"} moved or resized.`);
 
   if (clusters.newClusters.length > 0) {
     lines.push(`New clusters (${clusters.newClusters.length}):`);
@@ -723,8 +723,8 @@ function buildSummaryText(
       ...capped(clusters.modifiedClusters, (c) => {
         const renamed = c.previousLabel !== c.label ? ` (was "${c.previousLabel}")` : "";
         const parts = [
-          c.addedNodeCount > 0 ? `+${c.addedNodeCount} nodes` : "",
-          c.removedNodeCount > 0 ? `-${c.removedNodeCount} nodes` : "",
+          c.addedNodeCount > 0 ? `+${c.addedNodeCount} node${c.addedNodeCount === 1 ? "" : "s"}` : "",
+          c.removedNodeCount > 0 ? `-${c.removedNodeCount} node${c.removedNodeCount === 1 ? "" : "s"}` : "",
           c.editedNodeCount > 0 ? `${c.editedNodeCount} edited` : "",
         ].filter(Boolean);
         return `- "${c.label}"${renamed}${clusterPlace(c.label, c.section)}: ${parts.join(", ") || "reorganized"}`;
@@ -752,7 +752,7 @@ function buildSummaryText(
   }
   lines.push(
     `Nodes: +${stats.addedNodes} added / -${stats.removedNodes} removed / ${stats.editedNodes} edited` +
-      (nodes.cellOnlyTables > 0 ? ` (${nodes.cellOnlyTables} of them tables with cell changes, listed under Table cells).` : "."),
+      (nodes.cellOnlyTables > 0 ? ` (${nodes.cellOnlyTables} of them ${nodes.cellOnlyTables === 1 ? "a table" : "tables"} with cell changes, listed under Table cells).` : "."),
   );
   if (stats.unchangedClusters > 0) {
     lines.push(`Unchanged clusters: ${stats.unchangedClusters}.`);

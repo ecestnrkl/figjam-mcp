@@ -562,7 +562,7 @@ describe("offline ingest pipeline with actual persistent cache", () => {
     const diff = await diffBoard({ boardId: fileKey, compareTo: 1 });
     expect(diff.baselineCreatedAt).toBe(new Date(changedTime).toISOString());
     expect(diff.currentCreatedAt).toBe(new Date(returnedTime).toISOString());
-    expect(diff.summaryText).toContain("changes from 2026-10-09T13:00:00Z to 2026-10-09T14:00:00Z");
+    expect(diff.summaryText).toContain(`changes from 2026-10-09T13:00:00Z (snapshot ${diff.baselineSnapshotId}) to 2026-10-09T14:00:00Z (snapshot ${diff.currentSnapshotId})`);
 
     vi.setSystemTime(Date.UTC(2026, 9, 9, 15));
     await ingestBoard(input);

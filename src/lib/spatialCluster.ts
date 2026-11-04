@@ -152,7 +152,7 @@ function clusterNodes(
   const maxPairComparisons = positiveIntegerOption("maxPairComparisons", options.maxPairComparisons ?? DEFAULT_MAX_PAIR_COMPARISONS);
   const countComparison = () => {
     if (++budget.comparisons > maxPairComparisons) {
-      throw new Error(`Board is too dense to cluster safely: exceeded ${maxPairComparisons} pair comparisons. Reduce overlapping elements or split the board into sections.`);
+      throw new Error(`Board is too dense to cluster safely: exceeded ${maxPairComparisons} pair comparison${maxPairComparisons === 1 ? "" : "s"}. Reduce overlapping elements or split the board into sections.`);
     }
   };
   const gapThreshold =

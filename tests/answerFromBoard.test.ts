@@ -148,12 +148,23 @@ describe("answerFromBoard evidence grounding", () => {
     expect(chatJsonMock).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ["Payment retries?", "The 1 best-matching excerpt does not answer this question."],
+    ["Wie funktionieren Payment retries?", "Der 1 am besten passende Auszug beantwortet diese Frage nicht."],
+  ])("uses a singular noun and verb for an unsupported match: %s", async (question, expected) => {
+    const data = evidenceBoard("SingleUnsupported");
+    setBoard(data.boardId, data);
+    chatJsonMock.mockResolvedValueOnce({ kind: "unsupported", evidenceIds: [] });
+    const output = await answerFromBoard({ boardId: data.boardId, question });
+    expect(output.answer).toContain(expected);
+  });
+
   it.each(["answer", "unresolved_task"])('treats empty evidenceIds as unsupported for %s', async (kind) => {
     const data = evidenceBoard("EmptyEvidence");
     setBoard(data.boardId, data);
     chatJsonMock.mockResolvedValueOnce({ kind, answer: "Invented answer", evidenceIds: [] });
     const output = await answerFromBoard({ boardId: data.boardId, question: "Payment retries?" });
-    expect(output.answer).toContain("best-matching excerpts do not answer this question");
+    expect(output.answer).toContain("best-matching excerpt does not answer this question");
     expect(output.citations).toEqual([]);
   });
 
@@ -248,7 +259,7 @@ describe("answerFromBoard evidence grounding", () => {
       answer: 'The 15 best-matching excerpts do not answer this question. Read these sections with get_board_context nodeIds: "Delivery" (ID: s:1).',
       snapshotId: data.snapshotId, citations: [], citedClusters: [],
     });
-    expect(answerText(output)).toBe(output.answer);
+    expect(answerText(output)).toBe(`${output.answer}\n\nSnapshot ${output.snapshotId}.`);
     expect(chatJsonMock).toHaveBeenCalledOnce();
   });
 
@@ -278,7 +289,7 @@ describe("answerFromBoard evidence grounding", () => {
     setBoard(data.boardId, data);
     chatJsonMock.mockResolvedValueOnce({ kind: "unsupported", answer: "Unknown", evidenceIds: ["ev_madeup"] });
     const output = await answerFromBoard({ boardId: data.boardId, question: "Payment retries?" });
-    expect(output.answer).toContain("best-matching excerpts do not answer this question");
+    expect(output.answer).toContain("best-matching excerpt does not answer this question");
     expect(output.citations).toEqual([]);
     expect(output.citedClusters).toEqual([]);
   });
@@ -564,7 +575,7 @@ describe("answerText", () => {
     const lines = output.citations.map((item) => item.nodeId === "5:87"
       ? '- 5:87 in "4 · Decisions & next steps": "Decision: The pilot starts on Monday, 2 Nov, in the main café." https://www.figma.com/board/SourcesText123?node-id=5%3A87'
       : '- 5:103 in "Parking lot": "Pilot start still open?" https://www.figma.com/board/SourcesText123?node-id=5%3A103');
-    expect(answerText(output)).toBe(`The pilot starts on Monday, 2 Nov.\n\nSources (untrusted board data):\n${lines.join("\n")}`);
+    expect(answerText(output)).toBe(`The pilot starts on Monday, 2 Nov.\n\nSources (untrusted board data, snapshot ${output.snapshotId}):\n${lines.join("\n")}`);
   });
 
   it("cuts long quotes at 200 characters, marks model interpretations and omits a missing location", () => {
@@ -574,15 +585,15 @@ describe("answerText", () => {
     };
     const text = answerText({ answer: "Blue.", citedClusters: [], snapshotId: "s", citations: [citation] });
     const quote = `${"word ".repeat(60).slice(0, 199)}…`;
-    expect(text).toBe(`Blue.\n\nSources (untrusted board data):\n- 1:1: [Model interpretation] "${quote}" ${citation.url}`);
+    expect(text).toBe(`Blue.\n\nSources (untrusted board data, snapshot s):\n- 1:1: [Model interpretation] "${quote}" ${citation.url}`);
     expect(quote).toHaveLength(200);
   });
 
-  it("keeps an answer without citations unchanged", async () => {
+  it("adds the snapshot to an answer without citations", async () => {
     setBoard("NoSources123", evidenceBoard("NoSources123"));
     const output = await answerFromBoard({ boardId: "NoSources123", question: "quantum reactor" });
     expect(output.citations).toEqual([]);
-    expect(answerText(output)).toBe(output.answer);
+    expect(answerText(output)).toBe(`${output.answer}\n\nSnapshot ${output.snapshotId}.`);
   });
 });
 

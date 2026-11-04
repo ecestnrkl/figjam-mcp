@@ -70,6 +70,12 @@ describe("partitionedBoardClusters", () => {
     expect(() => partitionedBoardClusters([nodes[0]!, nodes[2]!], { maxGridEntries: 10 })).toThrow(/spatial index limit/);
   });
 
+  it.each([1, 2])("uses the right number for a %i pair-comparison limit", (limit) => {
+    const nodes = [makeNode("a", 0, 0, 100, 100), makeNode("b", 0, 0, 100, 100), makeNode("c", 0, 0, 100, 100)];
+    expect(() => geometricPreCluster(nodes, { adaptiveGapThreshold: false, maxPairComparisons: limit }))
+      .toThrow(`exceeded ${limit} pair comparison${limit === 1 ? "" : "s"}.`);
+  });
+
   it("validates geometry before excluding nodes from clustering", () => {
     expect(() => partitionedBoardClusters([makeNode("invalid", 0, 0, -1, -1)])).toThrow(/invalid.*geometry/);
   });
