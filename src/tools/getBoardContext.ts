@@ -327,7 +327,9 @@ export async function getBoardContext(input: GetBoardContextInput): Promise<Boar
       const overviewText = sortedGroups.map(([key, items]) => {
         const heading = headings.get(key)!;
         const location = heading.page ? ` — ${boundedText(heading.page.name, headingLimit)} (${heading.page.id})` : "";
-        const path = heading.ancestors.length ? ` in ${heading.ancestors.map((ancestor) => boundedText(ancestor.name, headingLimit)).join(" › ")} (${heading.ancestors.at(-1)!.id})` : "";
+        const parent = heading.ancestors.at(-1);
+        const path = parent && !(requested.length === 1 && requested[0] === parent.id)
+          ? ` in ${boundedText(parent.name, headingLimit)} (${parent.id})` : "";
         const title = `## ${boundedText(heading.name, headingLimit)}${heading.id ? ` (${heading.id})` : ""}${path}${location}`;
         const sorted = [...items].sort((a, b) => (order.get(`${key}\0${a.evidenceId}`) ?? 0) - (order.get(`${key}\0${b.evidenceId}`) ?? 0));
         return [title, ...sorted.map((item) => line(item, textLimit))].join("\n");

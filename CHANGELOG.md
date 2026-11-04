@@ -3,7 +3,7 @@
 ## 0.12.0 — Unreleased
 
 - Reading paths expose pagination cursors, whole-board summary guidance and Figma link patterns, and tool descriptions ask for citations.
-- Compact overview headings retain longer names and show nested section paths in tree order.
+- Compact overview headings retain longer names and show direct parent sections in tree order when useful.
 - Ingest, answer and diff text identifies snapshots; singular counts use singular wording, and triangle arrowheads retain their direction.
 - Search ignores accents (café = cafe), also finds hyphenated words written together (Wi-Fi = wifi), keeps uppercase acronyms such as IT, ignores invisible characters, searches arrow labels and table column headings, no longer matches every excerpt of a page by its page name, and `answer_from_board` no longer sends excerpts with identical text twice.
 - `answer_from_board` explains lexical search misses and prompt-budget limits, and treats model responses without evidence IDs as unsupported.

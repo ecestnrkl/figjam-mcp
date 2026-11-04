@@ -116,13 +116,29 @@ describe("getBoardContext automatic section overviews", () => {
     }
   });
 
-  it.each([[["1:0"]], [["1:1", "1:0"]]])("shows nested paths in tree and requested-ID order for %j", async (nodeIds) => {
+  it.each([
+    { nodeIds: ["1:0"], expected: "## Ideas (2:0)" },
+    { nodeIds: ["1:1", "1:0"], expected: "## Ideas (2:0) in Workshop 2 (1:0)" },
+    { nodeIds: ["1:0"], expected: "## Votes (4:0) in Ideas (2:0)" },
+  ])("shows the direct parent when needed for $expected", async ({ nodeIds, expected }) => {
     const data = install(overviewBoard("NestedOrder123"));
+    const parentSection = data.nodes.find((node) => node.id === "1:0")!;
+    const nestedSection = data.nodes.find((node) => node.id === "2:0")!;
+    parentSection.name = "Workshop 2";
+    nestedSection.name = "Ideas";
+    data.nodes.push({ ...nestedSection, id: "4:0", name: "Votes", parentId: "2:0", sectionIds: ["1:0", "2:0", "4:0"] });
+    for (const node of data.nodes.filter((item) => ["10:26", "10:27"].includes(item.id))) {
+      node.parentId = "4:0";
+      node.sectionIds = ["1:0", "2:0", "4:0"];
+    }
     const result = await getBoardContext({ boardId: data.boardId, nodeIds, maxChars: 24000 });
     const headings = result.structuredContent.overview!.text.split("\n").filter((line) => line.startsWith("## "));
-    const parent = headings.findIndex((line) => line.startsWith("## Shared theme (1:0)"));
-    const nested = headings.findIndex((line) => line.startsWith("## Shared theme (2:0) in Shared theme (1:0)"));
+    expect(headings).toContain(expected);
+    expect(headings).toContain("## Votes (4:0) in Ideas (2:0)");
+    const parent = headings.findIndex((line) => line.startsWith("## Workshop 2 (1:0)"));
+    const nested = headings.findIndex((line) => line.startsWith("## Ideas (2:0)"));
     expect(nested).toBe(parent + 1);
+    expect(headings.findIndex((line) => line.startsWith("## Votes (4:0)"))).toBe(nested + 1);
     if (nodeIds.length > 1) expect(headings.findIndex((line) => line.startsWith("## Shared theme (1:1)"))).toBeLessThan(parent);
   });
 
