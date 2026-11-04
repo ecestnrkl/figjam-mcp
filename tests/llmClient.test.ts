@@ -343,11 +343,19 @@ describe("chatJson", () => {
     },
   );
 
-  it.each([400, 422, 503])("keeps the existing generic message for HTTP %s", async status => {
+  it.each([400, 404, 422, 503])("gives HTTP %s the general message, which names diagnose_llm_config", async status => {
     vi.stubEnv("LLM_RATE_LIMIT_RETRIES", "0");
     createMock.mockRejectedValue(providerError(status, "Synthetic failure"));
     await expect(chatJson("only-model", MESSAGES, SCHEMA_OPTIONS)).rejects.toMatchObject({ status,
-      message: `LLM request failed (HTTP ${status}). Check provider availability and configuration.` });
+      message: `LLM request failed (HTTP ${status}). Check provider availability and configuration. `
+        + "diagnose_llm_config can test the configured model provider." });
+  });
+
+  it("leaves the diagnose_llm_config sentence out of what it reports to diagnose_llm_config", async () => {
+    createMock.mockRejectedValueOnce(new OpenAI.APIError(503, undefined, "Synthetic failure", new Headers()));
+    const onModelFailed = vi.fn();
+    await expect(chatJson("only-model", MESSAGES, { ...SCHEMA_OPTIONS, onModelFailed })).rejects.toMatchObject({ status: 503 });
+    expect(onModelFailed).toHaveBeenCalledExactlyOnceWith("only-model", "LLM request failed (HTTP 503). Check provider availability and configuration.");
   });
 
   it.each([

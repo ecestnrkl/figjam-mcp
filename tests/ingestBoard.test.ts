@@ -460,6 +460,7 @@ describe("ingestBoard", () => {
     ["model", new LlmInvalidJsonError("private provider body", "private reply text"), "invalid_reply"],
     ["model", new LlmEmptyReplyError("private provider body", "refusal"), "invalid_reply"],
     ["model", new LlmEmptyReplyError("private provider body", "length"), "invalid_reply"],
+    ["model", new LlmEmptyReplyError("private provider body", "no_choices"), "invalid_reply"],
     ["model", new LlmBaseUrlError("private provider body"), "base_url"],
     ["model", new LlmBaseUrlError("private provider body", 404), "base_url"],
     ["download", new FigmaDownloadBudgetError(), "download_budget"],

@@ -24,11 +24,11 @@ export class LlmRequestError extends Error {
   constructor(message: string, readonly status?: number, readonly retryAfter?: number) { super(message); }
 }
 /**
- * LLM_BASE_URL does not lead to a working OpenAI-compatible API: no connection, a wrong path, or a reply that is no
- * chat completion. Another model at the same URL cannot help, unless only the reply was odd (otherModelMayWork).
+ * LLM_BASE_URL does not lead to a working OpenAI-compatible API: no connection, a wrong path, or a body that is no
+ * JSON object. Another model at the same URL cannot help.
  */
 export class LlmBaseUrlError extends LlmRequestError {
-  constructor(message: string, status?: number, readonly otherModelMayWork = false) {
+  constructor(message: string, status?: number) {
     super(message, status);
     this.name = "LlmBaseUrlError";
   }
@@ -42,7 +42,7 @@ export class LlmTimeoutError extends Error {
 
 /** Why a reply with HTTP 200 gave nothing to work with. */
 export type UnusableReplyReason = "refusal" | "content_filter" | "length" | "tool_call" | "reasoning" | "empty"
-  | "invalid_json" | "truncated_json";
+  | "no_choices" | "invalid_json" | "truncated_json";
 
 /** The provider answered, but the reply has no usable content; another candidate may do better. */
 export class LlmUnusableReplyError extends Error {
@@ -486,7 +486,7 @@ function describeProviderError(error: unknown): string | undefined {
 function shouldTryNextModel(error: unknown): boolean {
   if ((error instanceof LlmRequestError || error instanceof OpenAI.APIError) && error.status === 402) return false;
   // Every candidate uses the same URL.
-  if (error instanceof LlmBaseUrlError) return error.otherModelMayWork;
+  if (error instanceof LlmBaseUrlError) return false;
   if (error instanceof LlmRequestError) {
     return [404, 410, 429].includes(error.status ?? 0) || (error.status ?? 0) >= 500 || isProviderReturnedError(error);
   }
@@ -539,7 +539,7 @@ function normalizeLlmError(error: unknown): unknown {
     : reasoningRejections.has(error)
       ? `LLM request failed (HTTP ${status}): the model provider rejected the reasoning setting. `
         + `Unset LLM_ANSWER_REASONING_EFFORT, choose another value or another model. ${DIAGNOSE_HINT}`
-    : `LLM request failed (HTTP ${status ?? "unknown"}). Check provider availability and configuration.`;
+    : `LLM request failed (HTTP ${status ?? "unknown"}). Check provider availability and configuration. ${DIAGNOSE_HINT}`;
   return new LlmRequestError(redactMessage(message), status, waitMs === undefined ? undefined : Math.ceil(waitMs / 1000));
 }
 
@@ -555,8 +555,9 @@ function utcTime(ms: number): string {
 }
 
 /**
- * Failures that mean LLM_BASE_URL itself is wrong: no connection at all, or a 404/405 whose body is no JSON error
- * object (HTML or text). A missing model answers with a JSON error object and is not meant here.
+ * Failures that mean LLM_BASE_URL itself is wrong: no connection at all, or a 404/405 whose body holds no error message
+ * (HTML, text, or JSON such as {"detail":"Not Found"} or {}). A missing model answers with a message, at the top level
+ * (vLLM) or in an error object (OpenAI, OpenRouter), and is not meant here.
  */
 function baseUrlFailure(error: unknown): LlmBaseUrlError | undefined {
   if (typeof OpenAI.APIConnectionError === "function" && error instanceof OpenAI.APIConnectionError) {
@@ -566,11 +567,17 @@ function baseUrlFailure(error: unknown): LlmBaseUrlError | undefined {
   // Bodies of a 2xx answer that cannot be read: not JSON, or the connection ended before the end.
   if (error instanceof SyntaxError) return notChatCompletion("the response body was not valid JSON");
   if (error instanceof TypeError && /terminated/i.test(error.message)) return notChatCompletion("the response body was cut off");
-  if (error instanceof OpenAI.APIError && (error.status === 404 || error.status === 405) && (error.error === undefined || error.error === null)) {
-    return new LlmBaseUrlError(redactMessage(`LLM request failed (HTTP ${error.status}): the answer was no JSON error, so LLM_BASE_URL probably points to a wrong path. `
+  if (error instanceof OpenAI.APIError && (error.status === 404 || error.status === 405) && !hasErrorMessage(error.error)) {
+    return new LlmBaseUrlError(redactMessage(`LLM request failed (HTTP ${error.status}): the answer held no error message, so LLM_BASE_URL probably points to a wrong path. `
       + `OpenAI-compatible APIs usually end in /v1, for example ${EXAMPLE_BASE_URL}. Check LLM_BASE_URL. ${DIAGNOSE_HINT}`), error.status);
   }
   return undefined;
+}
+
+/** The SDK passes an error object, or its message when the provider sent a bare string; a JSON body without `error` is wrapped as one. */
+function hasErrorMessage(error: unknown): boolean {
+  const message = error && typeof error === "object" ? (error as { message?: unknown }).message : error;
+  return typeof message === "string" && Boolean(message.trim());
 }
 
 /** Scheme, host and port of LLM_BASE_URL; never its credentials, path or query. */
@@ -696,8 +703,8 @@ async function createCompletion(
     const embedded = embeddedError(completion);
     if (!embedded) {
       if (!Array.isArray(completion.choices) || completion.choices.length === 0) {
-        // Another model may still answer, unlike after a body that is no JSON.
-        throw notChatCompletion("the response contained no choices", true);
+        // A lapse of the model rather than of the URL: a JSON object arrived, so the endpoint works.
+        throw new LlmEmptyReplyError(`LLM (${params.model}) returned a reply with no choices. Retry, or choose another model.`, "no_choices");
       }
       return completion;
     }
@@ -724,9 +731,9 @@ function embeddedError(
   return (completion as unknown as EmbeddedErrorEnvelope).error || undefined;
 }
 
-function notChatCompletion(detail: string, otherModelMayWork = false): LlmBaseUrlError {
+function notChatCompletion(detail: string): LlmBaseUrlError {
   return new LlmBaseUrlError(redactMessage(`LLM request failed: LLM_BASE_URL did not return a chat completion (${detail}). `
-    + `Check that it points to an OpenAI-compatible API, for example ${EXAMPLE_BASE_URL}. ${DIAGNOSE_HINT}`), undefined, otherModelMayWork);
+    + `Check that it points to an OpenAI-compatible API, for example ${EXAMPLE_BASE_URL}. ${DIAGNOSE_HINT}`));
 }
 
 /** True when an embedded error is a rate limit (OpenRouter uses code 429 / metadata). */

@@ -665,6 +665,7 @@ describe("answerFromBoard evidence grounding", () => {
     ["tool_call", "the model called a tool instead of answering", "das Modell rief ein Tool auf, statt zu antworten"],
     ["reasoning", "the model returned only reasoning", "das Modell lieferte nur Reasoning"],
     ["empty", "the model returned an empty reply", "das Modell lieferte eine leere Antwort"],
+    ["no_choices", "the reply contained no choices", "die Antwort enthielt keine choices"],
     ["invalid_json", "the reply was not valid JSON", "die Antwort war kein gültiges JSON"],
     ["truncated_json", "the reply was cut off before the JSON was complete", "die Antwort wurde abgeschnitten, bevor das JSON vollständig war"],
   ])("answers with excerpts and names the cause when the model reply is unusable (%s)", async (reason, english, german) => {

@@ -293,6 +293,7 @@ const UNUSABLE_REPLY_CAUSES: Record<UnusableReplyReason, { en: string; de: strin
   tool_call: { en: "the model called a tool instead of answering", de: "das Modell rief ein Tool auf, statt zu antworten" },
   reasoning: { en: "the model returned only reasoning", de: "das Modell lieferte nur Reasoning" },
   empty: { en: "the model returned an empty reply", de: "das Modell lieferte eine leere Antwort" },
+  no_choices: { en: "the reply contained no choices", de: "die Antwort enthielt keine choices" },
   invalid_json: { en: "the reply was not valid JSON", de: "die Antwort war kein gültiges JSON" },
   truncated_json: { en: "the reply was cut off before the JSON was complete", de: "die Antwort wurde abgeschnitten, bevor das JSON vollständig war" },
 };

@@ -509,19 +509,24 @@ describe("LLM requests through real local HTTP and the OpenAI SDK", () => {
       [404, "<html><body>Not Found</body></html>", "text/html"],
       [405, "Method Not Allowed", "text/plain"],
       [404, "", "text/plain"],
-    ])("reports a wrong path after one request for HTTP %i without a JSON error object (%s)", async (status, body, type) => {
+      [404, '{"detail":"Not Found"}', "application/json"],
+      [404, "{}", "application/json"],
+    ])("reports a wrong path after one request for HTTP %i without an error message (%s)", async (status, body, type) => {
       const { chatJson } = await localClient((_request, response) => textReply(response, status, body, type));
       const pending = chatJson(["openrouter/free", "second/model"], messages, schemaOptions);
       await expect(pending).rejects.toMatchObject({ name: "LlmBaseUrlError", status, message:
-        `LLM request failed (HTTP ${status}): the answer was no JSON error, so LLM_BASE_URL probably points to a wrong path. `
+        `LLM request failed (HTTP ${status}): the answer held no error message, so LLM_BASE_URL probably points to a wrong path. `
         + `OpenAI-compatible APIs usually end in /v1, for example https://openrouter.ai/api/v1. Check LLM_BASE_URL. ${hint}` });
       // No router repetition, no format fallback and no other candidate: they all use the same URL.
       expect(requests).toHaveLength(1);
     });
 
-    it("keeps a 404 with a JSON error object a missing-model failure", async () => {
+    it.each([
+      ["an error object (OpenAI, OpenRouter)", { error: { code: 404, message: "No endpoints found for missing/model." } }],
+      ["a message at the top level (vLLM)", { object: "error", message: "The model `missing/model` does not exist.", type: "NotFoundError", param: null, code: 404 }],
+    ])("keeps a 404 with %s a missing-model failure", async (_case, missing) => {
       const { chatJson } = await localClient((request, response) => request.model === "missing/model"
-        ? json(response, 404, { error: { code: 404, message: "No endpoints found for missing/model." } }) : success(response));
+        ? json(response, 404, missing) : success(response));
       await expect(chatJson(["missing/model", "available/model"], messages, schemaOptions)).resolves.toEqual({ ok: true });
       expect(requests.map(request => request.model)).toEqual(["missing/model", "available/model"]);
     });
@@ -617,6 +622,8 @@ describe("LLM requests through real local HTTP and the OpenAI SDK", () => {
       ["the content filter", completion({ content: null }, "content_filter"), "content_filter", "had its reply blocked by the provider's content filter"],
       ["the output limit", completion({ content: "" }, "length"), "length", "ran into max_tokens before any text arrived"],
       ["only reasoning", completion({ content: "", reasoning: "synthetic private reasoning" }), "reasoning", "returned only reasoning and no text"],
+      ["no choices", { id: "x", object: "chat.completion" }, "no_choices", "returned a reply with no choices"],
+      ["empty choices", { choices: [] }, "no_choices", "returned a reply with no choices"],
       ["a tool call", completion({ content: null, tool_calls: [{ id: "call", type: "function", function: { name: "lookup", arguments: "{}" } }] }, "tool_calls"),
         "tool_call", "returned a tool call instead of text"],
     ])("names the cause of a reply with %s", async (_case, reply, reason, text) => {
@@ -627,9 +634,12 @@ describe("LLM requests through real local HTTP and the OpenAI SDK", () => {
       if (reason === "length") await expect(pending).rejects.toThrow("Raise LLM_ANSWER_MAX_OUTPUT_TOKENS");
     });
 
-    it("tries the next candidate and repeats a router request once, as before", async () => {
+    it.each([
+      ["a refusal", completion({ content: null, refusal: "no" })],
+      ["no choices", { id: "x", object: "chat.completion" }],
+    ])("tries the next candidate and repeats a router request once after %s, as before", async (_case, reply) => {
       const { chatJson } = await localClient((request, response) => request.model === "good/model" ? success(response)
-        : json(response, 200, completion({ content: null, refusal: "no" })));
+        : json(response, 200, reply));
       await expect(chatJson(["openrouter/free", "good/model"], messages, schemaOptions)).resolves.toEqual({ ok: true });
       expect(requests.map(request => request.model)).toEqual(["openrouter/free", "openrouter/free", "good/model"]);
     });
@@ -645,14 +655,12 @@ describe("LLM requests through real local HTTP and the OpenAI SDK", () => {
       ["a body cut off by the server", (response: ServerResponse) => {
         response.writeHead(200, { "content-type": "application/json", "content-length": "500" }); response.write('{"choices":'); setTimeout(() => response.destroy(), 20);
       }, "the response body was cut off", 1],
-      ["no choices", (response: ServerResponse) => json(response, 200, { id: "x", object: "chat.completion" }), "the response contained no choices", 2],
-      ["empty choices", (response: ServerResponse) => json(response, 200, { choices: [] }), "the response contained no choices", 2],
     ])("says LLM_BASE_URL returned no chat completion for %s, without a raw error", async (_case, reply, detail, expectedRequests) => {
       const { chatJson } = await localClient((_request, response) => reply(response));
       const pending = chatJson(["first/model", "second/model"], messages, schemaOptions);
       await expect(pending).rejects.toMatchObject({ name: "LlmBaseUrlError", message: "LLM request failed: LLM_BASE_URL did not return a chat completion "
         + `(${detail}). Check that it points to an OpenAI-compatible API, for example https://openrouter.ai/api/v1. diagnose_llm_config can test the configured model provider.` });
-      // A body that is no JSON says the URL is wrong for every model; a JSON body without choices may be one model's failure.
+      // A body that is no JSON object says the URL is wrong for every model, so no other candidate is tried.
       expect(requests).toHaveLength(expectedRequests);
     });
   });
