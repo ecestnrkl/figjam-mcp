@@ -31,6 +31,7 @@
 - Empty, refused, filtered or cut-off model replies, tool calls instead of text and bodies that are no chat completion get messages with their cause instead of raw errors; `answer_from_board` answers with excerpts and the cause instead of an error, and ingest counts them as `invalid_reply`.
 - A 400 or 422 that names the response format starts the format fallback; the server remembers the working format per `LLM_BASE_URL` and model (not for the `openrouter/free` and `openrouter/auto` routers), and `diagnose_llm_config` sends `LLM_ANSWER_REASONING_EFFORT` with its text check.
 - Removing evidence IDs from an answer and extracting JSON from a model reply take linear time; long runs of whitespace or opening braces no longer block the server for seconds.
+- The answer prompt shows each excerpt as an `<excerpt id="…" node="…" source="…">` element; board text that imitates a header, an ID or a closing tag stays text inside its own element, and connection lines stay on one line.
 
 ## 0.11.0 — 2026-10-26
 

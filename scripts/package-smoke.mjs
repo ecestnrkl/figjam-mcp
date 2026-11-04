@@ -355,7 +355,7 @@ try {
             reply = { label: 'Progress evidence', summary: 'Original progress source evidence', confirmedNodeIds: ['3:1'] };
           } else reply = { label: 'Workshop evidence', summary: 'Workshop finding version 2', confirmedNodeIds: ['1:1'] };
         } else if (schema === 'figjam_evidence_answer') {
-          const evidenceId = body.messages.find(message => message.role === 'user')?.content.match(/\\[(ev_[a-f0-9]+)\\]/)?.[1];
+          const evidenceId = body.messages.find(message => message.role === 'user')?.content.match(/<excerpt id="(ev_[a-f0-9]+)"/)?.[1];
           assert(evidenceId, 'Answer request must contain an original evidence ID');
           reply = { kind: 'answer', language: 'en', answer: 'Workshop finding version 2.', evidenceIds: [evidenceId] };
         } else if (schema === 'diagnose_text_json') reply = { result: 42 };
