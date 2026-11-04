@@ -26,6 +26,7 @@
 - Environment values are validated when a tool needs them; invalid values do not stop startup, and `max_speed` needs no model configuration.
 - `FIGJAM_MCP_CACHE_DIR` and `FIGJAM_MCP_ENV_FILE` expand a leading `~` or `~/` to the home directory.
 - Removed the unused `LLM_MAX_OUTPUT_TOKENS` setting.
+- `answer_from_board` and the other model requests end at their request deadline even when the provider stops sending an error response body.
 
 ## 0.11.0 — 2026-10-26
 

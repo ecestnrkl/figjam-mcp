@@ -477,15 +477,21 @@ async function createCompletion(
       );
     }
     let completion: OpenAI.ChatCompletion;
+    // The SDK's own timeout ends with the response headers; it reads an error body without a deadline.
+    const deadline = AbortSignal.timeout(timeoutMs);
+    const requestSignal = signal ? AbortSignal.any([signal, deadline]) : deadline;
     try {
       options.onRequest?.(params.model);
-      completion = await llm.chat.completions.create(params, { signal, timeout: timeoutMs });
+      completion = await llm.chat.completions.create(params, { signal: requestSignal, timeout: timeoutMs });
       options.onUsage?.({ model: params.model, promptTokens: completion.usage?.prompt_tokens,
         completionTokens: completion.usage?.completion_tokens, totalTokens: completion.usage?.total_tokens });
-    } catch (error) {
+    } catch (caught) {
+      let error = caught;
       if (signal?.aborted) {
         throw abortReason(signal, error);
       }
+      // A body read cut short by the deadline surfaces as the response's HTTP error or as an abort error.
+      if (deadline.aborted && !isLlmTimeout(error)) error = new OpenAI.APIConnectionTimeoutError();
       if (isLlmTimeout(error)) {
         const clamped = timeoutMs < requestTimeoutMs
           ? `, the time left of the ${options.totalTimeoutMs! / 1000}s total deadline across model candidates`

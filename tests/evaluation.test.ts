@@ -140,8 +140,8 @@ describe("retrieval evaluation CLI", () => {
       await writeFile(provider, `
         const timeout = AbortSignal.timeout.bind(AbortSignal);
         AbortSignal.timeout = ms => {
-          if (ms !== 45000) throw new Error("Unexpected case deadline");
-          return timeout(100);
+          // Only the case deadline is shortened; the request deadline of every HTTP attempt stays as configured.
+          return timeout(ms === 45000 ? 100 : ms);
         };
         globalThis.fetch = (url, options) => new Promise((resolve, reject) => {
           const pending = setTimeout(() => reject(new Error("Uncancelled request")), 10000);

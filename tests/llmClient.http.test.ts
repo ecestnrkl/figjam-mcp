@@ -151,6 +151,60 @@ describe("LLM requests through real local HTTP and the OpenAI SDK", () => {
     expect(onUsage).not.toHaveBeenCalled();
   }, 10_000);
 
+  it.each([500, 429])("ends a stalled HTTP %i error body at the request deadline", async status => {
+    vi.stubEnv("LLM_REQUEST_TIMEOUT_MS", "1000");
+    vi.stubEnv("LLM_RATE_LIMIT_RETRIES", "1");
+    const closed = deferred();
+    const { chatJson } = await localClient((_request, response) => {
+      response.once("close", closed.resolve);
+      // Headers and a few body bytes, then silence: the SDK reads error bodies without a deadline of its own.
+      response.writeHead(status, { "content-type": "application/json", "content-length": "500" });
+      response.flushHeaders();
+      response.write('{"error":');
+    });
+    const started = performance.now();
+    await expect(chatJson("stalled/model", messages, schemaOptions)).rejects.toMatchObject({ name: "LlmTimeoutError" });
+    expect(performance.now() - started).toBeLessThan(2500);
+    await closed.promise;
+    expect(requests).toHaveLength(1);
+  });
+
+  it("gives answer_from_board its timeout message after at most two requests when a router's 429 body stalls", async () => {
+    vi.stubEnv("LLM_ANSWER_REQUEST_TIMEOUT_MS", "1000");
+    vi.stubEnv("LLM_TEXT_MODELS", "openrouter/free");
+    vi.stubEnv("LLM_TEXT_MODEL", "");
+    await localClient((_request, response) => {
+      response.writeHead(429, { "content-type": "application/json", "content-length": "500" });
+      response.flushHeaders();
+      response.write('{"error":');
+    });
+    const { answerFromBoard } = await import("../src/tools/answerFromBoard.js");
+    const { setBoard } = await import("../src/lib/cache.js");
+    const { evidenceBoard } = await import("./fixtures/retrieval.js");
+    const board = evidenceBoard("StalledBody123");
+    setBoard(board.boardId, board);
+    await expect(answerFromBoard({ boardId: board.boardId, question: "What is required for payment retries?" }))
+      .rejects.toThrow(/^LLM request timed out after 1s\..*adjust LLM_ANSWER_REQUEST_TIMEOUT_MS/);
+    expect(requests.length).toBeLessThanOrEqual(2);
+  });
+
+  it("keeps a caller abort an abort while an error body is stalled", async () => {
+    const ready = deferred();
+    const controller = new AbortController();
+    const reason = new Error("Caller stopped the synthetic request");
+    const { chatJson } = await localClient((_request, response) => {
+      response.writeHead(500, { "content-type": "application/json", "content-length": "500" });
+      response.flushHeaders();
+      response.write('{"error":');
+      ready.resolve();
+    });
+    const pending = chatJson("stalled/model", messages, { ...schemaOptions, requestTimeoutMs: 60000, signal: controller.signal });
+    const rejected = expect(pending).rejects.toBe(reason);
+    await ready.promise;
+    controller.abort(reason);
+    await rejected;
+  });
+
   it("moves to the next configured model after a body timeout without SDK retries or format retries", async () => {
     vi.stubEnv("LLM_REQUEST_TIMEOUT_MS", "1000");
     const closed = deferred();
