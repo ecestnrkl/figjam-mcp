@@ -30,6 +30,7 @@
 - Model-provider errors say what to do and point to `diagnose_llm_config`: HTTP 401 and 403, a missing connection, a wrong path (HTTP 404/405 without a JSON error) and HTTP 429 with the time from `Retry-After` or `X-RateLimit-Reset`, which is retried only when `LLM_RATE_LIMIT_MAX_BACKOFF_MS` allows. `LLM_BASE_URL` must be an absolute http(s) URL without `/chat/completions`; ingest reports these failures as the new reason `base_url`.
 - Empty, refused, filtered or cut-off model replies, tool calls instead of text and bodies that are no chat completion get messages with their cause instead of raw errors; `answer_from_board` answers with excerpts and the cause instead of an error, and ingest counts them as `invalid_reply`.
 - A 400 or 422 that names the response format starts the format fallback; the server remembers the working format per `LLM_BASE_URL` and model (not for the `openrouter/free` and `openrouter/auto` routers), and `diagnose_llm_config` sends `LLM_ANSWER_REASONING_EFFORT` with its text check.
+- Removing evidence IDs from an answer and extracting JSON from a model reply take linear time; long runs of whitespace or opening braces no longer block the server for seconds.
 
 ## 0.11.0 — 2026-10-26
 

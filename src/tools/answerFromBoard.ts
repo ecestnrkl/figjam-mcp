@@ -297,11 +297,24 @@ function extractiveFallback(question: string, snapshotId: string, evidence: Evid
  * separators, quotes or empty square brackets remain. Only the IDs and what they leave behind change.
  */
 export function removeEvidenceIds(answer: string): string {
-  const withoutBrackets = dropEvidenceBrackets(answer, ROUND_BRACKET);
+  // Every pattern needs an ID; without one the answer stays as the model wrote it.
+  if (!HAS_EVIDENCE_ID.test(answer)) return answer;
+  const withoutBrackets = dropEvidenceBrackets(foldLongWhitespace(answer), ROUND_BRACKET);
   const withoutLines = withoutBrackets.replace(EVIDENCE_ID_LINE, (line, before: string, after: string, offset: number) =>
     // A removed line keeps the larger line break around it, none at the start or end of the answer.
     offset === 0 || offset + line.length === withoutBrackets.length ? "" : before.length >= after.length ? before : after);
   return dropEvidenceBrackets(withoutLines.replace(EVIDENCE_ID_SENTENCE, ""), SQUARE_BRACKET).replace(EVIDENCE_ID_ELSEWHERE, "");
+}
+
+/**
+ * The patterns below scan the whitespace before a possible match once per start position, which takes quadratic time
+ * on a long run. A run of more than 32 characters becomes one space, a line break, or a blank line when it held two.
+ */
+function foldLongWhitespace(text: string): string {
+  return text.replace(/\s{33,}/g, run => {
+    const breaks = run.split("\n").length - 1;
+    return breaks === 0 ? " " : breaks === 1 ? "\n" : "\n\n";
+  });
 }
 
 /** Removes the IDs inside brackets; a bracket left with nothing but leftovers goes as a whole, never only one side of it. */

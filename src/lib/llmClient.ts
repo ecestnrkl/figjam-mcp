@@ -872,11 +872,13 @@ function parseJsonReply(raw: string, model: string, finishReason?: string | null
   try {
     return JSON.parse(stripped);
   } catch {
-    // Some models wrap JSON in prose; grab the outermost {...} block.
-    const match = stripped.match(/\{[\s\S]*\}/);
-    if (match) {
+    // Some models wrap JSON in prose; grab the outermost {...} block, from the first "{" to the last "}".
+    // A regular expression for it takes quadratic time on a long run of "{".
+    const start = stripped.indexOf("{");
+    const end = stripped.lastIndexOf("}");
+    if (start !== -1 && end > start) {
       try {
-        return JSON.parse(match[0]);
+        return JSON.parse(stripped.slice(start, end + 1));
       } catch {
         // fall through to the error below
       }

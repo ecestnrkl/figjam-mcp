@@ -721,4 +721,40 @@ describe("removeEvidenceIds", () => {
   ])("%s", (answer, expected) => {
     expect(removeEvidenceIds(answer)).toBe(expected);
   });
+
+  const run = 80_000;
+  it.each([
+    ["spaces", " ".repeat(run)],
+    ["tabs", "\t".repeat(run)],
+    ["line breaks", "\n".repeat(run)],
+    ["alternating spaces and line breaks", " \n".repeat(run / 2)],
+    ["spaces before a bracket", " ".repeat(run) + "(open"],
+    ["commas", ",".repeat(run)],
+    ["dashes with spaces", "- ".repeat(run / 2)],
+  ])("removes IDs in linear time from an answer with a long run of %s", (_name, filler) => {
+    // Quadratic matching took seconds for 20,000 line breaks and 38 s for 80,000 tabs.
+    for (const [answer, expected] of [
+      [`Answer${filler}`, `Answer${filler}`],
+      [`Answer${filler}${a}`, null],
+      [`Answer${filler}Sources: ${a}, ${b}`, null],
+      [`(${filler}${a})`, null],
+    ] as const) {
+      const started = performance.now();
+      const result = removeEvidenceIds(answer);
+      expect(performance.now() - started).toBeLessThan(100);
+      // Only the run, the IDs and what they leave behind change.
+      if (expected !== null) expect(result).toBe(expected);
+      else expect(result).not.toContain("ev_");
+      expect(result.length).toBeLessThanOrEqual(answer.length);
+    }
+  });
+
+  it.each([
+    ["spaces", "Answer" + " ".repeat(run) + `${a}`, "Answer"],
+    ["tabs", "Answer" + "\t".repeat(run) + `${a}`, "Answer"],
+    ["line breaks", "Answer" + "\n".repeat(run) + `Sources: ${a}`, "Answer"],
+    ["a long run before more text", `Answer ${a}${" ".repeat(run)}and more.`, "Answer and more."],
+  ])("keeps the text around the IDs after a long run of %s", (_name, answer, expected) => {
+    expect(removeEvidenceIds(answer)).toBe(expected);
+  });
 });

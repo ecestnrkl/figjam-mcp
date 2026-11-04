@@ -456,6 +456,26 @@ describe("chatJson", () => {
     await expect(promise).rejects.toThrow(/no choices/i);
   });
 
+  it("extracts the JSON of a reply that wraps it in prose, from the first { to the last }", async () => {
+    createMock.mockResolvedValueOnce(okCompletion('Here is the result: {"a":{"b":1}} Hope that helps.'))
+      .mockResolvedValueOnce(okCompletion('} stray {"a":1} text'))
+      .mockResolvedValueOnce(okCompletion("} before { after"))
+      .mockResolvedValueOnce(okCompletion('x {"a":1} y {"b":2} z'));
+    await expect(chatJson("test-model", MESSAGES)).resolves.toEqual({ a: { b: 1 } });
+    await expect(chatJson("test-model", MESSAGES)).resolves.toEqual({ a: 1 });
+    // No "{" before the last "}", and two blocks form one invalid block.
+    await expect(chatJson("test-model", MESSAGES)).rejects.toThrow("did not return valid JSON");
+    await expect(chatJson("test-model", MESSAGES)).rejects.toThrow("did not return valid JSON");
+  });
+
+  it.each(["{", "{ ", "{}{", "}{"])("rejects 80,000 repetitions of %j in linear time", async unit => {
+    // The regular expression took 4.8 s for 80,000 opening braces.
+    createMock.mockResolvedValueOnce(okCompletion(unit.repeat(80_000)));
+    const started = performance.now();
+    await expect(chatJson("test-model", MESSAGES)).rejects.toThrow("did not return valid JSON");
+    expect(performance.now() - started).toBeLessThan(100);
+  });
+
   it("flags a truncated reply (finish_reason 'length') with an actionable hint", async () => {
     // Reasoning model burned the whole budget thinking, so only prose came back.
     createMock.mockResolvedValueOnce(
