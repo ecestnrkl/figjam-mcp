@@ -2,6 +2,9 @@
 
 ## 0.12.0 — Unreleased
 
+- Named enclosing frames and groups become searchable excerpt provenance; generic names and image filenames are omitted, and nonempty frames and groups no longer produce name excerpts.
+- Model-generated cluster labels are marked in context and answer prompts, and answer source locations use sections or frames.
+- Full context quotes each excerpt text line, and names are flattened to one line in readable output and answer prompts.
 - Reading paths expose pagination cursors, whole-board summary guidance and Figma link patterns, and tool descriptions ask for citations.
 - Compact overview headings retain longer names and show direct parent sections in tree order when useful.
 - Ingest, answer and diff text identifies snapshots; singular counts use singular wording, and triangle arrowheads retain their direction.

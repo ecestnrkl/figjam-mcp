@@ -27,7 +27,7 @@ export const MAX_BOARD_NODES = 100_000;
 const GENERIC_NODE_NAMES = new Set([
   "arrow", "boolean", "circle", "code block", "component", "connector", "connector line", "ellipse", "embed",
   "exclude", "frame", "group", "image", "instance", "intersect", "line", "page", "polygon", "rectangle",
-  "section", "shape", "slice", "stamp", "star", "sticky", "subtract", "table", "text", "union", "vector",
+  "section", "shape", "shape with text", "link preview", "slice", "stamp", "star", "sticky", "subtract", "table", "text", "union", "vector",
   "washi tape",
   // FigJam shape defaults
   "arrow left", "arrow right", "chevron", "cross", "cylinder", "diamond", "document multiple",
@@ -165,7 +165,8 @@ export function flattenNodeTree(rawFigmaJson: unknown): NormalizedNode[] {
       pageId: raw.type === "CANVAS" || raw.type === "PAGE" ? raw.id : parent?.pageId,
       sectionIds, depth, children: [],
       tableOwner: parent?.raw.type === "TABLE" ? item.parent : parent?.tableOwner,
-      keep: !STRUCTURAL_TYPES.has(raw.type) || Boolean(raw.characters?.trim()) || Boolean(extractImageRef(raw)),
+      keep: !STRUCTURAL_TYPES.has(raw.type) || Boolean(raw.characters?.trim()) || Boolean(extractImageRef(raw)) ||
+        ((raw.type === "FRAME" || raw.type === "GROUP") && Boolean(raw.name.trim()) && !isGenericNodeName(raw.name)),
     };
     entries.push(entry);
     parent?.children.push(index);

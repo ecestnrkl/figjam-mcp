@@ -26,9 +26,12 @@ export interface Evidence {
   modelDerived: boolean;
   clusterId?: string;
   clusterLabel?: string;
+  /** Internal presentation hint; not a structured response field. */
+  clusterLabelModel?: boolean;
   nodeName?: string;
   pageName?: string;
   sectionNames?: string[];
+  frameNames?: string[];
   pageId?: string;
   sectionIds?: string[];
   renderNodeId?: string;
@@ -515,18 +518,22 @@ function interleaveClusters(entries: IndexedEvidence[]): IndexedEvidence[] {
 }
 
 export function formatEvidence(item: Evidence): string {
+  const singleLine = (value: string) => value.replace(/\s+/g, " ").trim();
   const provenance = item.modelDerived ? "MODEL INTERPRETATION; verify against original" :
     item.sourceType === "board_metadata" ? "original board metadata" :
     item.sourceType === "table_row" ? `original table row; cells separated by "${TABLE_CELL_SEPARATOR.trim()}"` : "original board text";
   const metadata = [
-    item.nodeName ? `Node name: ${item.nodeName}` : undefined,
-    item.pageName ? `Page: ${item.pageName}` : undefined,
-    item.sectionNames?.length ? `Sections: ${item.sectionNames.join(" / ")}` : undefined,
+    item.nodeName ? `Node name: ${singleLine(item.nodeName)}` : undefined,
+    item.pageName ? `Page: ${singleLine(item.pageName)}` : undefined,
+    item.sectionNames?.length ? `Sections: ${item.sectionNames.map(singleLine).join(" / ")}` : undefined,
+    item.frameNames?.length ? `Frames: ${item.frameNames.map(singleLine).join(" / ")}` : undefined,
     item.sourceType === "table_cell" && item.renderNodeId ? `Table node: ${item.renderNodeId}` : undefined,
     item.row !== undefined ? `Row index: ${item.row}` : undefined,
     item.column !== undefined ? `Column index: ${item.column}` : undefined,
   ].filter(Boolean).join("; ");
-  return `[${item.evidenceId}] ${item.nodeName ?? item.nodeId} (${provenance}; node ${item.nodeId})\n${item.clusterLabel ? `Cluster label: ${item.clusterLabel}\n` : ""}${metadata ? `Original source metadata: ${metadata}\n` : ""}${item.text}`;
+  const derivedLabel = (item.sourceType === "model_interpretation" || item.sourceType === "cluster_summary") && item.clusterLabel
+    ? `Cluster label${item.clusterLabelModel ? " (model)" : ""}: ${singleLine(item.clusterLabel)}\n` : "";
+  return `[${item.evidenceId}] ${singleLine(item.nodeName ?? item.nodeId)} (${provenance}; node ${item.nodeId})\n${derivedLabel}${metadata ? `Original source metadata: ${metadata}\n` : ""}${item.text}`;
 }
 
 export function boundedText(value: string, maxChars: number): string {
@@ -669,7 +676,7 @@ function evidenceFields(
     text: item.text,
     node: [item.sourceType === "board_metadata" || nameDuplicatesText ? "" : node?.name, node?.type, extraNode]
       .filter(Boolean).join("\n"),
-    section: (node?.sectionIds ?? []).map((id) => nodesById.get(id)?.name ?? "").join("\n"),
+    section: [...(node?.sectionIds ?? []).map((id) => nodesById.get(id)?.name ?? ""), ...(item.frameNames ?? [])].join("\n"),
     page: node?.pageId ? nodesById.get(node.pageId)?.name ?? "" : "",
     cluster: item.clusterLabel ?? "",
   };
@@ -702,6 +709,7 @@ function buildEvidence(board: BoardData, snapshotId: string): EvidenceSource[] {
         text: chunk,
         clusterId: cluster?.id,
         clusterLabel: cluster ? boundedText(cluster.label, 160) : undefined,
+        clusterLabelModel: cluster ? isModelLabel(cluster) : undefined,
         chunkIndex,
         url: nodeLink(board, source.renderNodeId ?? source.nodeId),
         truncated: chunks.length > 1,
@@ -742,12 +750,13 @@ function buildEvidence(board: BoardData, snapshotId: string): EvidenceSource[] {
       append(node.text, { ...provenance, nodeId: node.id, sourceType: "board_text", modelDerived: false }, cluster);
     }
     if (!node.text?.trim() && !node.table?.cells.some((cell) => cell.text.trim()) && node.name.trim() &&
-      !CONTAINER_TYPES.has(node.type) && !isGenericNodeName(node.name)) {
+      !CONTAINER_TYPES.has(node.type) && !isGenericNodeName(node.name) &&
+      !(node.imageRef && isImageFileName(node.name))) {
       append(node.name, { ...provenance, nodeId: node.id, sourceType: "board_metadata", modelDerived: false }, cluster);
     }
   }
   for (const cluster of board.clusters) {
-    const modelDerived = cluster.summarySource === "vision_llm" || cluster.summarySource === "text_llm" || Boolean(cluster.modelId);
+    const modelDerived = isModelLabel(cluster);
     const hasOriginalText = cluster.nodeIds.some((id) => {
       const node = nodesById.get(id);
       return Boolean(node?.text?.trim() || node?.table?.cells.some((cell) => cell.text.trim()));
@@ -763,7 +772,28 @@ function buildEvidence(board: BoardData, snapshotId: string): EvidenceSource[] {
       modelDerived: true,
     }, cluster);
   }
-  return evidence;
+  // Only keep a frame or group name as an excerpt when nothing inside it produced one.
+  const containersWithEvidence = new Set<string>();
+  for (const { evidence: item } of evidence) {
+    let parentId = nodesById.get(item.renderNodeId ?? item.nodeId)?.parentId;
+    for (let depth = 0; parentId && depth < MAX_ENCLOSING_DEPTH; depth++) {
+      const parent = nodesById.get(parentId);
+      if (!parent) break;
+      if (parent.type === "FRAME" || parent.type === "GROUP") containersWithEvidence.add(parent.id);
+      parentId = parent.parentId;
+    }
+  }
+  return evidence.filter(({ evidence: item }) => item.sourceType !== "board_metadata" || !containersWithEvidence.has(item.nodeId));
+}
+
+function isModelLabel(cluster: RefinedCluster): boolean {
+  return cluster.summarySource === "vision_llm" || cluster.summarySource === "text_llm" || Boolean(cluster.modelId);
+}
+
+function isImageFileName(name: string): boolean {
+  const value = name.trim();
+  return /\.(?:png|jpe?g|gif|webp|heic|heif|svg|bmp|tiff?|pdf)$/i.test(value) ||
+    /^(?:screenshot|screen shot|bildschirmfoto|capture d[’']écran|img[_ -]\d|image \d+|bild \d+)/i.test(value);
 }
 
 /** Rows in order with their cells in column order, or undefined if any cell has no row. */
@@ -780,9 +810,20 @@ export function tableRows(table: NormalizedNode): Array<{ row: number; cells: Ta
 }
 
 function nodeProvenance(node: NormalizedNode | undefined, nodesById: Map<string, NormalizedNode>):
-  Pick<Evidence, "pageId" | "sectionIds" | "renderNodeId" | "nodeName" | "pageName" | "sectionNames"> {
+  Pick<Evidence, "pageId" | "sectionIds" | "renderNodeId" | "nodeName" | "pageName" | "sectionNames" | "frameNames"> {
   const sectionIds = node?.sectionIds?.slice(-16);
   const pageName = node?.pageId ? nodesById.get(node.pageId)?.name : undefined;
+  const frames: string[] = [];
+  let parentId = node?.parentId;
+  for (let depth = 0; parentId && depth < MAX_ENCLOSING_DEPTH; depth++) {
+    const parent = nodesById.get(parentId);
+    if (!parent) break;
+    if ((parent.type === "FRAME" || parent.type === "GROUP") && parent.name.trim() && !isGenericNodeName(parent.name)) {
+      frames.push(boundedText(parent.name, 80));
+    }
+    parentId = parent.parentId;
+  }
+  const frameNames = frames.slice(0, 16).reverse();
   return {
     pageId: node?.pageId,
     sectionIds,
@@ -791,6 +832,7 @@ function nodeProvenance(node: NormalizedNode | undefined, nodesById: Map<string,
     pageName: pageName ? boundedText(pageName, 160) : undefined,
     sectionNames: sectionIds?.map((id) => nodesById.get(id)?.name)
       .filter((name): name is string => Boolean(name)).map((name) => boundedText(name, 80)),
+    ...(frameNames.length ? { frameNames } : {}),
   };
 }
 

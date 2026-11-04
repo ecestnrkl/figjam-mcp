@@ -13,6 +13,8 @@ export const clusterContextShape = {
     .describe("Page of this cluster's excerpts on this page of results; excerpts repeat it only where they differ"),
   sectionNames: z.array(z.string().max(80)).max(16).optional()
     .describe("Enclosing sections, outermost first, of this cluster's excerpts; excerpts repeat them only where they differ"),
+  frameNames: z.array(z.string().max(80)).max(16).optional()
+    .describe("Named enclosing frames and groups, outermost first; excerpts repeat them only where they differ"),
   summary: z.string()
     .describe("Model summary of the cluster; empty for deterministic clusters, whose excerpts carry the text, and where maxChars leaves no room for it"),
   summarySource: z.enum(["vision_llm", "text_llm", "deterministic", "cache", "unknown"])
@@ -64,6 +66,8 @@ export const evidenceSchema = z.object({
     .describe("Only for an excerpt outside the listed clusters or whose location differs from its cluster's"),
   sectionNames: z.array(z.string().max(80)).max(16).optional()
     .describe("Same rule as pageName; an empty list means outside sections"),
+  frameNames: z.array(z.string().max(80)).max(16).optional()
+    .describe("Named enclosing frames and groups, outermost first; included only when nonempty and different from the cluster"),
   pageId: z.string().optional(), sectionIds: z.array(z.string()).optional(), renderNodeId: z.string().optional(),
   row: z.number().optional(), column: z.number().optional(),
   chunkIndex: z.number().int().nonnegative().optional().describe("Absent means 0"), url: z.string(),

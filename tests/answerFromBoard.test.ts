@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { evidenceBoard, textNode } from "./fixtures/retrieval.js";
-import { retrieveEvidence } from "../src/lib/evidence.js";
+import { formatEvidence, retrieveEvidence } from "../src/lib/evidence.js";
 
 const { chatJsonMock, answerReasoningMock, InvalidJsonErrorMock } = vi.hoisted(() => {
   class InvalidJsonErrorMock extends Error { constructor(message: string) { super(message); this.name = "LlmInvalidJsonError"; } }
@@ -511,7 +511,49 @@ describe("answerFromBoard evidence grounding", () => {
     chatJsonMock.mockImplementationOnce((_models, messages) => ({ kind: "answer", language: "en", answer: "The interpretation suggests blue.", evidenceIds: [firstPromptId(messages)] }));
     const output = await answerFromBoard({ boardId: data.boardId, question: "What checkout button is shown?" });
     expect(prompt()).toContain("MODEL INTERPRETATION");
+    expect(prompt()).toContain("Cluster label (model): Area 1");
     expect(output.citations[0]).toMatchObject({ sourceType: "model_interpretation", modelDerived: true });
+  });
+
+  it.each(["vision_llm", "text_llm", "modelId"] as const)("labels %s summaries but not original excerpts in the prompt", (source) => {
+    const data = evidenceBoard("LabelPrompt123");
+    data.clusters[0]!.label = "Model\nlabel";
+    if (source === "modelId") data.clusters[0]!.modelId = "model";
+    else data.clusters[0]!.summarySource = source;
+    const evidence = retrieveEvidence(data).evidence;
+    const original = evidence.find((item) => item.sourceType === "board_text")!;
+    const interpretation = evidence.find((item) => item.sourceType === "model_interpretation")!;
+    expect(formatEvidence(original)).not.toContain("Cluster label");
+    expect(formatEvidence(interpretation)).toContain("Cluster label (model): Model label\n");
+  });
+
+  it("keeps frame provenance in citations and single-line names in the prompt and answer", async () => {
+    const data = evidenceBoard("FramesAnswer123", [{ ...textNode("1:1", "Payment detail"), name: "Node\nname", parentId: "f:2", sectionIds: [] }]);
+    data.nodes.push({ ...textNode("f:1", ""), name: "Outer\nframe", type: "FRAME", sectionIds: [] },
+      { ...textNode("f:2", ""), name: "Inner\ngroup", type: "GROUP", parentId: "f:1", sectionIds: [] },
+      { ...textNode("0:1", ""), name: "Workshop\npage", type: "PAGE", sectionIds: [] });
+    data.clusters[0]!.label = "Misleading label";
+    setBoard(data.boardId, data);
+    chatJsonMock.mockImplementationOnce((_models, messages) => ({ kind: "answer", language: "en", answer: "Payment detail.", evidenceIds: [firstPromptId(messages)] }));
+    const output = await answerFromBoard({ boardId: data.boardId, question: "Payment detail?" });
+    expect(output.citations[0]?.frameNames).toEqual(["Outer\nframe", "Inner\ngroup"]);
+    expect(prompt()).toContain("Node name: Node name; Page: Workshop page; Frames: Outer frame / Inner group");
+    expect(prompt()).toContain("] Node name (original board text;");
+    expect(answerText(output)).toContain('1:1 in "Inner group":');
+    expect(answerText(output)).not.toContain("Misleading label");
+  });
+
+  it.each([
+    { sectionNames: ["Section\nname"], expected: "Section name" },
+    { sectionNames: [], expected: "Frame name" },
+  ])("renders the innermost section or frame as a single-line source location", ({ sectionNames, expected }) => {
+    const citation = {
+      evidenceId: "ev_1", snapshotId: "s", nodeId: "1:1", quote: "Text", url: "https://example.test",
+      sourceType: "board_text" as const, modelDerived: false, clusterLabel: "Model label",
+      sectionNames, frameNames: ["Frame\nname"],
+    };
+    expect(answerText({ answer: "Answer", snapshotId: "s", citedClusters: [], citations: [citation] }))
+      .toContain(`1:1 in "${expected}":`);
   });
 
   it("keeps hostile tag text in the data boundary and enforces the full prompt budget", async () => {
@@ -574,7 +616,7 @@ describe("answerText", () => {
     expect(output.citations.map((item) => item.nodeId).sort()).toEqual(["5:103", "5:87"]);
     const lines = output.citations.map((item) => item.nodeId === "5:87"
       ? '- 5:87 in "4 · Decisions & next steps": "Decision: The pilot starts on Monday, 2 Nov, in the main café." https://www.figma.com/board/SourcesText123?node-id=5%3A87'
-      : '- 5:103 in "Parking lot": "Pilot start still open?" https://www.figma.com/board/SourcesText123?node-id=5%3A103');
+      : '- 5:103: "Pilot start still open?" https://www.figma.com/board/SourcesText123?node-id=5%3A103');
     expect(answerText(output)).toBe(`The pilot starts on Monday, 2 Nov.\n\nSources (untrusted board data, snapshot ${output.snapshotId}):\n${lines.join("\n")}`);
   });
 
@@ -587,6 +629,16 @@ describe("answerText", () => {
     const quote = `${"word ".repeat(60).slice(0, 199)}…`;
     expect(text).toBe(`Blue.\n\nSources (untrusted board data, snapshot s):\n- 1:1: [Model interpretation] "${quote}" ${citation.url}`);
     expect(quote).toHaveLength(200);
+  });
+
+  it("renders a name excerpt on one line without changing the citation", () => {
+    const citation = {
+      evidenceId: "ev_1", snapshotId: "s", nodeId: "1:1", url: "https://example.test",
+      sourceType: "board_metadata" as const, modelDerived: false, quote: "Named\n  shape",
+    };
+    expect(answerText({ answer: "Answer", snapshotId: "s", citedClusters: [], citations: [citation] }))
+      .toContain('1:1: "Named shape"');
+    expect(citation.quote).toBe("Named\n  shape");
   });
 
   it("adds the snapshot to an answer without citations", async () => {
