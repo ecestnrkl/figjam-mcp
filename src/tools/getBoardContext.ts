@@ -159,7 +159,7 @@ export async function getBoardContext(input: GetBoardContextInput): Promise<Boar
     }
   }
   const rankedSectionMatches = [...sectionMatches].sort((a, b) => b[1].count - a[1].count || a[1].order - b[1].order);
-  const topicHint = 'An excerpt matches when one of these words is in its text, its section or node name, the label of an arrow attached to it or, for a table row, its column headings: whole words, ignoring case and accents. Other word forms, synonyms and translations do not match; add them to the topic (for example "payment payments pay Bezahlung") or read sections by ID.';
+  const topicHint = 'An excerpt matches when one of these words is in its text, its section or node name, the label of an arrow attached to it or, for a table row, its column headings: whole words, ignoring case and accents (words of five or more letters also match compounds that begin with them). Other word forms, synonyms and translations do not match; add them to the topic (for example "payment payments pay Bezahlung") or read sections by ID.';
   function topicSections(limit: number): string {
     let sectionCount = 0;
     const shown = rankedSectionMatches.filter(([id]) => !id || ++sectionCount <= limit);

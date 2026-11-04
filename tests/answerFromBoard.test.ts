@@ -35,7 +35,6 @@ describe("answerFromBoard evidence grounding", () => {
 
   it.each([
     { kind: "answer", language: "en", answer: "Invented answer", evidenceIds: ["ev_madeup"] },
-    { kind: "unsupported", language: "en", answer: "Invented answer", evidenceIds: ["ev_madeup"] },
     { kind: "answer", language: "en", answer: "Invented answer", citedClusters: ["Area 1"] },
   ])("rejects invented-ID and label-only claims: %j", async (reply) => {
     const data = evidenceBoard("NoCitation123");
@@ -129,6 +128,9 @@ describe("answerFromBoard evidence grounding", () => {
     const output = await answerFromBoard({ boardId: data.boardId, question });
     expect(chatJsonMock).not.toHaveBeenCalled();
     expect(output.answer).toContain(german ? "Kein Auszug passt zu einem Wort dieser Frage" : "No excerpt matches a word of this question");
+    expect(output.answer).toContain(german
+      ? "Akzenten (Wörter ab fünf Buchstaben finden auch Komposita, die mit ihnen beginnen)"
+      : "ignoring case and accents (words of five or more letters also match compounds that begin with them)");
     expect(output.answer).toContain('get_board_context nodeIds: "Ideas" (ID: s:1).');
     expect(output.answer).toContain(german ? "1 Auszug liegt außerhalb von Sections: lies ihn" : "1 excerpt lies outside sections: read it");
     expect(output.citations).toEqual([]);
@@ -267,6 +269,16 @@ describe("answerFromBoard evidence grounding", () => {
     expect(output.answer).not.toContain("s:4");
     expect(output.answer).toContain(outside);
     expect(output.answer).toContain("get_board_context outsideSections: true");
+    expect(output.citations).toEqual([]);
+    expect(output.citedClusters).toEqual([]);
+  });
+
+  it("preserves an unsupported classification even with an invalid evidence ID", async () => {
+    const data = evidenceBoard("UnsupportedInvalidId");
+    setBoard(data.boardId, data);
+    chatJsonMock.mockResolvedValueOnce({ kind: "unsupported", answer: "Unknown", evidenceIds: ["ev_madeup"] });
+    const output = await answerFromBoard({ boardId: data.boardId, question: "Payment retries?" });
+    expect(output.answer).toContain("best-matching excerpts do not answer this question");
     expect(output.citations).toEqual([]);
     expect(output.citedClusters).toEqual([]);
   });

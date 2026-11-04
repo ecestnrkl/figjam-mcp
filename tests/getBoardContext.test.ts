@@ -1,7 +1,7 @@
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { setBoard } from "../src/lib/cache.js";
 import { getBoardContext } from "../src/tools/getBoardContext.js";
-import { getBoardContextInputSchema, getBoardContextOutputSchema, type GetBoardContextInput } from "../src/schemas/getBoardContext.js";
+import { getBoardContextInputSchema, getBoardContextInputShape, getBoardContextOutputSchema, type GetBoardContextInput } from "../src/schemas/getBoardContext.js";
 import { evidenceBoard, textNode } from "./fixtures/retrieval.js";
 import { largeBoard, mixedBoard, tableBoard } from "./fixtures/largeBoard.js";
 import { retrieveEvidence } from "../src/lib/evidence.js";
@@ -132,7 +132,7 @@ describe("getBoardContext", () => {
     expect(output).toMatchObject({ evidence: [], clusters: [], connections: [], totalMatched: 0, truncated: false });
     for (const shown of [text, output.contextText]) {
       expect(shown).toContain("Topic search for quantum, reactor: no excerpt matches.");
-      expect(shown).toContain("whole words, ignoring case and accents");
+      expect(shown).toContain("whole words, ignoring case and accents (words of five or more letters also match compounds that begin with them)");
       expect(shown).toContain("2 excerpts lie outside sections: read them with get_board_context outsideSections: true.");
       expect(shown).not.toContain("Interview quotes");
     }
@@ -140,12 +140,14 @@ describe("getBoardContext", () => {
   });
 
   it("explains topic matches and context on the first page, leaving continuation pages unchanged", async () => {
+    expect(getBoardContextInputShape.topic.description).toContain(
+      "ignoring case and accents (words of five or more letters also match compounds that begin with them)");
     const data = board("TopicInfo123");
     setBoard(data.boardId, data);
     const single = await getBoardContext({ boardId: data.boardId, topic: "Interview interview" });
     for (const shown of [single.text, single.structuredContent.contextText]) {
       expect(shown).toContain("Topic search for interview: 1 excerpt matches; 1 more is shown as context (arrow neighbors and table headings).");
-      expect(shown).toContain("whole words, ignoring case and accents");
+      expect(shown).toContain("whole words, ignoring case and accents (words of five or more letters also match compounds that begin with them)");
     }
     const first = await getBoardContext({ boardId: data.boardId, topic: "interview", limit: 1 });
     expect(first.text).toContain("Showing 1 of 2 excerpts on this page; 1 remaining.");

@@ -139,9 +139,6 @@ export async function answerFromBoard(
       .map((id) => allowed.get(id)).filter((item): item is Evidence => Boolean(item)).slice(0, 12)
     : [];
   const kind = parsed?.kind;
-  if (Array.isArray(parsed?.evidenceIds) && parsed.evidenceIds.length > 0 && cited.length === 0) {
-    return withReadWarning(extractiveFallback(input.question, retrieved.snapshotId, primaryEvidence));
-  }
   if (kind === "unsupported" || (Array.isArray(parsed?.evidenceIds) && parsed.evidenceIds.length === 0)) {
     return withReadWarning(unsupportedMatchesAnswer(input.question, retrieved.snapshotId, rendered.evidence.length, primaryEvidence, board));
   }
@@ -300,8 +297,8 @@ function unsupportedAnswer(question: string, snapshotId: string, board: BoardDat
   const index = new SectionIndex(board, retrieveEvidence(board).evidence);
   const sections = index.largestSections(3);
   let answer = german
-    ? "Kein Auszug passt zu einem Wort dieser Frage, daher ging nichts an das Modell. Das Board kann das Thema trotzdem mit anderen Worten behandeln: Die Suche findet ganze Wörter unabhängig von Groß- und Kleinschreibung und Akzenten, aber keine anderen Wortformen, Synonyme oder Übersetzungen. Frag mit den Wörtern und in der Sprache des Boards erneut"
-    : "No excerpt matches a word of this question, so nothing was sent to the model. The board may still cover it in other words: the search matches whole words, ignoring case and accents, but not other word forms, synonyms or translations. Ask again with the board's words and language";
+    ? "Kein Auszug passt zu einem Wort dieser Frage, daher ging nichts an das Modell. Das Board kann das Thema trotzdem mit anderen Worten behandeln: Die Suche findet ganze Wörter unabhängig von Groß- und Kleinschreibung und Akzenten (Wörter ab fünf Buchstaben finden auch Komposita, die mit ihnen beginnen), aber keine anderen Wortformen, Synonyme oder Übersetzungen. Frag mit den Wörtern und in der Sprache des Boards erneut"
+    : "No excerpt matches a word of this question, so nothing was sent to the model. The board may still cover it in other words: the search matches whole words, ignoring case and accents (words of five or more letters also match compounds that begin with them), but not other word forms, synonyms or translations. Ask again with the board's words and language";
   if (sections.length) {
     answer += german ? " oder lies Sections mit get_board_context nodeIds: " : ", or read sections with get_board_context nodeIds: ";
     answer += sections.map(({ id, name }) => `${JSON.stringify(name)} (ID: ${id})`).join(", ") + ".";
