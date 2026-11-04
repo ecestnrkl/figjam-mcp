@@ -68,6 +68,7 @@ export async function refineClusterWithVision(
       maxOutputTokens: getVisionMaxOutputTokens(),
       requestTimeoutMs: getVisionRequestTimeoutMs(),
       timeoutSetting: "LLM_VISION_REQUEST_TIMEOUT_MS",
+      outputSetting: "LLM_VISION_MAX_OUTPUT_TOKENS",
       signal,
       onModelUsed: (model) => {
         modelId = model;

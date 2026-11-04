@@ -5,6 +5,7 @@ const { chatJsonMock } = vi.hoisted(() => ({ chatJsonMock: vi.fn() }));
 
 vi.mock("../src/lib/llmClient.js", async importOriginal => ({
   validateLlmTransportConfiguration: (await importOriginal<typeof import("../src/lib/llmClient.js")>()).validateLlmTransportConfiguration,
+  getAnswerReasoningEffort: (await importOriginal<typeof import("../src/lib/llmClient.js")>()).getAnswerReasoningEffort,
   chatJson: chatJsonMock,
   getFastTextModels: () => ["fast-model"],
   getTextModels: () => ["text-model"],

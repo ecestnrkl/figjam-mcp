@@ -517,11 +517,17 @@ function interleaveClusters(entries: IndexedEvidence[]): IndexedEvidence[] {
   return ordered;
 }
 
-export function formatEvidence(item: Evidence): string {
-  const singleLine = (value: string) => value.replace(/\s+/g, " ").trim();
-  const provenance = item.modelDerived ? "MODEL INTERPRETATION; verify against original" :
+/** Where an excerpt comes from: original board text or metadata, a table row, or a model interpretation. */
+export function evidenceProvenance(item: Evidence): string {
+  return item.modelDerived ? "MODEL INTERPRETATION; verify against original" :
     item.sourceType === "board_metadata" ? "original board metadata" :
     item.sourceType === "table_row" ? `original table row; cells separated by "${TABLE_CELL_SEPARATOR.trim()}"` : "original board text";
+}
+
+const singleLine = (value: string) => value.replace(/\s+/g, " ").trim();
+
+/** The cluster label of a derived excerpt and the metadata of its source, one line each, before the excerpt text. */
+export function evidenceDetailLines(item: Evidence): string {
   const metadata = [
     item.nodeName ? `Node name: ${singleLine(item.nodeName)}` : undefined,
     item.pageName ? `Page: ${singleLine(item.pageName)}` : undefined,
@@ -533,7 +539,11 @@ export function formatEvidence(item: Evidence): string {
   ].filter(Boolean).join("; ");
   const derivedLabel = (item.sourceType === "model_interpretation" || item.sourceType === "cluster_summary") && item.clusterLabel
     ? `Cluster label${item.clusterLabelModel ? " (model)" : ""}: ${singleLine(item.clusterLabel)}\n` : "";
-  return `[${item.evidenceId}] ${singleLine(item.nodeName ?? item.nodeId)} (${provenance}; node ${item.nodeId})\n${derivedLabel}${metadata ? `Original source metadata: ${metadata}\n` : ""}${item.text}`;
+  return `${derivedLabel}${metadata ? `Original source metadata: ${metadata}\n` : ""}`;
+}
+
+export function formatEvidence(item: Evidence): string {
+  return `[${item.evidenceId}] ${singleLine(item.nodeName ?? item.nodeId)} (${evidenceProvenance(item)}; node ${item.nodeId})\n${evidenceDetailLines(item)}${item.text}`;
 }
 
 export function boundedText(value: string, maxChars: number): string {

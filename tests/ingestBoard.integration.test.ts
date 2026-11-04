@@ -1,4 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -17,6 +19,7 @@ vi.mock("../src/lib/figmaApi.js", async (importOriginal) => ({
 }));
 vi.mock("../src/lib/visionInterpreter.js", () => ({ refineClusterWithVision: visionMock }));
 
+const realFetch = globalThis.fetch;
 const fileKey = "OfflineBoard";
 const input = { figmaFileUrl: `https://www.figma.com/board/${fileKey}/Fixture`, docStructureHint: "freeform", ingestMode: "max_quality" } as const;
 const box = { x: 0, y: 0, width: 100, height: 100 };
@@ -240,6 +243,34 @@ describe("offline ingest pipeline with actual persistent cache", () => {
     expect(after.snapshotId).toBe(before.snapshotId);
     expect(await persistence.readBoardHistory(fileKey)).toHaveLength(1);
     expect(fileTreeMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("retries after the provider's daily limit resets, not after a minute", async () => {
+    activeTree = boardTree([imageNode("limited", 0)]);
+    const now = new Date();
+    const reset = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1);
+    const provider = createServer((_request, response) => {
+      response.writeHead(429, { "content-type": "application/json", "x-ratelimit-remaining": "0", "x-ratelimit-reset": String(reset) });
+      response.end(JSON.stringify({ error: { code: 429, message: "Rate limit exceeded: free-models-per-day" } }));
+    });
+    await new Promise<void>(resolve => provider.listen(0, "127.0.0.1", resolve));
+    try {
+      vi.stubEnv("LLM_BASE_URL", `http://127.0.0.1:${(provider.address() as AddressInfo).port}/v1`);
+      const offline = globalThis.fetch;
+      vi.stubGlobal("fetch", (url: string, init?: RequestInit) => String(url).startsWith("http://127.0.0.1:") ? realFetch(url, init) : offline(url, init));
+      // The real chat client reaches the local provider; only the image preparation around it is offline.
+      visionMock.mockImplementation(async () => {
+        const { chatJson } = await import("../src/lib/llmClient.js");
+        return chatJson("vision/model", [{ role: "user", content: "Synthetic fixture only" }], { requestTimeoutMs: 2000 }) as never;
+      });
+      const result = await ingestBoard(input);
+      expect(result.qualityReport?.fallbackReasons).toEqual({ rate_limit: 1 });
+      expect(Math.abs(result.qualityReport!.nextRetryAt! - reset)).toBeLessThanOrEqual(2000);
+      expect(result.summary).toContain(`Retry after ${new Date(result.qualityReport!.nextRetryAt!).toISOString()}`);
+    } finally {
+      provider.closeAllConnections();
+      await new Promise<void>(resolve => provider.close(() => resolve()));
+    }
   });
 
   it("keeps interpretations through a forced ingest in every mode", async () => {

@@ -4,7 +4,7 @@ import { evidenceBoard, textNode } from "./fixtures/retrieval.js";
 const { chatJsonMock } = vi.hoisted(() => ({ chatJsonMock: vi.fn() }));
 vi.mock("../src/lib/llmClient.js", () => ({
   chatJson: chatJsonMock, getAnswerReasoningEffort: () => undefined,
-  getTextModels: () => ["test-model"], LlmInvalidJsonError: class extends Error {},
+  getTextModels: () => ["test-model"], LlmUnusableReplyError: class extends Error {},
 }));
 beforeEach(() => {
   vi.resetModules();
@@ -22,7 +22,7 @@ async function ask(text = "Payment procedure") {
   setBoard(board.boardId, board);
   const output = await answerFromBoard({ boardId: board.boardId, question: "Payment approval?" });
   const messages = chatJsonMock.mock.calls[0]![1] as Array<{ content: string }>;
-  const count = messages.at(-1)!.content.match(/\[(ev_[a-f0-9]+)\]/g)!.length;
+  const count = messages.at(-1)!.content.match(/<excerpt id="(ev_[a-f0-9]+)"/g)!.length;
   return { output, messages, count };
 }
 

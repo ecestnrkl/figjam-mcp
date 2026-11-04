@@ -18,7 +18,7 @@ line, and later errors about missing credentials also include the load failure.
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `FIGMA_ACCESS_TOKEN` | required for `ingest_board` | Figma personal access token with `file_content:read`. |
-| `LLM_BASE_URL` | none | OpenAI-compatible endpoint, for example `https://openrouter.ai/api/v1`. Required for every LLM call. |
+| `LLM_BASE_URL` | none | OpenAI-compatible endpoint, for example `https://openrouter.ai/api/v1`: an absolute http or https URL of the API root, not ending in `/chat/completions`. Required for every LLM call; checked when a tool needs it. |
 | `LLM_API_KEY` | none | Provider key. Required for every LLM call. |
 
 ### Privacy
@@ -51,7 +51,7 @@ it redacted.
 | `LLM_FAST_TEXT_MODELS` | the text models (`LLM_TEXT_MODEL`, `LLM_TEXT_MODELS`) | Used only by `diagnose_llm_config`. |
 | `LLM_TEXT_MODEL`, `LLM_VISION_MODEL` | none | Legacy: one model placed in front of the list. |
 | `LLM_PROVIDER_REQUIRE_PARAMETERS` | `true` | Only when `LLM_BASE_URL` points to `openrouter.ai`: sends `provider.require_parameters` with JSON requests, so only endpoints that support structured output are used. `false` turns it off. |
-| `LLM_ANSWER_REASONING_EFFORT` | unset | `none`, `low`, `medium` or `high` for `answer_from_board` only. Unset keeps the model's default. |
+| `LLM_ANSWER_REASONING_EFFORT` | unset | `none`, `low`, `medium` or `high` for `answer_from_board` only; the `text_json` check of `diagnose_llm_config` sends it too. Unset keeps the model's default. |
 
 A request moves to the next candidate after a rate limit, server error, timeout,
 invalid JSON or an unavailable model. Changing any model setting or
@@ -69,7 +69,7 @@ invalid JSON or an unavailable model. Changing any model setting or
 | `LLM_ANSWER_REQUEST_TIMEOUT_MS` | `40000` | Each answer request and the text checks of `diagnose_llm_config`. Without it, an explicit `LLM_REQUEST_TIMEOUT_MS` applies. `answer_from_board` stops after 50 s across all model candidates (or this value, if larger); a fallback candidate gets only the time left. |
 | `LLM_VISION_REQUEST_TIMEOUT_MS` | `60000` | Each image request. Without it, an explicit `LLM_REQUEST_TIMEOUT_MS` applies. |
 | `LLM_RATE_LIMIT_RETRIES` | `1` | Retries of a request after HTTP 429. |
-| `LLM_RATE_LIMIT_MAX_BACKOFF_MS` | `5000` | Longest wait before such a retry, including `Retry-After`. |
+| `LLM_RATE_LIMIT_MAX_BACKOFF_MS` | `5000` | Longest wait before such a retry. A wait named by `Retry-After` or `X-RateLimit-Reset` that is longer, or no longer fits into the request deadline, fails at once. Without a named wait the backoff is 2 s. |
 | `LLM_SDK_MAX_RETRIES` | `0` | Automatic retries inside the OpenAI SDK. |
 
 ### Output and prompt budgets

@@ -30,7 +30,7 @@ vi.mock("openai", async (importActual) => {
 process.env.LLM_BASE_URL = "http://test.local/v1";
 process.env.LLM_API_KEY = "test-key";
 
-const { chatJson, getAnswerReasoningEffort } = await import("../src/lib/llmClient.js");
+const { chatJson, getAnswerReasoningEffort, forgetResponseFormats } = await import("../src/lib/llmClient.js");
 
 const MESSAGES = [{ role: "user" as const, content: "hi" }];
 
@@ -46,6 +46,8 @@ function providerError(status: number, message: string, fields: Record<string, u
 
 beforeEach(() => {
   createMock.mockReset();
+  // The client shares one module here, and a remembered format would change the next case's first request.
+  forgetResponseFormats();
   vi.spyOn(console, "error").mockImplementation(() => {});
 });
 
@@ -341,11 +343,19 @@ describe("chatJson", () => {
     },
   );
 
-  it.each([400, 401, 403, 422, 429, 503])("keeps the existing generic message for HTTP %s", async status => {
+  it.each([400, 404, 422, 503])("gives HTTP %s the general message, which names diagnose_llm_config", async status => {
     vi.stubEnv("LLM_RATE_LIMIT_RETRIES", "0");
     createMock.mockRejectedValue(providerError(status, "Synthetic failure"));
     await expect(chatJson("only-model", MESSAGES, SCHEMA_OPTIONS)).rejects.toMatchObject({ status,
-      message: `LLM request failed (HTTP ${status}). Check provider availability and configuration.` });
+      message: `LLM request failed (HTTP ${status}). Check provider availability and configuration. `
+        + "diagnose_llm_config can test the configured model provider." });
+  });
+
+  it("leaves the diagnose_llm_config sentence out of what it reports to diagnose_llm_config", async () => {
+    createMock.mockRejectedValueOnce(new OpenAI.APIError(503, undefined, "Synthetic failure", new Headers()));
+    const onModelFailed = vi.fn();
+    await expect(chatJson("only-model", MESSAGES, { ...SCHEMA_OPTIONS, onModelFailed })).rejects.toMatchObject({ status: 503 });
+    expect(onModelFailed).toHaveBeenCalledExactlyOnceWith("only-model", "LLM request failed (HTTP 503). Check provider availability and configuration.");
   });
 
   it.each([
@@ -452,6 +462,26 @@ describe("chatJson", () => {
     const promise = chatJson("test-model", MESSAGES);
     await expect(promise).rejects.not.toThrow(/reading '0'/);
     await expect(promise).rejects.toThrow(/no choices/i);
+  });
+
+  it("extracts the JSON of a reply that wraps it in prose, from the first { to the last }", async () => {
+    createMock.mockResolvedValueOnce(okCompletion('Here is the result: {"a":{"b":1}} Hope that helps.'))
+      .mockResolvedValueOnce(okCompletion('} stray {"a":1} text'))
+      .mockResolvedValueOnce(okCompletion("} before { after"))
+      .mockResolvedValueOnce(okCompletion('x {"a":1} y {"b":2} z'));
+    await expect(chatJson("test-model", MESSAGES)).resolves.toEqual({ a: { b: 1 } });
+    await expect(chatJson("test-model", MESSAGES)).resolves.toEqual({ a: 1 });
+    // No "{" before the last "}", and two blocks form one invalid block.
+    await expect(chatJson("test-model", MESSAGES)).rejects.toThrow("did not return valid JSON");
+    await expect(chatJson("test-model", MESSAGES)).rejects.toThrow("did not return valid JSON");
+  });
+
+  it.each(["{", "{ ", "{}{", "}{"])("rejects 80,000 repetitions of %j in linear time", async unit => {
+    // The regular expression took 4.8 s for 80,000 opening braces.
+    createMock.mockResolvedValueOnce(okCompletion(unit.repeat(80_000)));
+    const started = performance.now();
+    await expect(chatJson("test-model", MESSAGES)).rejects.toThrow("did not return valid JSON");
+    expect(performance.now() - started).toBeLessThan(100);
   });
 
   it("flags a truncated reply (finish_reason 'length') with an actionable hint", async () => {

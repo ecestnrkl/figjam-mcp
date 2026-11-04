@@ -155,7 +155,7 @@ describe("vision evaluation CLI", () => {
   it("aborts a stalled response body at the case deadline and never claims a completion", async () => {
     const execution = await runWithProvider(`
       const timeout = AbortSignal.timeout.bind(AbortSignal);
-      AbortSignal.timeout = ms => { if (ms !== 75000) throw new Error('Unexpected deadline'); return timeout(100); };
+      AbortSignal.timeout = ms => timeout(ms === 75000 ? 100 : ms); // only the case deadline is shortened; request deadlines stay as configured
       globalThis.fetch = async () => new Response(new ReadableStream({
         start(controller) { controller.enqueue(new TextEncoder().encode('{"choices":[')); },
       }), { headers: { 'content-type': 'application/json' } });
