@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { BoardData, Cluster, NormalizedNode } from "../src/types.js";
 import { FigmaApiError, FigmaDownloadBudgetError, FigmaTimeoutError } from "../src/lib/figmaApi.js";
-import { LLMConfigurationError, LlmBaseUrlError, LlmInvalidJsonError, LlmRequestError, LlmTimeoutError } from "../src/lib/llmClient.js";
+import { LLMConfigurationError, LlmBaseUrlError, LlmEmptyReplyError, LlmInvalidJsonError, LlmRequestError, LlmTimeoutError } from "../src/lib/llmClient.js";
 import { cornerColours, gifHeader, jpegHeader, markedJpeg, pngHeader, syntheticJpeg, syntheticPng, withOrientation } from "./fixtures/images.js";
 
 const {
@@ -458,6 +458,8 @@ describe("ingestBoard", () => {
     ["render", new FigmaApiError("private provider body", 429), "rate_limit"],
     ["model", new LlmRequestError("private provider body", 429), "rate_limit"],
     ["model", new LlmInvalidJsonError("private provider body", "private reply text"), "invalid_reply"],
+    ["model", new LlmEmptyReplyError("private provider body", "refusal"), "invalid_reply"],
+    ["model", new LlmEmptyReplyError("private provider body", "length"), "invalid_reply"],
     ["model", new LlmBaseUrlError("private provider body"), "base_url"],
     ["model", new LlmBaseUrlError("private provider body", 404), "base_url"],
     ["download", new FigmaDownloadBudgetError(), "download_budget"],

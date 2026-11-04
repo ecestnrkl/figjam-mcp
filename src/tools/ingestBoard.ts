@@ -5,7 +5,7 @@ import type { Cluster, IngestFocusReport, IngestMode, IngestQualityReport, Norma
 import { fetchFileTree, fetchRenderUrls, downloadRenders, fetchImageRefs, downloadOriginals, FigmaApiError, FigmaDownloadBudgetError,
   FigmaTimeoutError, IMAGE_MAX_BYTES, INGEST_IMAGE_MAX_BYTES, type OriginalImage, type RenderUrls } from "../lib/figmaApi.js";
 import {
-  LLMConfigurationError, LlmBaseUrlError, LlmInvalidJsonError, LlmRequestError, LlmTimeoutError, llmBaseUrlProblem, missingLlmConfigurationMessage, validateLlmConfiguration,
+  LLMConfigurationError, LlmBaseUrlError, LlmRequestError, LlmTimeoutError, LlmUnusableReplyError, llmBaseUrlProblem, missingLlmConfigurationMessage, validateLlmConfiguration,
   validateLlmRuntimeConfiguration,
 } from "../lib/llmClient.js";
 import { flattenNodeTree, isGenericNodeName } from "../lib/nodeTree.js";
@@ -418,7 +418,7 @@ function classifyVisionFailure(error: unknown, stage: VisionStage): VisionFallba
   if (error instanceof LLMConfigurationError) return "config";
   if (error instanceof FigmaDownloadBudgetError) return "download_budget";
   if (error instanceof VisionDeadlineExceededError || error instanceof FigmaTimeoutError || error instanceof LlmTimeoutError) return "timeout";
-  if (error instanceof LlmInvalidJsonError) return "invalid_reply";
+  if (error instanceof LlmUnusableReplyError) return "invalid_reply";
   if (error instanceof LlmBaseUrlError) return "base_url";
   if (error instanceof LlmRequestError && error.status === 402) return "payment";
   if (error instanceof FigmaApiError || error instanceof LlmRequestError) {

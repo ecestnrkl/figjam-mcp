@@ -30,7 +30,7 @@ vi.mock("openai", async (importActual) => {
 process.env.LLM_BASE_URL = "http://test.local/v1";
 process.env.LLM_API_KEY = "test-key";
 
-const { chatJson, getAnswerReasoningEffort } = await import("../src/lib/llmClient.js");
+const { chatJson, getAnswerReasoningEffort, forgetResponseFormats } = await import("../src/lib/llmClient.js");
 
 const MESSAGES = [{ role: "user" as const, content: "hi" }];
 
@@ -46,6 +46,8 @@ function providerError(status: number, message: string, fields: Record<string, u
 
 beforeEach(() => {
   createMock.mockReset();
+  // The client shares one module here, and a remembered format would change the next case's first request.
+  forgetResponseFormats();
   vi.spyOn(console, "error").mockImplementation(() => {});
 });
 

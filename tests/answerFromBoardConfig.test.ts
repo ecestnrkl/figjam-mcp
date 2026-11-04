@@ -4,7 +4,7 @@ import { evidenceBoard, textNode } from "./fixtures/retrieval.js";
 const { chatJsonMock } = vi.hoisted(() => ({ chatJsonMock: vi.fn() }));
 vi.mock("../src/lib/llmClient.js", () => ({
   chatJson: chatJsonMock, getAnswerReasoningEffort: () => undefined,
-  getTextModels: () => ["test-model"], LlmInvalidJsonError: class extends Error {},
+  getTextModels: () => ["test-model"], LlmUnusableReplyError: class extends Error {},
 }));
 beforeEach(() => {
   vi.resetModules();

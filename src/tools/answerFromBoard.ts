@@ -1,7 +1,9 @@
 import type { AnswerFromBoardInput, AnswerFromBoardOutput } from "../schemas/answerFromBoard.js";
 import { getBoardOrRestore, getBoardReadWarning } from "../lib/cache.js";
 import { redactBoard } from "../lib/redact.js";
-import { chatJson, getAnswerReasoningEffort, getTextModels, LlmInvalidJsonError, type ChatJsonOptions } from "../lib/llmClient.js";
+import {
+  chatJson, getAnswerReasoningEffort, getTextModels, LlmUnusableReplyError, type ChatJsonOptions, type UnusableReplyReason,
+} from "../lib/llmClient.js";
 import { readIntEnv } from "../lib/env.js";
 import { getAnswerRequestTimeoutMs, getAnswerTotalTimeoutMs } from "../lib/llmTimeouts.js";
 import {
@@ -117,6 +119,7 @@ export async function answerFromBoard(
       requestTimeoutMs: getAnswerRequestTimeoutMs(),
       totalTimeoutMs: getAnswerTotalTimeoutMs(),
       timeoutSetting: "LLM_ANSWER_REQUEST_TIMEOUT_MS",
+      outputSetting: "LLM_ANSWER_MAX_OUTPUT_TOKENS",
       schemaName: "figjam_evidence_answer",
       jsonSchema: ANSWER_REPLY_SCHEMA,
       signal: options.signal,
@@ -125,9 +128,9 @@ export async function answerFromBoard(
     });
   } catch (error) {
     options.signal?.throwIfAborted();
-    if (error instanceof LlmInvalidJsonError) {
+    if (error instanceof LlmUnusableReplyError) {
       // Never log raw provider output: it can contain private board content.
-      return withReadWarning(extractiveFallback(input.question, retrieved.snapshotId, primaryEvidence));
+      return withReadWarning(extractiveFallback(input.question, retrieved.snapshotId, primaryEvidence, error.reason));
     }
     throw error;
   }
@@ -263,11 +266,26 @@ function answerWithCitations(answer: string, snapshotId: string, evidence: Evide
   };
 }
 
-function extractiveFallback(question: string, snapshotId: string, evidence: Evidence[]): AnswerFromBoardOutput {
+/** Why no answer was generated, in words for the reader; never provider text, which can echo board content. */
+const UNUSABLE_REPLY_CAUSES: Record<UnusableReplyReason, { en: string; de: string }> = {
+  refusal: { en: "the model declined to answer", de: "das Modell hat die Antwort verweigert" },
+  content_filter: { en: "the provider's content filter blocked the reply", de: "der Inhaltsfilter des Providers hat die Antwort blockiert" },
+  length: { en: "the reply reached the output limit before any text; see LLM_ANSWER_MAX_OUTPUT_TOKENS",
+    de: "die Antwort erreichte das Ausgabelimit, bevor Text kam; siehe LLM_ANSWER_MAX_OUTPUT_TOKENS" },
+  tool_call: { en: "the model called a tool instead of answering", de: "das Modell rief ein Tool auf, statt zu antworten" },
+  reasoning: { en: "the model returned only reasoning", de: "das Modell lieferte nur Reasoning" },
+  empty: { en: "the model returned an empty reply", de: "das Modell lieferte eine leere Antwort" },
+  invalid_json: { en: "the reply was not valid JSON", de: "die Antwort war kein gültiges JSON" },
+  truncated_json: { en: "the reply was cut off before the JSON was complete", de: "die Antwort wurde abgeschnitten, bevor das JSON vollständig war" },
+};
+
+function extractiveFallback(question: string, snapshotId: string, evidence: Evidence[], reason?: UnusableReplyReason): AnswerFromBoardOutput {
   const selected = evidence.slice(0, 3).map((item) => ({ ...item, text: boundedText(item.text, 320) }));
-  const intro = isLikelyGerman(question)
-    ? "Eine formulierte Antwort war nicht verfügbar. Passende Quellauszüge aus dem Board: "
-    : "A generated answer was unavailable. Matching source excerpts from the board: ";
+  const german = isLikelyGerman(question);
+  const cause = reason ? ` (${UNUSABLE_REPLY_CAUSES[reason][german ? "de" : "en"]})` : "";
+  const intro = german
+    ? `Eine formulierte Antwort war nicht verfügbar${cause}. Passende Quellauszüge aus dem Board: `
+    : `A generated answer was unavailable${cause}. Matching source excerpts from the board: `;
   return answerWithCitations(intro + selected.map((item) =>
     `${item.modelDerived ? "[Model interpretation] " : ""}${item.text}`,
   ).join(" "), snapshotId, selected);

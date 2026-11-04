@@ -40,13 +40,32 @@ export class LlmTimeoutError extends Error {
   constructor(message: string) { super(message); this.name = "LlmTimeoutError"; }
 }
 
-export class LlmInvalidJsonError extends Error {
+/** Why a reply with HTTP 200 gave nothing to work with. */
+export type UnusableReplyReason = "refusal" | "content_filter" | "length" | "tool_call" | "reasoning" | "empty"
+  | "invalid_json" | "truncated_json";
+
+/** The provider answered, but the reply has no usable content; another candidate may do better. */
+export class LlmUnusableReplyError extends Error {
+  constructor(message: string, readonly reason: UnusableReplyReason) {
+    super(message);
+    this.name = "LlmUnusableReplyError";
+  }
+}
+
+export class LlmEmptyReplyError extends LlmUnusableReplyError {
+  constructor(message: string, reason: UnusableReplyReason) {
+    super(message, reason);
+    this.name = "LlmEmptyReplyError";
+  }
+}
+
+export class LlmInvalidJsonError extends LlmUnusableReplyError {
   constructor(
     message: string,
     readonly rawReply: string,
     readonly finishReason?: string | null,
   ) {
-    super(message);
+    super(message, finishReason === "length" ? "truncated_json" : "invalid_json");
     this.name = "LlmInvalidJsonError";
   }
 }
@@ -61,6 +80,8 @@ export interface ChatJsonOptions {
   totalTimeoutMs?: number;
   /** Setting named in a timeout error; defaults to LLM_REQUEST_TIMEOUT_MS. */
   timeoutSetting?: string;
+  /** Setting named when a reply is cut off at max_tokens before any text; defaults to a general phrase. */
+  outputSetting?: string;
   schemaName?: string;
   jsonSchema?: JsonSchema;
   onModelUsed?: (model: string) => void;
@@ -223,10 +244,8 @@ export async function chatJson(
       try {
         const completion = await createJsonCompletion(llm, candidate, messages, requestOptions);
         const choice = completion.choices[0];
-        const raw = choice?.message?.content;
-        if (!raw) {
-          throw new Error(`LLM (${candidate}) returned an empty response`);
-        }
+        const raw = replyText(choice?.message?.content);
+        if (!raw.trim()) throw emptyReplyError(candidate, choice, options);
         const parsed = parseJsonReply(raw, candidate, choice?.finish_reason);
         options.onModelUsed?.(candidate);
         return parsed;
@@ -281,11 +300,23 @@ async function createJsonCompletion(
   }
 
   const formats = responseFormatAttempts(options);
-  for (const responseFormat of formats) {
+  const key = rememberedFormatKey(llm, model);
+  // A format that worked after a fallback is where the next call for this model begins.
+  const remembered = key ? rememberedFormats.get(key) : undefined;
+  const first = remembered ? Math.max(0, formats.findIndex(format => formatName(format) === remembered)) : 0;
+  for (let index = first; index < formats.length; index++) {
+    const responseFormat = formats[index];
     try {
       const params = responseFormat ? { ...base, response_format: responseFormat } : base;
-      return await createCompletion(llm, withProviderRequirements(params, openRouter), options);
+      const completion = await createCompletion(llm, withProviderRequirements(params, openRouter), options);
+      const worked = formatName(responseFormat);
+      if (key && index > 0 && worked !== "json_schema") rememberedFormats.set(key, worked);
+      return completion;
     } catch (error) {
+      if (options.reasoningEffort !== undefined && isReasoningRejected(error)) {
+        reasoningRejections.add(error as object);
+        throw error;
+      }
       if (!isUnsupportedParamError(error, options.reasoningEffort !== undefined) || responseFormat === formats.at(-1)) {
         throw error;
       }
@@ -294,6 +325,32 @@ async function createJsonCompletion(
 
   return createCompletion(llm, base, options);
 }
+
+type RememberedFormat = "json_object" | "none";
+/** Per base URL and model, for the life of the process; routers choose another model per request and are left out. */
+const rememberedFormats = new Map<string, RememberedFormat>();
+
+function rememberedFormatKey(llm: OpenAI, model: string): string | undefined {
+  return ROUTER_MODELS.has(model) ? undefined : `${llm.baseURL}\n${model}`;
+}
+
+function formatName(format: ResponseFormat | undefined): RememberedFormat | "json_schema" {
+  return format ? format.type === "json_object" ? "json_object" : "json_schema" : "none";
+}
+
+/** Forgets the response formats remembered after a fallback, for tests and after the provider changed. */
+export function forgetResponseFormats(): void {
+  rememberedFormats.clear();
+}
+
+/** A 400 or 422 that names the reasoning setting the caller asked for; the provider does not accept it. */
+function isReasoningRejected(error: unknown): boolean {
+  return error instanceof OpenAI.APIError && [400, 422].includes(error.status ?? 0)
+    && /\b(?:reasoning(?:[_ -]effort)?|thinking)\b/i.test(providerErrorDetail(error));
+}
+
+/** Errors of requests the provider refused because of their reasoning setting; their message names the setting. */
+const reasoningRejections = new WeakSet<object>();
 
 type ResponseFormat = NonNullable<OpenAI.ChatCompletionCreateParamsNonStreaming["response_format"]>;
 type ParamsWithOpenRouterProvider = OpenAI.ChatCompletionCreateParamsNonStreaming & {
@@ -352,6 +409,11 @@ function isUnsupportedParamError(error: unknown, hasExplicitReasoning = false): 
   // unsupported reasoning setting, nor silently remove that setting.
   if (hasExplicitReasoning && /\b(?:reasoning(?:[_ -]effort)?|thinking)\b/i.test(detail)) return false;
   if (format.test(detail) && unsupported.test(detail)) return true;
+  // A 400 or 422 that names the response format is a format problem even without a word like "unsupported",
+  // for example Ollama's "json: cannot unmarshal object into Go struct field .response_format of type string".
+  if ([400, 422].includes(error.status) && format.test(detail) && !/\b(?:insufficient|payment|billing|quota|credits?|content[_ -]?policy|moderation|safety|context[_ -]?length|too (?:long|large|many)|api[_ -]?key|unauthori[sz]ed)\b/i.test(detail)) {
+    return true;
+  }
   if (hasExplicitReasoning) return false;
   return (/\brequire[_ -]?parameters\b/i.test(detail) && unsupported.test(detail)) ||
     /no (?:available )?endpoints.*(?:support|match|handle).*\b(?:requested|required) parameters\b/i.test(detail) ||
@@ -428,7 +490,7 @@ function shouldTryNextModel(error: unknown): boolean {
   if (error instanceof LlmRequestError) {
     return [404, 410, 429].includes(error.status ?? 0) || (error.status ?? 0) >= 500 || isProviderReturnedError(error);
   }
-  if (error instanceof LlmInvalidJsonError || isLlmTimeout(error)) {
+  if (error instanceof LlmUnusableReplyError || isLlmTimeout(error)) {
     return true;
   }
   if (error instanceof OpenAI.RateLimitError) {
@@ -474,6 +536,9 @@ function normalizeLlmError(error: unknown): unknown {
       ? "LLM request failed (HTTP 403): the model provider denies access to the model or rejects the request, "
         + `for example because of moderation. Check the API key's permissions and the configured models. ${DIAGNOSE_HINT}`
     : status === 429 ? rateLimitMessage(waitMs)
+    : reasoningRejections.has(error)
+      ? `LLM request failed (HTTP ${status}): the model provider rejected the reasoning setting. `
+        + `Unset LLM_ANSWER_REASONING_EFFORT, choose another value or another model. ${DIAGNOSE_HINT}`
     : `LLM request failed (HTTP ${status ?? "unknown"}). Check provider availability and configuration.`;
   return new LlmRequestError(redactMessage(message), status, waitMs === undefined ? undefined : Math.ceil(waitMs / 1000));
 }
@@ -498,6 +563,9 @@ function baseUrlFailure(error: unknown): LlmBaseUrlError | undefined {
     return new LlmBaseUrlError(redactMessage(`LLM request failed: could not connect to ${baseUrlOrigin()} (${describeConnectionCause(error)}). `
       + `Check LLM_BASE_URL and your network connection. ${DIAGNOSE_HINT}`));
   }
+  // Bodies of a 2xx answer that cannot be read: not JSON, or the connection ended before the end.
+  if (error instanceof SyntaxError) return notChatCompletion("the response body was not valid JSON");
+  if (error instanceof TypeError && /terminated/i.test(error.message)) return notChatCompletion("the response body was cut off");
   if (error instanceof OpenAI.APIError && (error.status === 404 || error.status === 405) && (error.error === undefined || error.error === null)) {
     return new LlmBaseUrlError(redactMessage(`LLM request failed (HTTP ${error.status}): the answer was no JSON error, so LLM_BASE_URL probably points to a wrong path. `
       + `OpenAI-compatible APIs usually end in /v1, for example ${EXAMPLE_BASE_URL}. Check LLM_BASE_URL. ${DIAGNOSE_HINT}`), error.status);
@@ -587,8 +655,10 @@ async function createCompletion(
     try {
       options.onRequest?.(params.model);
       completion = await llm.chat.completions.create(params, { signal: requestSignal, timeout: timeoutMs });
-      options.onUsage?.({ model: params.model, promptTokens: completion.usage?.prompt_tokens,
-        completionTokens: completion.usage?.completion_tokens, totalTokens: completion.usage?.total_tokens });
+      // An empty body arrives as undefined or "", an HTML page as a string.
+      if (completion && typeof completion === "object") options.onUsage?.({ model: params.model,
+        promptTokens: completion.usage?.prompt_tokens, completionTokens: completion.usage?.completion_tokens,
+        totalTokens: completion.usage?.total_tokens });
     } catch (caught) {
       let error = caught;
       if (signal?.aborted) {
@@ -616,10 +686,19 @@ async function createCompletion(
       continue;
     }
 
-    // Reached here on a 2xx — but the "success" body may actually be an error
-    // envelope with no usable choices (see EmbeddedErrorEnvelope).
+    // Reached here on a 2xx — but the "success" body may be no JSON object at all, an error
+    // envelope (see EmbeddedErrorEnvelope) or without choices.
+    const body: unknown = completion;
+    if (!body || typeof body !== "object" || Array.isArray(body)) {
+      throw notChatCompletion(!body ? "the response body was empty"
+        : typeof body === "string" ? "the response was not JSON" : "the response was not a JSON object");
+    }
     const embedded = embeddedError(completion);
     if (!embedded) {
+      if (!Array.isArray(completion.choices) || completion.choices.length === 0) {
+        // Another model may still answer, unlike after a body that is no JSON.
+        throw notChatCompletion("the response contained no choices", true);
+      }
       return completion;
     }
     if (isRateLimit(embedded)) {
@@ -638,22 +717,16 @@ async function createCompletion(
   }
 }
 
-/**
- * Returns the error object when a "successful" completion is really an error
- * envelope (or is missing its choices), otherwise undefined. A response with an
- * empty `choices` array is treated as an error so we fail with a clear message.
- */
+/** The error object of a "successful" completion that is really an error envelope, otherwise undefined. */
 function embeddedError(
   completion: OpenAI.ChatCompletion,
 ): NonNullable<EmbeddedErrorEnvelope["error"]> | undefined {
-  const envelope = completion as unknown as EmbeddedErrorEnvelope;
-  if (envelope.error) {
-    return envelope.error;
-  }
-  if (!Array.isArray(completion.choices) || completion.choices.length === 0) {
-    return { message: "response contained no choices" };
-  }
-  return undefined;
+  return (completion as unknown as EmbeddedErrorEnvelope).error || undefined;
+}
+
+function notChatCompletion(detail: string, otherModelMayWork = false): LlmBaseUrlError {
+  return new LlmBaseUrlError(redactMessage(`LLM request failed: LLM_BASE_URL did not return a chat completion (${detail}). `
+    + `Check that it points to an OpenAI-compatible API, for example ${EXAMPLE_BASE_URL}. ${DIAGNOSE_HINT}`), undefined, otherModelMayWork);
 }
 
 /** True when an embedded error is a rate limit (OpenRouter uses code 429 / metadata). */
@@ -757,6 +830,35 @@ function throwIfAborted(signal?: AbortSignal): void {
 
 function abortReason(signal: AbortSignal, fallback?: unknown): unknown {
   return signal.reason ?? fallback ?? new Error("LLM request aborted");
+}
+
+/** The text of a message's content, which some providers send as a list of parts. */
+function replyText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content.map(part => typeof part === "string" ? part
+    : part && typeof part === "object" && typeof (part as { text?: unknown }).text === "string" ? (part as { text: string }).text : "").join("");
+}
+
+const nonEmpty = (value: unknown): boolean => typeof value === "string" ? Boolean(value.trim()) : Array.isArray(value) && value.length > 0;
+
+/** Names why a reply held no text; the order puts what the user can act on first. */
+function emptyReplyError(model: string, choice: OpenAI.ChatCompletion.Choice | undefined, options: ChatJsonOptions): LlmEmptyReplyError {
+  const message = (choice?.message ?? {}) as unknown as Record<string, unknown>;
+  const finish = choice?.finish_reason as string | null | undefined;
+  const output = options.outputSetting ?? "the output-token limit";
+  const [reason, text]: [UnusableReplyReason, string] = nonEmpty(message.refusal)
+    ? ["refusal", "declined to answer (refusal). Choose another model"]
+    : finish === "content_filter"
+      ? ["content_filter", "had its reply blocked by the provider's content filter. Choose another model"]
+    : finish === "length"
+      ? ["length", `ran into max_tokens before any text arrived; a reasoning model may have spent the whole budget on reasoning. Raise ${output} or use a non-reasoning model`]
+    : nonEmpty(message.tool_calls) || message.function_call || finish === "tool_calls" || finish === "function_call"
+      ? ["tool_call", "returned a tool call instead of text. Choose another model"]
+    : nonEmpty(message.reasoning) || nonEmpty(message.reasoning_content) || nonEmpty(message.reasoning_details)
+      ? ["reasoning", `returned only reasoning and no text. Choose a non-reasoning model or raise ${output}`]
+      : ["empty", "returned an empty response (no text). Retry, or choose another model"];
+  return new LlmEmptyReplyError(`LLM (${model}) ${text}.`, reason);
 }
 
 /** Parses a model reply into JSON, tolerating fences and surrounding prose. */

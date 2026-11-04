@@ -1,6 +1,9 @@
 import { redactMessage, redactOutputSecrets } from "../lib/secrets.js";
 import type { DiagnoseLlmConfigOutput } from "../schemas/diagnoseLlmConfig.js";
-import { chatJson, getFastTextModels, getTextModels, getVisionModels, validateLlmTransportConfiguration } from "../lib/llmClient.js";
+import {
+  chatJson, getAnswerReasoningEffort, getFastTextModels, getTextModels, getVisionModels, validateLlmTransportConfiguration,
+  type LlmReasoningEffort,
+} from "../lib/llmClient.js";
 import { describeModelConfig } from "../lib/modelRegistry.js";
 import { getAnswerRequestTimeoutMs, getVisionRequestTimeoutMs } from "../lib/llmTimeouts.js";
 import { getAnswerMaxOutputTokens, getVisionMaxOutputTokens } from "../lib/llmOutputBudgets.js";
@@ -49,7 +52,10 @@ export async function diagnoseLlmConfig(options: { signal?: AbortSignal } = {}):
     maxOutputTokens: getAnswerMaxOutputTokens(),
     requestTimeoutMs: getAnswerRequestTimeoutMs(),
     timeoutSetting: "LLM_ANSWER_REQUEST_TIMEOUT_MS",
+    outputSetting: "LLM_ANSWER_MAX_OUTPUT_TOKENS",
   };
+  // The text check sends the same reasoning setting as answer_from_board, so it finds a provider that rejects it.
+  const answerReasoning = getAnswerReasoningEffort();
 
   // The checks are independent, so they run concurrently; Promise.all keeps their order.
   const checks: DiagnoseLlmConfigOutput["checks"] = await Promise.all([
@@ -59,7 +65,7 @@ export async function diagnoseLlmConfig(options: { signal?: AbortSignal } = {}):
         content:
           'Calculate 17 + 25. Reply with one JSON object containing only a numeric field named "result".',
       },
-    ], TEXT_DIAG_SCHEMA, expectNumericResult(42), textLimits, options.signal),
+    ], TEXT_DIAG_SCHEMA, expectNumericResult(42), { ...textLimits, reasoningEffort: answerReasoning }, options.signal),
     runCheck("fast_text_json", getFastTextModels(), [
       {
         role: "user",
@@ -88,6 +94,7 @@ export async function diagnoseLlmConfig(options: { signal?: AbortSignal } = {}):
       maxOutputTokens: getVisionMaxOutputTokens(),
       requestTimeoutMs: visionRequestTimeoutMs,
       timeoutSetting: "LLM_VISION_REQUEST_TIMEOUT_MS",
+      outputSetting: "LLM_VISION_MAX_OUTPUT_TOKENS",
     }, options.signal),
   ]);
 
@@ -151,7 +158,7 @@ async function runCheck(
   messages: Parameters<typeof chatJson>[1],
   jsonSchema: Record<string, unknown>,
   validateReply: ReplyValidator,
-  limits: { maxOutputTokens: number; requestTimeoutMs: number; timeoutSetting: string },
+  limits: { maxOutputTokens: number; requestTimeoutMs: number; timeoutSetting: string; outputSetting: string; reasoningEffort?: LlmReasoningEffort },
   signal?: AbortSignal,
 ): Promise<CheckResult> {
   signal?.throwIfAborted();
@@ -179,6 +186,8 @@ async function runCheck(
         signal: requestSignal,
         requestTimeoutMs: limits.requestTimeoutMs,
         timeoutSetting: limits.timeoutSetting,
+        outputSetting: limits.outputSetting,
+        reasoningEffort: limits.reasoningEffort,
         maxOutputTokens: limits.maxOutputTokens,
         schemaName: `diagnose_${name}`,
         jsonSchema,

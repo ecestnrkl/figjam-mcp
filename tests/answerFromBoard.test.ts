@@ -3,10 +3,10 @@ import { evidenceBoard, textNode } from "./fixtures/retrieval.js";
 import { formatEvidence, retrieveEvidence } from "../src/lib/evidence.js";
 
 const { chatJsonMock, answerReasoningMock, InvalidJsonErrorMock } = vi.hoisted(() => {
-  class InvalidJsonErrorMock extends Error { constructor(message: string) { super(message); this.name = "LlmInvalidJsonError"; } }
+  class InvalidJsonErrorMock extends Error { constructor(message: string, readonly reason = "invalid_json") { super(message); this.name = "LlmInvalidJsonError"; } }
   return { chatJsonMock: vi.fn(), answerReasoningMock: vi.fn(), InvalidJsonErrorMock };
 });
-vi.mock("../src/lib/llmClient.js", () => ({ chatJson: chatJsonMock, getAnswerReasoningEffort: answerReasoningMock, getTextModels: () => ["test-model"], LlmInvalidJsonError: InvalidJsonErrorMock }));
+vi.mock("../src/lib/llmClient.js", () => ({ chatJson: chatJsonMock, getAnswerReasoningEffort: answerReasoningMock, getTextModels: () => ["test-model"], LlmUnusableReplyError: InvalidJsonErrorMock }));
 const { setBoard } = await import("../src/lib/cache.js");
 const { answerFromBoard, answerText, removeEvidenceIds } = await import("../src/tools/answerFromBoard.js");
 
@@ -576,9 +576,42 @@ describe("answerFromBoard evidence grounding", () => {
     chatJsonMock.mockRejectedValueOnce(new InvalidJsonErrorMock("private model output"));
     const logged = vi.spyOn(console, "error").mockImplementation(() => {});
     const output = await answerFromBoard({ boardId: "Fallback123", question: "What was the payment requirement?" });
-    expect(output.answer).toBe("A generated answer was unavailable. Matching source excerpts from the board: Payment retries require an idempotency key.");
+    expect(output.answer).toBe("A generated answer was unavailable (the reply was not valid JSON). Matching source excerpts from the board: Payment retries require an idempotency key.");
     expect(output.citations[0]?.nodeId).toBe("1:1");
     expect(logged).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["refusal", "the model declined to answer", "das Modell hat die Antwort verweigert"],
+    ["content_filter", "the provider's content filter blocked the reply", "der Inhaltsfilter des Providers hat die Antwort blockiert"],
+    ["length", "the reply reached the output limit before any text; see LLM_ANSWER_MAX_OUTPUT_TOKENS", "die Antwort erreichte das Ausgabelimit, bevor Text kam; siehe LLM_ANSWER_MAX_OUTPUT_TOKENS"],
+    ["tool_call", "the model called a tool instead of answering", "das Modell rief ein Tool auf, statt zu antworten"],
+    ["reasoning", "the model returned only reasoning", "das Modell lieferte nur Reasoning"],
+    ["empty", "the model returned an empty reply", "das Modell lieferte eine leere Antwort"],
+    ["invalid_json", "the reply was not valid JSON", "die Antwort war kein gültiges JSON"],
+    ["truncated_json", "the reply was cut off before the JSON was complete", "die Antwort wurde abgeschnitten, bevor das JSON vollständig war"],
+  ])("answers with excerpts and names the cause when the model reply is unusable (%s)", async (reason, english, german) => {
+    setBoard("Unusable123", evidenceBoard("Unusable123"));
+    chatJsonMock.mockRejectedValue(new InvalidJsonErrorMock("private model output", reason));
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    const en = await answerFromBoard({ boardId: "Unusable123", question: "What was the payment requirement?" });
+    expect(en.answer).toBe(`A generated answer was unavailable (${english}). Matching source excerpts from the board: Payment retries require an idempotency key.`);
+    const de = await answerFromBoard({ boardId: "Unusable123", question: "Welche Anforderung gilt für payment retries?" });
+    expect(de.answer).toBe(`Eine formulierte Antwort war nicht verfügbar (${german}). Passende Quellauszüge aus dem Board: Payment retries require an idempotency key.`);
+    expect(en.citations.length).toBeGreaterThan(0);
+    expect(JSON.stringify([en, de])).not.toContain("private model output");
+    expect(logged).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["an access error", Object.assign(new Error("LLM request failed (HTTP 401): …"), { status: 401 })],
+    ["a connection error", Object.assign(new Error("LLM request failed: could not connect to http://x (connection refused)."), { name: "LlmBaseUrlError" })],
+    ["a rate limit", Object.assign(new Error("LLM request failed (HTTP 429): …"), { status: 429 })],
+    ["a timeout", Object.assign(new Error("LLM request timed out after 40s."), { name: "LlmTimeoutError" })],
+  ])("keeps %s an error instead of answering with excerpts", async (_case, failure) => {
+    setBoard("StillError123", evidenceBoard("StillError123"));
+    chatJsonMock.mockRejectedValueOnce(failure);
+    await expect(answerFromBoard({ boardId: "StillError123", question: "What was the payment requirement?" })).rejects.toBe(failure);
   });
 
   it("propagates cancellation before and during a model request", async () => {

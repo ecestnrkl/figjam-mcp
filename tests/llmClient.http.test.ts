@@ -74,6 +74,8 @@ afterEach(async () => {
   expect(fixtureErrors).toEqual([]);
 });
 
+const hintText = "diagnose_llm_config can test the configured model provider.";
+
 describe("LLM requests through real local HTTP and the OpenAI SDK", () => {
   it("serializes opt-in reasoning for a generic compatible endpoint without changing later requests", async () => {
     const { chatJson } = await localClient((_request, response) => success(response));
@@ -601,6 +603,145 @@ describe("LLM requests through real local HTTP and the OpenAI SDK", () => {
         expect(performance.now() - started).toBeLessThan(1500);
         expect(requests).toHaveLength(1);
       });
+    });
+  });
+
+  describe("replies the model or provider cannot use", () => {
+    const completion = (message: Record<string, unknown>, finish = "stop") => ({ id: "local-fixture", object: "chat.completion", created: 1,
+      model: "local-model", choices: [{ index: 0, message: { role: "assistant", ...message }, finish_reason: finish }] });
+
+    it.each([
+      ["empty text", completion({ content: "" }), "empty", "returned an empty response (no text)"],
+      ["null content", completion({ content: null }), "empty", "returned an empty response (no text)"],
+      ["a refusal", completion({ content: null, refusal: "synthetic private refusal text" }), "refusal", "declined to answer (refusal)"],
+      ["the content filter", completion({ content: null }, "content_filter"), "content_filter", "had its reply blocked by the provider's content filter"],
+      ["the output limit", completion({ content: "" }, "length"), "length", "ran into max_tokens before any text arrived"],
+      ["only reasoning", completion({ content: "", reasoning: "synthetic private reasoning" }), "reasoning", "returned only reasoning and no text"],
+      ["a tool call", completion({ content: null, tool_calls: [{ id: "call", type: "function", function: { name: "lookup", arguments: "{}" } }] }, "tool_calls"),
+        "tool_call", "returned a tool call instead of text"],
+    ])("names the cause of a reply with %s", async (_case, reply, reason, text) => {
+      const { chatJson } = await localClient((_request, response) => json(response, 200, reply));
+      const pending = chatJson(["only/model"], messages, { ...schemaOptions, outputSetting: "LLM_ANSWER_MAX_OUTPUT_TOKENS" });
+      await expect(pending).rejects.toMatchObject({ name: "LlmEmptyReplyError", reason, message: expect.stringContaining(`LLM (only/model) ${text}`) });
+      await expect(pending).rejects.not.toThrow(/synthetic private/);
+      if (reason === "length") await expect(pending).rejects.toThrow("Raise LLM_ANSWER_MAX_OUTPUT_TOKENS");
+    });
+
+    it("tries the next candidate and repeats a router request once, as before", async () => {
+      const { chatJson } = await localClient((request, response) => request.model === "good/model" ? success(response)
+        : json(response, 200, completion({ content: null, refusal: "no" })));
+      await expect(chatJson(["openrouter/free", "good/model"], messages, schemaOptions)).resolves.toEqual({ ok: true });
+      expect(requests.map(request => request.model)).toEqual(["openrouter/free", "openrouter/free", "good/model"]);
+    });
+
+    it.each([
+      ["an empty body", (response: ServerResponse) => { response.writeHead(200, { "content-type": "application/json" }); response.end(); }, "the response body was empty", 1],
+      ["an empty body without content type", (response: ServerResponse) => { response.writeHead(200); response.end(); }, "the response body was empty", 1],
+      ["an HTML page", (response: ServerResponse) => { response.writeHead(200, { "content-type": "text/html" }); response.end("<html>Login</html>"); }, "the response was not JSON", 1],
+      ["broken JSON", (response: ServerResponse) => { response.writeHead(200, { "content-type": "application/json" }); response.end('{"choices": [{'); }, "the response body was not valid JSON", 1],
+      ["HTML with a JSON content type", (response: ServerResponse) => { response.writeHead(200, { "content-type": "application/json" }); response.end("<html>Login</html>"); }, "the response body was not valid JSON", 1],
+      ["a JSON array", (response: ServerResponse) => json(response, 200, []), "the response was not a JSON object", 1],
+      ["JSON null", (response: ServerResponse) => { response.writeHead(200, { "content-type": "application/json" }); response.end("null"); }, "the response body was empty", 1],
+      ["a body cut off by the server", (response: ServerResponse) => {
+        response.writeHead(200, { "content-type": "application/json", "content-length": "500" }); response.write('{"choices":'); setTimeout(() => response.destroy(), 20);
+      }, "the response body was cut off", 1],
+      ["no choices", (response: ServerResponse) => json(response, 200, { id: "x", object: "chat.completion" }), "the response contained no choices", 2],
+      ["empty choices", (response: ServerResponse) => json(response, 200, { choices: [] }), "the response contained no choices", 2],
+    ])("says LLM_BASE_URL returned no chat completion for %s, without a raw error", async (_case, reply, detail, expectedRequests) => {
+      const { chatJson } = await localClient((_request, response) => reply(response));
+      const pending = chatJson(["first/model", "second/model"], messages, schemaOptions);
+      await expect(pending).rejects.toMatchObject({ name: "LlmBaseUrlError", message: "LLM request failed: LLM_BASE_URL did not return a chat completion "
+        + `(${detail}). Check that it points to an OpenAI-compatible API, for example https://openrouter.ai/api/v1. diagnose_llm_config can test the configured model provider.` });
+      // A body that is no JSON says the URL is wrong for every model; a JSON body without choices may be one model's failure.
+      expect(requests).toHaveLength(expectedRequests);
+    });
+  });
+
+  describe("response format", () => {
+    const formats = () => requests.map(request => request.response_format?.type ?? "none");
+    const rejectFormats = (rejected: string[], message = "response_format json_schema is not supported") => (request: Request, response: ServerResponse) => {
+      if (rejected.includes(request.response_format?.type ?? "none")) json(response, 400, { error: { code: 400, message } });
+      else success(response);
+    };
+
+    it.each([
+      [400, "json: cannot unmarshal object into Go struct field .response_format of type string"],
+      [422, "Invalid schema for response_format 'figjam': In context=(), 'additionalProperties' is required to be supplied and to be false."],
+    ])("falls back to json_object after HTTP %i that names the response format without a word like unsupported", async (status, message) => {
+      const { chatJson } = await localClient((request, response) => request.response_format?.type === "json_schema"
+        ? json(response, status, { error: { code: status, message } }) : success(response));
+      await expect(chatJson("ollama/model", messages, schemaOptions)).resolves.toEqual({ ok: true });
+      expect(formats()).toEqual(["json_schema", "json_object"]);
+    });
+
+    it("does not fall back after a 400 about payment or policy that mentions the format", async () => {
+      const { chatJson } = await localClient((_request, response) => json(response, 400, { error: { code: 400,
+        message: "Blocked by content policy; the response_format was valid." } }));
+      await expect(chatJson("policy/model", messages, schemaOptions)).rejects.toMatchObject({ status: 400 });
+      expect(formats()).toEqual(["json_schema"]);
+    });
+
+    it.each([
+      ["without json_schema", ["json_schema"], [3, ["json_schema", "json_object", "json_object"]]],
+      ["without any format", ["json_schema", "json_object"], [4, ["json_schema", "json_object", "none", "none"]]],
+    ] as const)("remembers the working format of a fixed model for a provider %s", async (_case, rejected, [count, expected]) => {
+      const { chatJson } = await localClient(rejectFormats([...rejected]));
+      await chatJson("fixed/model", messages, schemaOptions);
+      await chatJson("fixed/model", messages, schemaOptions);
+      expect(requests).toHaveLength(count);
+      expect(formats()).toEqual(expected);
+      // Another model of the same provider starts from the best format again.
+      await chatJson("other/model", messages, schemaOptions);
+      expect(formats()[count]).toBe("json_schema");
+    });
+
+    it.each(["openrouter/free", "openrouter/auto"])("does not remember a format for the router %s", async router => {
+      const { chatJson } = await localClient(rejectFormats(["json_schema"]));
+      await chatJson(router, messages, schemaOptions);
+      await chatJson(router, messages, schemaOptions);
+      expect(formats()).toEqual(["json_schema", "json_object", "json_schema", "json_object"]);
+    });
+  });
+
+  describe("reasoning setting", () => {
+    const reasoningRejected = (status: number) => (request: Request, response: ServerResponse) => request.reasoning_effort !== undefined
+      ? json(response, status, { error: { code: status, message: "Unrecognized request argument supplied: reasoning_effort" } }) : success(response);
+
+    it.each([400, 422])("names LLM_ANSWER_REASONING_EFFORT when HTTP %i rejects the setting, without a format fallback", async status => {
+      vi.stubEnv("LLM_ANSWER_REASONING_EFFORT", "low");
+      vi.stubEnv("LLM_TEXT_MODELS", "text/own");
+      vi.stubEnv("LLM_TEXT_MODEL", "");
+      await localClient(reasoningRejected(status));
+      const { answerFromBoard } = await import("../src/tools/answerFromBoard.js");
+      const { setBoard } = await import("../src/lib/cache.js");
+      const { evidenceBoard } = await import("./fixtures/retrieval.js");
+      const board = evidenceBoard(`Reasoning${status}`);
+      setBoard(board.boardId, board);
+      await expect(answerFromBoard({ boardId: board.boardId, question: "What is required for payment retries?" })).rejects.toMatchObject({ status,
+        message: `LLM request failed (HTTP ${status}): the model provider rejected the reasoning setting. `
+          + `Unset LLM_ANSWER_REASONING_EFFORT, choose another value or another model. ${hintText}` });
+      expect(requests).toHaveLength(1);
+    });
+
+    it("sends the answer reasoning setting with the text check of diagnose_llm_config and finds a provider that rejects it", async () => {
+      vi.stubEnv("LLM_ANSWER_REASONING_EFFORT", "low");
+      vi.stubEnv("LLM_TEXT_MODELS", "text/own");
+      vi.stubEnv("LLM_FAST_TEXT_MODELS", "fast/own");
+      vi.stubEnv("LLM_VISION_MODELS", "vision/own");
+      vi.stubEnv("LLM_TEXT_MODEL", "");
+      vi.stubEnv("LLM_VISION_MODEL", "");
+      await localClient((request, response) => {
+        const prompt = JSON.stringify((request as Request & { messages: unknown }).messages);
+        if (request.reasoning_effort !== undefined) return json(response, 400, { error: { code: 400, message: "Unrecognized request argument supplied: reasoning_effort" } });
+        const content = prompt.includes("17 + 25") ? '{"result":42}' : prompt.includes("9 * 7") ? '{"result":63}' : '{"dominantColor":"blue"}';
+        json(response, 200, { id: "local-fixture", object: "chat.completion", created: 1, model: "local-model",
+          choices: [{ index: 0, message: { role: "assistant", content }, finish_reason: "stop" }] });
+      });
+      const { diagnoseLlmConfig } = await import("../src/tools/diagnoseLlmConfig.js");
+      const diagnosis = await diagnoseLlmConfig();
+      expect(diagnosis.checks.map(check => [check.name, check.ok])).toEqual([["text_json", false], ["fast_text_json", true], ["vision_json", true]]);
+      expect(diagnosis.checks[0]?.error).toBe("text/own: Unrecognized request argument supplied: reasoning_effort, code 400");
+      expect(requests.filter(request => request.reasoning_effort !== undefined).map(request => request.model)).toEqual(["text/own"]);
     });
   });
 });

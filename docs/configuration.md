@@ -51,7 +51,7 @@ it redacted.
 | `LLM_FAST_TEXT_MODELS` | the text models (`LLM_TEXT_MODEL`, `LLM_TEXT_MODELS`) | Used only by `diagnose_llm_config`. |
 | `LLM_TEXT_MODEL`, `LLM_VISION_MODEL` | none | Legacy: one model placed in front of the list. |
 | `LLM_PROVIDER_REQUIRE_PARAMETERS` | `true` | Only when `LLM_BASE_URL` points to `openrouter.ai`: sends `provider.require_parameters` with JSON requests, so only endpoints that support structured output are used. `false` turns it off. |
-| `LLM_ANSWER_REASONING_EFFORT` | unset | `none`, `low`, `medium` or `high` for `answer_from_board` only. Unset keeps the model's default. |
+| `LLM_ANSWER_REASONING_EFFORT` | unset | `none`, `low`, `medium` or `high` for `answer_from_board` only; the `text_json` check of `diagnose_llm_config` sends it too. Unset keeps the model's default. |
 
 A request moves to the next candidate after a rate limit, server error, timeout,
 invalid JSON or an unavailable model. Changing any model setting or
