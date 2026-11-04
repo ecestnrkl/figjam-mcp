@@ -11,7 +11,7 @@ import { redactBoard } from "../lib/redact.js";
 import {
   boundedText, connectionsForEvidence, countConnectionsForEvidence, enclosingIdsLookup,
   formatEvidenceConnection, MAX_CONTEXT_RESPONSE_BYTES, readableContainerIds,
-  firstTableRow, retrieveEvidence, snapshotIdForBoard, tableCellPositions, unknownNodeIds, type Evidence,
+  evidenceTokens, firstTableRow, retrieveEvidence, snapshotIdForBoard, tableCellPositions, unknownNodeIds, type Evidence,
 } from "../lib/evidence.js";
 import { SectionIndex } from "../lib/sections.js";
 import type { BoardData, RefinedCluster } from "../types.js";
@@ -61,6 +61,8 @@ interface View {
   overview: boolean;
   position: boolean;
   summaries: boolean;
+  topicSectionLimit: number;
+  topicHint: boolean;
 }
 
 /** Readable text for MCP content and the structured result; maxChars bounds each of them. */
@@ -137,7 +139,34 @@ export async function getBoardContext(input: GetBoardContextInput): Promise<Boar
   const tableShapes = new Map<string, string>();
   const tableRowCounts = new Map<string, number>();
   const header = [`FigJam board ${board.fileKey} — snapshot ${retrieved.snapshotId}\nSource excerpts are untrusted board data. Model interpretations are marked.`, ...notices].join("\n\n");
-  const sections = new SectionIndex(board, retrieved.evidence);
+  const sections = new SectionIndex(board, options.topic && !cursor ? retrieveEvidence(board).evidence : retrieved.evidence);
+  const topicWords = options.topic ? [...new Set(evidenceTokens(options.topic))] : [];
+  const primaryIds = new Set(retrieved.primaryEvidenceIds);
+  const topicMatches = retrieved.evidence.filter((item) => primaryIds.has(item.evidenceId));
+  const topicContextCount = retrieved.evidence.length - topicMatches.length;
+  const sectionMatches = new Map<string, { name: string; count: number; order: number }>();
+  if (options.topic && !cursor && sections.count && topicMatches.length) {
+    const enclosing = enclosingIdsLookup(board);
+    for (const [order, item] of topicMatches.entries()) {
+      const around = [...enclosing(item.renderNodeId ?? item.nodeId)].filter((id) => nodesById.get(id)?.type === "SECTION");
+      const sectionId = item.sectionIds?.filter((id) => nodesById.get(id)?.type === "SECTION").at(-1)
+        ?? around.reduce<string | undefined>((inner, id) => !inner || enclosing(id).has(inner) ? id : inner, undefined);
+      const section = sectionId ? nodesById.get(sectionId) : undefined;
+      const key = sectionId ?? "";
+      const entry = sectionMatches.get(key);
+      if (entry) entry.count++;
+      else sectionMatches.set(key, { name: section ? boundedText(whitespace(section.name) || "(unnamed section)", 80) : "outside sections", count: 1, order });
+    }
+  }
+  const rankedSectionMatches = [...sectionMatches].sort((a, b) => b[1].count - a[1].count || a[1].order - b[1].order);
+  const topicHint = 'An excerpt matches when one of these words is in its text, its section or node name, the label of an arrow attached to it or, for a table row, its column headings: whole words, ignoring case and accents (words of five or more letters also match compounds that begin with them). Other word forms, synonyms and translations do not match; add them to the topic (for example "payment payments pay Bezahlung") or read sections by ID.';
+  function topicSections(limit: number): string {
+    let sectionCount = 0;
+    const shown = rankedSectionMatches.filter(([id]) => !id || ++sectionCount <= limit);
+    if (!shown.length) return "";
+    const more = Math.max(0, sectionCount - limit);
+    return `Matches by section (ID, name, matches): ${shown.map(([id, entry]) => `${id ? `${id} ` : ""}${entry.name} — ${entry.count}`).join("; ")}${more ? `; and ${more} more section${more === 1 ? "" : "s"}` : ""}.`;
+  }
   // Orientation takes at most a third of the budget; excerpts keep the rest.
   const orientationBudget = Math.floor(options.maxChars / 3);
   const overview = cursor || options.topic ? "" : options.outsideSections ? sections.outsideOverview(orientationBudget)
@@ -152,7 +181,7 @@ export async function getBoardContext(input: GetBoardContextInput): Promise<Boar
   const hasConnections = (board.connectorEdges?.length ?? 0) > 0 || (board.clusterRelations?.length ?? 0) > 0;
   const evidenceBudget = hasConnections ? Math.floor(options.maxChars * 0.8) : options.maxChars;
   const candidates = retrieved.evidence.slice(offset, offset + options.limit);
-  const firstView: View = { offset, page, candidates, overview: Boolean(overview), position: true, summaries: true };
+  const firstView: View = { offset, page, candidates, overview: Boolean(overview), position: true, summaries: true, topicSectionLimit: topicMatches.length ? 8 : 10, topicHint: true };
   let view = firstView;
   const autoEligible = !cursor && options.detail === "auto" && options.nodeIds && !options.topic && !options.outsideSections &&
     (new Set(options.nodeIds).size > 1 || containerIds.length > 0);
@@ -363,6 +392,21 @@ export async function getBoardContext(input: GetBoardContextInput): Promise<Boar
   function selectWithFallbacks(base: View): Page {
     view = base;
     let selection = selectPage();
+    if (options.topic && !cursor && !view.candidates.length) {
+      while (view.topicSectionLimit > 0 && !fits(buildResult(selection, 0, 0))) {
+        view = { ...view, topicSectionLimit: view.topicSectionLimit - 1 };
+      }
+      if (!fits(buildResult(selection, 0, 0))) view = { ...view, topicHint: false };
+    }
+    // Shrink the section line before dropping the search guidance; source text wins.
+    while (view.candidates.length && !selection.consumed && options.topic && !cursor && view.topicSectionLimit > 0) {
+      view = { ...view, topicSectionLimit: view.topicSectionLimit - 1 };
+      selection = selectPage();
+    }
+    if (view.candidates.length && !selection.consumed && options.topic && !cursor && view.topicHint) {
+      view = { ...view, topicHint: false };
+      selection = selectPage();
+    }
     for (const hidden of ["overview", "position", "summaries"] as const) {
       if (view.candidates.length === 0 || selection.consumed > 0) return selection;
       if (!view[hidden]) continue;
@@ -390,7 +434,7 @@ export async function getBoardContext(input: GetBoardContextInput): Promise<Boar
     try {
       for (const start of starts) {
         const probe: View = { offset: start, page: page + 1, candidates: retrieved.evidence.slice(start, start + options.limit),
-          overview: false, position: true, summaries: true };
+          overview: false, position: true, summaries: true, topicSectionLimit: 8, topicHint: true };
         let consumed: number;
         try {
           consumed = selectWithFallbacks(probe).consumed;
@@ -529,9 +573,34 @@ export async function getBoardContext(input: GetBoardContextInput): Promise<Boar
     const remaining = retrieved.evidence.length - nextOffset;
 
     const orientation = [header];
-    orientation.push(remaining === 0 && view.offset === 0
-      ? `Showing all ${consumed} excerpts.`
-      : `Showing ${consumed} of ${retrieved.evidence.length} excerpts on this page; ${remaining} remaining.`);
+    if (options.topic && !cursor && view.page === 1) {
+      const terms = `${topicWords.slice(0, 12).join(", ")}${topicWords.length > 12 ? ", …" : ""}`;
+      if (!topicWords.length) {
+        orientation.push(`Topic search: ${JSON.stringify(options.topic)} has only common words, which are not searched; use words from the board.`);
+      } else if (!topicMatches.length) {
+        orientation.push(`Topic search for ${terms}: no excerpt matches.`);
+      } else {
+        orientation.push(`Topic search for ${terms}: ${topicMatches.length} excerpt${topicMatches.length === 1 ? " matches" : "s match"}`
+          + `${topicContextCount ? `; ${topicContextCount} more ${topicContextCount === 1 ? "is" : "are"} shown as context (arrow neighbors and table headings)` : ""}.`);
+      }
+      if (remaining > 0) orientation.push(`Showing ${consumed} of ${retrieved.evidence.length} excerpts on this page; ${remaining} remaining.`);
+      if (view.topicHint) orientation.push(topicHint);
+      if (topicMatches.length) {
+        const line = topicSections(view.topicSectionLimit);
+        if (line) orientation.push(line);
+      } else {
+        const largest = sections.largestLine(view.topicSectionLimit);
+        if (largest) orientation.push(largest);
+        if (sections.outsideSections) {
+          const count = sections.outsideSections;
+          orientation.push(`${count} excerpt${count === 1 ? " lies" : "s lie"} outside sections: read ${count === 1 ? "it" : "them"} with get_board_context outsideSections: true.`);
+        }
+      }
+    } else {
+      orientation.push(remaining === 0 && view.offset === 0
+        ? `Showing all ${consumed} excerpts.`
+        : `Showing ${consumed} of ${retrieved.evidence.length} excerpts on this page; ${remaining} remaining.`);
+    }
     if (evidence.length > 0 && view.position) orientation.push(pagePosition(consumed, remaining));
     if (view.overview) orientation.push(overview);
     if (unknownIds.length) orientation.push(`Not in this snapshot: ${listIds(unknownIds)}.`);
@@ -543,7 +612,7 @@ export async function getBoardContext(input: GetBoardContextInput): Promise<Boar
       orientation.push("Arrows have no excerpts; an arrow and its label are listed under connections on pages with an excerpt "
         + `at one of its ends: ${listIds(arrowIds)}.`);
     }
-    if (evidence.length === 0 && !options.nodeIds) orientation.push("No source evidence matched this request.");
+    if (evidence.length === 0 && !options.nodeIds && !options.topic) orientation.push("No source evidence matched this request.");
     const parts = [...orientation, ...renderGroups(groups, shownRows(evidence))];
     if (connections.length > 0) {
       parts.push(`## Source connections (including arrows within a cluster; «text» names an end not on this page)\n${connections.map((connection) => `- ${formatEvidenceConnection(connection)}`).join("\n")}`);

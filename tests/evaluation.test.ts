@@ -32,9 +32,9 @@ describe("retrieval evaluation CLI", () => {
         env: { ...process.env, LLM_BASE_URL: "https://synthetic-eval.invalid/v1", LLM_API_KEY: "synthetic-key" },
       });
       const result = JSON.parse(stdout);
-      expect(result).toMatchObject({ mode: "offline", fixtures: 22, recallAt1: 1, recallAt6: 1, recallAt15: 1, meanReciprocalRank: 1, correctAbstentionRate: 1, apiCalls: 0 });
-      expect(result.baselineProxy).toMatchObject({ historicalBenchmark: false, visibleFacts: 15, totalFacts: 20 });
-      expect(result.revisions).toMatchObject({ fixtures: 20, passed: 20 });
+      expect(result).toMatchObject({ mode: "offline", fixtures: 29, recallAt1: 1, recallAt6: 1, recallAt15: 1, meanReciprocalRank: 1, correctAbstentionRate: 1, apiCalls: 0 });
+      expect(result.baselineProxy).toMatchObject({ historicalBenchmark: false, visibleFacts: 20, totalFacts: 27 });
+      expect(result.revisions).toMatchObject({ fixtures: 27, passed: 27 });
       expect(result.knownLimitations).toEqual([{ name: "plural question versus singular source", rank: 0, excludedFromRecallAndMrr: true, reason: "Word forms are not normalized; lexical overlap is required." }]);
       expect(result.external).toBeUndefined();
       expect(result.semanticGrounding).toMatchObject({ fixtures: 5, generation: "not measured (offline; no provider calls)", semanticReview: "required" });
@@ -65,7 +65,7 @@ describe("retrieval evaluation CLI", () => {
           const context = request.messages.find(message => message.role === "user").content;
           const id = context.match(/\\[(ev_[a-f0-9]+)\\]/)[1];
           return new Response(JSON.stringify({ id: "completion", object: "chat.completion", created: 1, model: request.model,
-            choices: [{ index: 0, finish_reason: "stop", message: { role: "assistant", content: JSON.stringify({ kind: "answer", language: "en", answer: calls > 19 ? "Nein, der Simulator ist nicht gebucht." : "Source excerpt.", evidenceIds: [id] }) } }],
+            choices: [{ index: 0, finish_reason: "stop", message: { role: "assistant", content: JSON.stringify({ kind: "answer", language: "en", answer: calls > 26 ? "Nein, der Simulator ist nicht gebucht." : "Source excerpt.", evidenceIds: [id] }) } }],
             ...(calls === 19 ? {} : { usage: { prompt_tokens: 100, completion_tokens: 20, total_tokens: 120 } }),
           }), { headers: { "content-type": "application/json" } });
         };
@@ -74,10 +74,10 @@ describe("retrieval evaluation CLI", () => {
         env: { ...process.env, LLM_BASE_URL: "https://synthetic-eval.invalid/v1", LLM_API_KEY: "synthetic-key", LLM_TEXT_MODELS: "synthetic-model", LLM_TEXT_MODEL: "", LLM_MODEL_PRESET: "student-free" },
       });
       const result = JSON.parse(stdout);
-      expect(result).toMatchObject({ mode: "explicit-provider-evaluation", fixtures: 22, apiCalls: 26 });
-      expect(result.providerEvaluation).toEqual({ selection: "retrieval-and-grounding", selectedFixtures: 27, perCaseTimeoutMs: 45000 });
-      expect(result.external).toMatchObject({ completedFixtures: 22, failedFixtures: 0, structuralCitationValidity: 1, expectedSourceRecall: 1, correctAbstentionRate: 1, sdkRetries: 0 });
-      expect(result.tokenUsage).toMatchObject({ receivedCompletions: 25, totalTokens: { reportedSum: 2880, reportedCompletions: 24, missingCompletions: 1 } });
+      expect(result).toMatchObject({ mode: "explicit-provider-evaluation", fixtures: 29, apiCalls: 33 });
+      expect(result.providerEvaluation).toEqual({ selection: "retrieval-and-grounding", selectedFixtures: 34, perCaseTimeoutMs: 45000 });
+      expect(result.external).toMatchObject({ completedFixtures: 29, failedFixtures: 0, structuralCitationValidity: 1, expectedSourceRecall: 1, correctAbstentionRate: 1, sdkRetries: 0 });
+      expect(result.tokenUsage).toMatchObject({ receivedCompletions: 32, totalTokens: { reportedSum: 3720, reportedCompletions: 31, missingCompletions: 1 } });
       expect(result.externalCases.filter((item: { expectedNodeId: string | null }) => !item.expectedNodeId).every((item: { httpAttempts: number }) => item.httpAttempts === 0)).toBe(true);
       expect(result.semanticGrounding).toMatchObject({ fixtures: 5, generation: "responses collected for human review", semanticReview: "required" });
       expect(result.semanticGrounding.cases.map((item: { expectedStatus: string }) => item.expectedStatus)).toEqual(["unknown", "confirmed", "denied", "unknown", "conflicting"]);
@@ -116,9 +116,9 @@ describe("retrieval evaluation CLI", () => {
         env: { ...process.env, LLM_BASE_URL: "https://synthetic-eval.invalid/v1", LLM_API_KEY: "synthetic-key", LLM_TEXT_MODELS: "synthetic-model", LLM_TEXT_MODEL: "", LLM_MODEL_PRESET: "student-free" },
       });
       const result = JSON.parse(stdout);
-      expect(result).toMatchObject({ mode: "explicit-provider-evaluation", fixtures: 22, recallAt1: 1, correctAbstentionRate: 1, apiCalls: 5 });
+      expect(result).toMatchObject({ mode: "explicit-provider-evaluation", fixtures: 29, recallAt1: 1, correctAbstentionRate: 1, apiCalls: 5 });
       expect(result.providerEvaluation).toEqual({ selection: "grounding-only", selectedFixtures: 5, perCaseTimeoutMs: 45000 });
-      expect(result.revisions).toMatchObject({ fixtures: 20, passed: 20 });
+      expect(result.revisions).toMatchObject({ fixtures: 27, passed: 27 });
       expect(result.external).toBeUndefined();
       expect(result.externalCases).toBeUndefined();
       expect(result.tokenUsage).toMatchObject({ receivedCompletions: 5, totalTokens: { reportedSum: 600, reportedCompletions: 5, missingCompletions: 0 } });

@@ -215,18 +215,59 @@ describe("source evidence", () => {
   });
 
   it("uses Unicode word boundaries rather than substring matching", () => {
-    expect(evidenceTokens("Kündigungsfrist ＰＡＹＭＥＮＴ")).toEqual(["kündigungsfrist", "payment"]);
+    expect(evidenceTokens("Kündigungsfrist ＰＡＹＭＥＮＴ")).toEqual(["kundigungsfrist", "payment"]);
     const board = evidenceBoard("Word123", [textNode("1:1", "A pineapple delivery")]);
     expect(retrieveEvidence(board, { query: "apple" }).evidence).toEqual([]);
   });
 
-  it("finds original text through node, page and section names", () => {
+  it.each([
+    ["cafe", "café"], ["café", "Cafe"], ["to-do", "TODO"], ["wifi", "Wi-Fi"],
+    ["soldout", "sold-out"], ["IT", "Waiting for IT"], ["Bezahlung", "Bezah\u00ADlung"],
+    ["Bezahlung", "Bezah\u200Blung"], ["Bezahlung", "Bezah\u200Clung"],
+    ["Bezahlung", "Bezah\u200Dlung"], ["Bezahlung", "Bezah\u2060lung"], ["Bezahlung", "Bezah\uFEFFlung"],
+    ["wifi", "Wi‐Fi"], ["wifi", "Wi‑Fi"],
+  ])("finds %s in %s", (query, text) => {
+    const board = evidenceBoard("Words123", [textNode("1:1", text)]);
+    expect(retrieveEvidence(board, { query }).evidence.map((item) => item.text)).toEqual([text]);
+  });
+
+  it("ignores lowercase stopwords and German filler", () => {
+    expect(retrieveEvidence(evidenceBoard("Case123", [textNode("1:1", "Waiting for IT")]), { query: "it" }).evidence).toEqual([]);
+    expect(retrieveEvidence(evidenceBoard("Filler123", [textNode("1:1", "Es gibt etwas Neues")]),
+      { query: "Gibt es etwas zur Bezahlung?" }).evidence).toEqual([]);
+  });
+
+  it("does not match solely on a page name", () => {
+    const board = evidenceBoard("Page123", [textNode("1:1", "Something")]);
+    board.nodes.push({ ...textNode("0:1", ""), type: "CANVAS", name: "Workshops", pageId: "0:1", sectionIds: [] });
+    expect(retrieveEvidence(board, { query: "Workshops" }).evidence).toEqual([]);
+  });
+
+  it("indexes an arrow label at both ends, but only the first row of a table", () => {
+    const board = evidenceBoard("Arrow123", [textNode("1:1", "One"), textNode("1:2", "Two"),
+      { ...textNode("table", ""), type: "TABLE", table: { cells: [
+        { id: "h", text: "Heading", row: 0, column: 0 }, { id: "v", text: "Value", row: 1, column: 0 },
+      ] } }]);
+    board.connectorEdges = [
+      { connectorId: "a", fromNodeId: "1:1", toNodeId: "1:2", label: "chosen" },
+      { connectorId: "b", fromNodeId: "1:2", toNodeId: "table", label: "chosen" },
+      { connectorId: "c", fromNodeId: "1:1", toNodeId: "v", label: "approved" },
+    ];
+    expect(retrieveEvidence(board, { query: "chosen" }).evidence.map((item) => [item.nodeId, item.row]))
+      .toEqual(expect.arrayContaining([["1:1", undefined], ["1:2", undefined], ["table", 0]]));
+    expect(retrieveEvidence(board, { query: "chosen" }).evidence).toHaveLength(3);
+    expect(retrieveEvidence(board, { query: "approved" }).evidence.map((item) => [item.nodeId, item.row]))
+      .toEqual(expect.arrayContaining([["1:1", undefined], ["table", 0]]));
+    expect(retrieveEvidence(board, { query: "approved" }).evidence).toHaveLength(2);
+  });
+
+  it("finds original text through node and section names", () => {
     const board = evidenceBoard("Metadata123", [{ ...textNode("1:1", "Ada"), name: "Escalation owner" }]);
     board.nodes.push(
       { ...textNode("0:1", ""), type: "CANVAS", name: "Operations", pageId: "0:1", sectionIds: [] },
       { ...textNode("1:0", ""), type: "SECTION", name: "Reliability" },
     );
-    for (const query of ["Escalation", "Operations", "Reliability"]) {
+    for (const query of ["Escalation", "Reliability"]) {
       const source = retrieveEvidence(board, { query }).evidence.find((item) => item.nodeId === "1:1");
       expect(source).toMatchObject({ text: "Ada", sourceType: "board_text", modelDerived: false,
         nodeName: "Escalation owner", pageName: "Operations", sectionNames: ["Reliability"] });
@@ -338,15 +379,35 @@ describe("table rows", () => {
     ]);
   });
 
+  it("ranks a row matching its value and column heading ahead of the heading", () => {
+    const board = evidenceBoard("HeadingSearch", [table(grid([["Feature", "Effort"], ["Ordering", "Low"], ["Payment", "High"]]))]);
+    expect(retrieveEvidence(board, { query: "low effort" }).evidence.map((item) => item.row)[0]).toBe(1);
+  });
+
+  it("deduplicates limited matches while preserving selected rows' headings", () => {
+    const board = evidenceBoard("DistinctSelection", [table(grid([["Feature", "Effort"], ["Ordering", "Low"]], "5:1")),
+      table(grid([["Feature", "Effort"], ["Payment", "Low"]], "5:2"), "5:2"),
+      textNode("n1", "Low note"), textNode("n2", "LOW   note")]);
+    const result = retrieveEvidence(board, { query: "low effort", limit: 10, includeNeighbors: true, neighborLimit: 0 });
+    const selected = result.evidence;
+    expect(selected.filter((item) => item.row === 0 && result.primaryEvidenceIds.includes(item.evidenceId))).toHaveLength(1);
+    expect(selected.filter((item) => item.row === 1)).toHaveLength(2);
+    for (const id of ["5:1", "5:2"]) expect(selected.some((item) => item.nodeId === id && item.row === 0)).toBe(true);
+    expect(selected.filter((item) => item.text.toLowerCase().replace(/\s+/g, " ") === "low note")).toHaveLength(1);
+    const all = retrieveEvidence(board, { query: "low effort" }).evidence;
+    expect(all.filter((item) => item.row === 0)).toHaveLength(2);
+    expect(all.filter((item) => item.text.toLowerCase().replace(/\s+/g, " ") === "low note")).toHaveLength(2);
+  });
+
   it("adds the first row of the table to a match in a later row, once and within the neighbor limit", () => {
     const board = evidenceBoard("TableHeader123", [table(grid([["Metric", "Value"], ["Alpha", "1"], ["Beta", "2"], ["Budget", "999"], ["Gamma", "3"]]))]);
     const later = retrieveEvidence(board, { query: "Budget", includeNeighbors: true });
     expect(later.evidence.map((item) => item.row)).toEqual([0, 3]);
     expect(later.primaryEvidenceIds).toEqual([later.evidence[1]!.evidenceId]);
     expect(later.totalMatched).toBe(1);
-    expect(retrieveEvidence(board, { query: "Metric", includeNeighbors: true }).evidence.map((item) => item.row)).toEqual([0]);
+    expect(retrieveEvidence(board, { query: "Metric", includeNeighbors: true }).evidence.map((item) => item.row)).toEqual([0, 1, 2, 3, 4]);
     const both = retrieveEvidence(board, { query: "Value Budget", includeNeighbors: true }).evidence;
-    expect(both.map((item) => item.row).sort((a, b) => a! - b!)).toEqual([0, 3]);
+    expect(both.map((item) => item.row).sort((a, b) => a! - b!)).toEqual([0, 1, 2, 3, 4]);
     expect(retrieveEvidence(board, { query: "Budget", includeNeighbors: true, tableNeighborLimit: 0 }).evidence.map((item) => item.row)).toEqual([3]);
     expect(retrieveEvidence(board, { query: "Budget" }).evidence.map((item) => item.row)).toEqual([3]);
   });

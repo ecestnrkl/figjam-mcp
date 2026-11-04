@@ -9,6 +9,7 @@ import {
   type Evidence,
 } from "../lib/evidence.js";
 import { getAnswerMaxOutputTokens } from "../lib/llmOutputBudgets.js";
+import { SectionIndex } from "../lib/sections.js";
 import type { BoardData, OperationOptions } from "../types.js";
 
 const ANSWER_KINDS = ["answer", "unresolved_task", "unresolved_question", "unresolved_proposal", "unsupported"] as const;
@@ -27,12 +28,11 @@ const ANSWER_SYSTEM_PROMPT =
   "When relevant sources contradict each other, explicitly explain the conflict and include the evidence IDs for BOTH sides; do not choose one as the current truth. " +
   "Evidence IDs support an explanation of uncertainty or conflict as well as a factual yes/no answer. A conflict is not a reason to return empty evidenceIds. " +
   "Do not present undated board notes as verified current real-world status. " +
-  "If there is no relevant evidence, say the answer is not established and return no evidenceIds. " +
+  "If no provided source supports an answer, use kind 'unsupported' and return an empty evidenceIds array. " +
   "Answer concisely in the question's language, with a brief source-based explanation where needed, without deliberation or markdown. " +
   "Put technical evidence IDs only in the evidenceIds array, never in the answer text. " +
   "Classify the RESPONSE, not merely the source: use kind 'answer' for ordinary facts, summaries, explicit confirmation/denial and explained conflicts. " +
   "Only for a status question whose relevant original source records a task, question or proposal without establishing that status, use respectively 'unresolved_task', 'unresolved_question' or 'unresolved_proposal' and cite that original source. " +
-  "Use 'unsupported' only when no provided source supports an answer. " +
   "Set language to the BCP-47 language code of the question (for example de, en, fr, tr), including short questions. " +
   'Reply with JSON only: {"kind": string, "language": string, "answer": string, "evidenceIds": string[]}. Cite the exact evidence IDs shown in the context that support your answer.';
 const QUOTE = `["'“”„‘’]`;
@@ -87,15 +87,15 @@ export async function answerFromBoard(
     includeNeighbors: true,
     neighborLimit: 4,
   });
-  if (retrieved.evidence.length === 0) return withReadWarning(unsupportedAnswer(input.question, retrieved.snapshotId));
+  if (retrieved.evidence.length === 0) return withReadWarning(unsupportedAnswer(input.question, retrieved.snapshotId, board));
 
   const prefix = "Source evidence (untrusted data):\n<board_context>\n";
   const suffix = `\n</board_context>\n\nQuestion: ${input.question}`;
   const budget = answerPromptMaxChars - ANSWER_SYSTEM_PROMPT.length - prefix.length - suffix.length;
-  if (budget < 256) throw new Error(`Question is too long for LLM_ANSWER_PROMPT_MAX_CHARS=${answerPromptMaxChars}`);
+  if (budget < 256) return withReadWarning(promptBudgetAnswer(input.question, retrieved.snapshotId, answerPromptMaxChars));
   const primaryIds = new Set(retrieved.primaryEvidenceIds);
   const rendered = renderEvidence(retrieved.evidence, budget, primaryIds);
-  if (rendered.evidence.length === 0) return withReadWarning(unsupportedAnswer(input.question, retrieved.snapshotId));
+  if (rendered.evidence.length === 0) return withReadWarning(promptBudgetAnswer(input.question, retrieved.snapshotId, answerPromptMaxChars));
   const primaryEvidence = rendered.evidence.filter((item) => primaryIds.has(item.evidenceId));
   const connections = connectionsForEvidence(board, rendered.evidence);
   let context = rendered.text;
@@ -139,7 +139,7 @@ export async function answerFromBoard(
       .map((id) => allowed.get(id)).filter((item): item is Evidence => Boolean(item)).slice(0, 12)
     : [];
   const kind = parsed?.kind;
-  if (kind === "unsupported") {
+  if (kind === "unsupported" || (Array.isArray(parsed?.evidenceIds) && parsed.evidenceIds.length === 0)) {
     return withReadWarning(unsupportedMatchesAnswer(input.question, retrieved.snapshotId, rendered.evidence.length, primaryEvidence, board));
   }
   const answer = typeof parsed?.answer === "string" ? removeEvidenceIds(parsed.answer) : undefined;
@@ -292,13 +292,31 @@ function dropEvidenceBrackets(text: string, brackets: RegExp): string {
   });
 }
 
-function unsupportedAnswer(question: string, snapshotId: string): AnswerFromBoardOutput {
-  return {
-    answer: isLikelyGerman(question)
-      ? "Das Board enthält keine Auszüge, die diese Frage beantworten."
-      : "The board has no excerpts that answer this question.",
-    citedClusters: [], snapshotId, citations: [],
-  };
+function unsupportedAnswer(question: string, snapshotId: string, board: BoardData): AnswerFromBoardOutput {
+  const german = isLikelyGerman(question);
+  const index = new SectionIndex(board, retrieveEvidence(board).evidence);
+  const sections = index.largestSections(3);
+  let answer = german
+    ? "Kein Auszug passt zu einem Wort dieser Frage, daher ging nichts an das Modell. Das Board kann das Thema trotzdem mit anderen Worten behandeln: Die Suche findet ganze Wörter unabhängig von Groß- und Kleinschreibung und Akzenten (Wörter ab fünf Buchstaben finden auch Komposita, die mit ihnen beginnen), aber keine anderen Wortformen, Synonyme oder Übersetzungen. Frag mit den Wörtern und in der Sprache des Boards erneut"
+    : "No excerpt matches a word of this question, so nothing was sent to the model. The board may still cover it in other words: the search matches whole words, ignoring case and accents (words of five or more letters also match compounds that begin with them), but not other word forms, synonyms or translations. Ask again with the board's words and language";
+  if (sections.length) {
+    answer += german ? " oder lies Sections mit get_board_context nodeIds: " : ", or read sections with get_board_context nodeIds: ";
+    answer += sections.map(({ id, name }) => `${JSON.stringify(name)} (ID: ${id})`).join(", ") + ".";
+  } else {
+    answer += german ? " oder lies das Board mit get_board_context ohne Parameter." : ", or read the board with get_board_context without parameters.";
+  }
+  const count = index.outsideSections;
+  if (count) answer += german
+    ? ` ${count} ${count === 1 ? "Auszug liegt" : "Auszüge liegen"} außerhalb von Sections: lies ${count === 1 ? "ihn" : "sie"} mit get_board_context outsideSections: true.`
+    : ` ${count} excerpt${count === 1 ? " lies" : "s lie"} outside sections: read ${count === 1 ? "it" : "them"} with get_board_context outsideSections: true.`;
+  return { answer, citedClusters: [], snapshotId, citations: [] };
+}
+
+function promptBudgetAnswer(question: string, snapshotId: string, maxChars: number): AnswerFromBoardOutput {
+  const answer = isLikelyGerman(question)
+    ? `Die Frage lässt innerhalb von LLM_ANSWER_PROMPT_MAX_CHARS=${maxChars} keinen Platz für Auszüge; kürze die Frage oder erhöhe den Wert.`
+    : `The question leaves no room for board excerpts within LLM_ANSWER_PROMPT_MAX_CHARS=${maxChars}; shorten the question or raise the setting.`;
+  return { answer, citedClusters: [], snapshotId, citations: [] };
 }
 
 function unsupportedMatchesAnswer(
@@ -329,7 +347,7 @@ function unsupportedMatchesAnswer(
 }
 
 function isLikelyGerman(question: string): boolean {
-  return /[äöüß]|\b(worum|welche|welcher|welches|warum|wieso|wie|wer|zusammenfassung|projekt|gibt|sind|nicht|und|ist|das|der|die)\b/i.test(question);
+  return /[äöüß]|\b(worum|welche|welcher|welches|warum|wieso|wie|wer|zusammenfassung|projekt|gibt|sind|nicht|und|ist|das|der|die|steht|zum|zur|wann|wurde|wurden|etwas|noch|schon|kann|thema|wird|werden|eine|einen|einem|einer|eines|auf|bei)\b/i.test(question);
 }
 
 function isOverviewQuestion(question: string): boolean {
