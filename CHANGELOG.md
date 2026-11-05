@@ -44,6 +44,7 @@
 - Text that the server generates for a cluster without text or model is marked "generated placeholder, no model" instead of "model interpretation" in `get_board_context`, the answer prompt and answers (`modelDerived` stays `true`); the reason `download_budget` says that the images of an ingest exceeded the 64 MiB download budget.
 - The README quick start has five steps for testers: the token and its Figma quota, a client entry that needs only `FIGMA_ACCESS_TOKEN`, an optional model provider with a local-server note, and a `max_speed` check; Claude Desktop has its own section, VS Code keeps the token in an input, and the assistant instructions move to "Using the tools".
 - `server.json` registry metadata: `FIGMA_ACCESS_TOKEN` is required (`file_content:read`, used by `ingest_board`), the model variables say when they are needed, and `FIGJAM_MCP_ENV_FILE` is listed.
+- The configuration reference drops the version check from `FIGMA_REQUEST_TIMEOUT_MS`, shows `LLM_REQUEST_TIMEOUT_MS` as unset by default and says that a local LLM server still needs a non-empty `LLM_API_KEY`; the README says that `ingest_board` also reads `/design/`, `/file/` and `/proto/` URLs, built for FigJam boards.
 
 ## 0.11.0 — 2026-10-26
 
