@@ -19,7 +19,7 @@ line, and later errors about missing credentials also include the load failure.
 | --- | --- | --- |
 | `FIGMA_ACCESS_TOKEN` | required for `ingest_board` | Figma personal access token with `file_content:read`. |
 | `LLM_BASE_URL` | none | OpenAI-compatible endpoint, for example `https://openrouter.ai/api/v1`: an absolute http or https URL of the API root, not ending in `/chat/completions`. Required for every LLM call; checked when a tool needs it. |
-| `LLM_API_KEY` | none | Provider key. Required for every LLM call. |
+| `LLM_API_KEY` | none | Provider key. Required for every LLM call, and the server rejects an empty value. A local OpenAI-compatible server without sign-in still needs a non-empty value, for example any placeholder string. |
 
 ### Privacy
 
@@ -64,8 +64,8 @@ invalid JSON or an unavailable model. Changing any model setting or
 | `INGEST_BOARD_VISION_BUDGET_MS` | `40000` | Time for the vision phase of one ingest. `0` starts no vision work; use `max_speed` for text-only ingests. |
 | `INGEST_BOARD_MIN_VISION_SLOT_MS` | `10000` | A cluster (rendering included) or its model step starts only if the budget left is at least this value and 1.25 × the median duration of that step among clusters finished in the same ingest. Concurrency × budget ÷ slot (12 with 3 parallel requests, 32 with 8) is how many clusters are planned for rendering. |
 | `FIGMA_FILE_REQUEST_TIMEOUT_MS` | `60000` | Download of the board's file tree. |
-| `FIGMA_REQUEST_TIMEOUT_MS` | `15000` | Each other Figma request: version check, image fills, image render, image download. |
-| `LLM_REQUEST_TIMEOUT_MS` | — | When set, each LLM request whose role has no value of its own. |
+| `FIGMA_REQUEST_TIMEOUT_MS` | `15000` | Each other Figma request: image fills, image render, image download. |
+| `LLM_REQUEST_TIMEOUT_MS` | unset | When set, each LLM request whose role has no value of its own. |
 | `LLM_ANSWER_REQUEST_TIMEOUT_MS` | `40000` | Each answer request and the text checks of `diagnose_llm_config`. Without it, an explicit `LLM_REQUEST_TIMEOUT_MS` applies. `answer_from_board` stops after 50 s across all model candidates (or this value, if larger); a fallback candidate gets only the time left. |
 | `LLM_VISION_REQUEST_TIMEOUT_MS` | `60000` | Each image request. Without it, an explicit `LLM_REQUEST_TIMEOUT_MS` applies. |
 | `LLM_RATE_LIMIT_RETRIES` | `1` | Retries of a request after HTTP 429. |
