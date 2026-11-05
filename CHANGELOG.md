@@ -36,6 +36,7 @@
 - `ingest_board` separates Figma from model-provider failures for images: the new fallback reasons `figma_auth` (401/403), `figma_rate_limit` (429, with `nextRetryAt` from `Retry-After`) and `figma_timeout` name `FIGMA_ACCESS_TOKEN` and Figma's seat limit; `auth`, `rate_limit` and `timeout` now mean the model provider (`LLM_API_KEY`). Snapshots with the old reasons stay readable.
 - The `ingest_board` summary says to run it again only where a new run helps unchanged; for `config`, `auth`, `figma_auth`, `payment` and `base_url` it names the change first and ends with "After that, run ingest_board again; finished clusters are kept."; waits in "Retry after" appear in seconds up to two minutes and otherwise as a UTC time with a rough duration.
 - Fallback renders of image clusters are bundled: nodes without an image fill, or whose original proves unusable while downloading, share `/v1/images` requests of up to 18 nodes, so 30 image clusters without image fills cost 2 render requests instead of 30.
+- A cluster uses the nodes Figma rendered and fails only when Figma renders none of them; then it gets the new reason `render_unavailable` ("Figma cannot render these elements"), which later ingests keep without another render request while its content is unchanged, and `forceFullIngest` asks again.
 
 ## 0.11.0 — 2026-10-26
 

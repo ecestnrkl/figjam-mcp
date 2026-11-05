@@ -15,6 +15,10 @@ export class FigmaApiError extends Error {
 export class FigmaDownloadBudgetError extends Error {
   constructor() { super("Figma download exceeds the configured byte budget"); this.name = "FigmaDownloadBudgetError"; }
 }
+/** Figma answered a render request but gave no image URL for any requested node: it cannot render them. */
+export class FigmaRenderUnavailableError extends Error {
+  constructor(message = "Figma cannot render these elements: it returned no image URL for the requested nodes") { super(message); this.name = "FigmaRenderUnavailableError"; }
+}
 export class FigmaTimeoutError extends Error {
   constructor(message: string) { super(message); this.name = "FigmaTimeoutError"; }
 }
@@ -256,7 +260,7 @@ export async function downloadRenders(nodeIds: string[], renderUrls: RenderUrls,
   const DOWNLOAD_CONCURRENCY = readIntEnv("FIGMA_SCREENSHOT_DOWNLOAD_CONCURRENCY", 3, 1);
   if (!nodeIds.length) throw new Error("downloadRenders: nodeIds must not be empty");
   const urls = nodeIds.map(id => renderUrls[id]).filter((url): url is string => Boolean(url));
-  if (!urls.length) throw new Error("Figma image render returned no URLs for the requested nodes");
+  if (!urls.length) throw new FigmaRenderUnavailableError("Figma image render returned no URLs for the requested nodes");
   if (urls.length !== nodeIds.length) throw new Error("Figma image render was incomplete; some requested nodes have no image URL");
   let index = 0;
   const images: Buffer[] = [];

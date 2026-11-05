@@ -3,7 +3,7 @@ import { setImmediate as yieldToRequests } from "node:timers/promises";
 import { extractFigmaFileKeyFromUrl, FIGMA_URL_HINT } from "../schemas/common.js";
 import type { Cluster, IngestFocusReport, IngestMode, IngestQualityReport, NormalizedNode, RefinedCluster, BoardData, OperationOptions } from "../types.js";
 import { fetchFileTree, fetchRenderUrls, downloadRenders, fetchImageRefs, downloadOriginals, FigmaApiError, FigmaDownloadBudgetError,
-  FigmaTimeoutError, IMAGE_MAX_BYTES, INGEST_IMAGE_MAX_BYTES, type OriginalImage, type RenderUrls } from "../lib/figmaApi.js";
+  FigmaRenderUnavailableError, FigmaTimeoutError, IMAGE_MAX_BYTES, INGEST_IMAGE_MAX_BYTES, type OriginalImage, type RenderUrls } from "../lib/figmaApi.js";
 import {
   LLMConfigurationError, LlmBaseUrlError, LlmRequestError, LlmTimeoutError, LlmUnusableReplyError, llmBaseUrlProblem, missingLlmConfigurationMessage, validateLlmConfiguration,
   validateLlmRuntimeConfiguration,
@@ -201,7 +201,7 @@ async function performIngest(input: IngestBoardInput, options: OperationOptions)
     const contentHash = contentHashes.get(cluster.id)!;
     const previous = reuseIndex.get(contentHash);
     // forceFullIngest re-reads the board only; interpretations of unchanged clusters are kept in every mode.
-    if (previous && canReusePrevious(previous, members, ingestMode)) {
+    if (previous && canReusePrevious(previous, members, ingestMode, input.forceFullIngest)) {
       refined[index] = { ...reuseCluster(cluster, previous, contentHash), cacheHit: true };
       reusedCount++;
     } else if (shouldUseVision(members, ingestMode)) visionQueue.push(index);
@@ -363,15 +363,22 @@ async function performIngest(input: IngestBoardInput, options: OperationOptions)
     }
     const renderIds = nodes.filter((_node, position) => "fallback" in originals[position]!).map(node => node.id);
     const renders = new Map<string, Buffer | undefined>();
+    let rendered: string[] = [];
     if (renderIds.length) {
       const renderUrls = await requestFallbackRenders(renderIds);
-      (await prepareRenders(await downloadRenders(renderIds, renderUrls, requestSignal, imageBudget), requestSignal))
-        .forEach((image, position) => renders.set(renderIds[position]!, image));
+      rendered = renderIds.filter(id => renderUrls[id]);
+      if (rendered.length) {
+        (await prepareRenders(await downloadRenders(rendered, renderUrls, requestSignal, imageBudget), requestSignal))
+          .forEach((image, position) => renders.set(rendered[position]!, image));
+      }
     }
-    return withinRequestLimit(nodes.map((node, position) => {
+    const images = nodes.map((node, position) => {
       const original = originals[position]!;
       return "data" in original ? original.data : renders.get(node.id);
-    }));
+    });
+    // Originals that work are enough; Figma's refusal to render the others fails the cluster only when nothing else is left.
+    if (renderIds.length && !rendered.length && !images.some(Boolean)) throw new FigmaRenderUnavailableError();
+    return withinRequestLimit(images);
   }
   async function worker(): Promise<void> {
     while (queueCursor < visionQueue.length) {
@@ -391,7 +398,8 @@ async function performIngest(input: IngestBoardInput, options: OperationOptions)
           const batch = batchOfCluster.get(index)!;
           const renderUrls = await renderBatch(batch);
           prefetchRenderBatch(batch + 1);
-          return withinRequestLimit(await prepareRenders(await downloadRenders(screenshotNodes.get(index)!, renderUrls, requestSignal, imageBudget), requestSignal));
+          const rendered = renderedNodeIds(screenshotNodes.get(index)!, renderUrls);
+          return withinRequestLimit(await prepareRenders(await downloadRenders(rendered, renderUrls, requestSignal, imageBudget), requestSignal));
         }, deadline, visionBudgetMs, signal);
         const failureAfterRendering = currentSharedFailure();
         if (failureAfterRendering) { fallback(index, failureAfterRendering.reason, failureAfterRendering.retryAfter); continue; }
@@ -478,7 +486,7 @@ function ingestResult(board: BoardData, contentChanged?: boolean, historyReset =
 
 type VisionStage = "render" | "model";
 type VisionFallbackReason = "config" | "base_url" | "auth" | "figma_auth" | "payment" | "rate_limit" | "figma_rate_limit" | "timeout"
-  | "figma_timeout" | "invalid_reply" | "download_budget" | "render_failed" | "model_failed" | "time_budget";
+  | "figma_timeout" | "invalid_reply" | "download_budget" | "render_failed" | "render_unavailable" | "model_failed" | "time_budget";
 
 /** Failures that every further image request of this ingest would repeat. */
 const STOPPING_REASONS: ReadonlySet<VisionFallbackReason> = new Set(["rate_limit", "figma_rate_limit", "config", "auth", "figma_auth", "payment", "base_url"]);
@@ -486,6 +494,7 @@ const STOPPING_REASONS: ReadonlySet<VisionFallbackReason> = new Set(["rate_limit
 function classifyVisionFailure(error: unknown, stage: VisionStage): VisionFallbackReason {
   if (error instanceof LLMConfigurationError) return "config";
   if (error instanceof FigmaDownloadBudgetError) return "download_budget";
+  if (error instanceof FigmaRenderUnavailableError) return "render_unavailable";
   // A deadline that expires while rendering or downloading ends a Figma step, one in the model step a model request.
   if (error instanceof FigmaTimeoutError || (error instanceof VisionDeadlineExceededError && stage === "render")) return "figma_timeout";
   if (error instanceof VisionDeadlineExceededError || error instanceof LlmTimeoutError) return "timeout";
@@ -550,6 +559,13 @@ export function parseFigmaFileKey(url: string): string {
     throw new Error(`Invalid Figma URL — ${FIGMA_URL_HINT}.`);
   }
   return fileKey;
+}
+
+/** The nodes Figma rendered; a cluster uses those and fails only when Figma rendered none of them. */
+function renderedNodeIds(nodeIds: string[], renderUrls: RenderUrls): string[] {
+  const rendered = nodeIds.filter(id => renderUrls[id]);
+  if (!rendered.length) throw new FigmaRenderUnavailableError();
+  return rendered;
 }
 
 /** Chooses which cluster members to render (see MAX_SCREENSHOTS_PER_CLUSTER). */
@@ -782,7 +798,10 @@ function canReusePrevious(
   previous: RefinedCluster,
   clusterNodes: NormalizedNode[],
   ingestMode: IngestMode,
+  forced = false,
 ): boolean {
+  // Figma could not render these elements; unchanged content would fail again, so only forceFullIngest asks again.
+  if (previous.incomplete && previous.fallbackReason === "render_unavailable") return !forced && shouldUseVision(clusterNodes, ingestMode);
   if (previous.incomplete) return shouldUseVision(clusterNodes, ingestMode)
     && previous.retryAfter !== undefined && previous.retryAfter > Date.now();
   if (previous.summarySource === "vision_llm") {
@@ -1022,7 +1041,7 @@ function describeFallbackReasons(reasons?: Record<string, number>): string {
     rate_limit: "the model provider's rate limit was reached", figma_rate_limit: "Figma's rate limit was reached",
     payment: "the model provider requires payment or more credits",
     invalid_reply: "the model's reply was unusable", download_budget: "the images were too large to download",
-    render_failed: "Figma could not provide the images", model_failed: "the model request failed",
+    render_failed: "Figma could not provide the images", render_unavailable: "Figma cannot render these elements", model_failed: "the model request failed",
     vision_failed: "an earlier run failed without a recorded cause", unknown: "the cause was not recorded",
   };
   const counted = Object.entries(reasons ?? {}).filter(([, count]) => count > 0);

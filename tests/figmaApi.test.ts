@@ -181,6 +181,7 @@ describe("bounded Figma requests", () => {
     const { downloadRenders } = await import("../src/lib/figmaApi.js");
     await expect(downloadRenders(["a", "b"], { a: "https://cdn.example/a", b: null })).rejects.toThrow(/render was incomplete/);
     await expect(downloadRenders(["a"], {})).rejects.toThrow(/no URLs/);
+    await expect(downloadRenders(["a"], { a: null })).rejects.toMatchObject({ name: "FigmaRenderUnavailableError" });
     expect(mock).not.toHaveBeenCalled();
   });
   it("preserves render and download rate-limit status and cooldown without logging the body", async () => {

@@ -45,6 +45,7 @@ cause. Original text and table rows stay searchable in every case.
 | `payment` | The model provider returned HTTP 402 (payment or more credits required) | Add credits, raise the API key's credit limit, or choose a free model |
 | `invalid_reply` | The model returned no usable reply: no JSON, empty text, no `choices`, a refusal, a content-filter block, a reply cut off at `max_tokens` before any text, only reasoning, or a tool call | Choose another model; for a cut-off reply raise `LLM_VISION_MAX_OUTPUT_TOKENS` |
 | `render_failed`, `download_budget` | Figma could not list the image fills or render the nodes, or images exceeded 64 MiB per ingest | Ingest again later or split the board |
+| `render_unavailable` | Figma returned no image URL for any element of the cluster; it cannot render them. A cluster with at least one rendered element is interpreted from it | Nothing to retry: later ingests keep the cluster while its content is unchanged and send no render request; `forceFullIngest: true` asks Figma again. Its text stays searchable |
 | `model_failed` | Any other model error | Run `diagnose_llm_config` |
 
 The summary says "Run ingest_board again to retry pending work" only for reasons

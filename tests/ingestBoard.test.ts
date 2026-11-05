@@ -1140,6 +1140,19 @@ describe("ingestBoard", () => {
         expect(output.summary).toContain("Run ingest_board again to retry pending work; successful interpretations are kept.");
         expect(output.summary).not.toContain("After that, run ingest_board again");
       });
+      it("says nothing about a rerun when only Figma's inability to render is left", async () => {
+        previousWith(["render_unavailable"]);
+        const output = await ingestBoard(balanced);
+        expect(output.qualityReport?.fallbackReasons).toEqual({ render_unavailable: 1 });
+        expect(output.summary).toContain("incomplete for 1 cluster: Figma cannot render these elements. Original extracted texts, tables and node references remain available for search.");
+        expect(output.summary).not.toMatch(/run ingest_board again/i);
+      });
+      it("names only the change when Figma's inability to render comes with a reason that needs one", async () => {
+        previousWith(["render_unavailable", "figma_auth"]);
+        const output = await ingestBoard(balanced);
+        expect(output.summary).toContain("After that, run ingest_board again; finished clusters are kept.");
+        expect(output.summary).not.toContain("Run ingest_board again");
+      });
       it("names the time before the rerun for a rate limit", async () => {
         previousWith(["figma_rate_limit"]);
         const output = await ingestBoard(balanced);
@@ -1155,6 +1168,75 @@ describe("ingestBoard", () => {
       const output = await ingestBoard(balanced);
       expect(output.qualityReport?.fallbackReasons).toEqual({ auth: 1 });
       expect(output.summary).toContain("incomplete for 1 cluster: the model provider denied access (LLM_API_KEY).");
+    });
+  });
+
+  describe("elements Figma renders without an image URL", () => {
+    const balanced = { figmaFileUrl: "https://www.figma.com/board/AbC123/Test", docStructureHint: "freeform", ingestMode: "balanced" } as const;
+    const box = (x: number) => ({ x, y: 0, width: 100, height: 100 });
+    /** One cluster of two drawings, or of two images when `ref` is set. */
+    function pairTree(ref?: boolean) {
+      const tree = rawTree();
+      tree.document.children[0]!.children = ["a", "b"].map((name, index) => ({ id: `pair:${name}`, name: "Element", type: "SHAPE_WITH_TEXT",
+        absoluteBoundingBox: box(index * 110), ...(ref ? { fills: [{ type: "IMAGE", imageRef: `${name}-ref` }] } : {}) })) as typeof tree.document.children[0]["children"];
+      return tree;
+    }
+    const nothingRendered = () => fetchRenderUrlsMock.mockImplementation(async (_key: string, ids: string[]) => Object.fromEntries(ids.map(id => [id, null])));
+
+    it("interprets a cluster from the nodes Figma rendered when another has no URL", async () => {
+      fetchFileTreeMock.mockResolvedValueOnce(pairTree());
+      fetchRenderUrlsMock.mockResolvedValueOnce({ "pair:a": "https://cdn.example/pair:a", "pair:b": null });
+      const output = await ingestBoard(balanced);
+      expect(refineClusterWithVisionMock.mock.calls[0]![1] as Buffer[]).toEqual([render("https://cdn.example/pair:a")]);
+      expect(output.qualityReport).toMatchObject({ visionClusters: 1, fallbackCount: 0, fallbackReasons: {} });
+    });
+
+    it("keeps the usable original of an image cluster when Figma cannot render its other image", async () => {
+      fetchFileTreeMock.mockResolvedValueOnce(pairTree(true));
+      fetchImageRefsMock.mockResolvedValueOnce({ "a-ref": "https://originals.example/a" });
+      nothingRendered();
+      const output = await ingestBoard(balanced);
+      expect(refineClusterWithVisionMock.mock.calls[0]![1] as Buffer[]).toEqual([jpeg("https://originals.example/a")]);
+      expect(output.qualityReport).toMatchObject({ visionClusters: 1, fallbackCount: 0 });
+    });
+
+    it.each([
+      ["drawings", () => pairTree(), () => undefined],
+      ["images without fills", () => pairTree(true), () => fetchImageRefsMock.mockResolvedValue({})],
+    ])("marks a cluster of %s render_unavailable, does not ask again for unchanged content and asks again when forced", async (_name, tree, setup) => {
+      fetchFileTreeMock.mockImplementation(async () => tree());
+      setup();
+      nothingRendered();
+      const first = await ingestBoard(balanced);
+      expect(first.qualityReport).toMatchObject({ visionClusters: 0, fallbackCount: 1, fallbackReasons: { render_unavailable: 1 } });
+      expect(first.qualityReport?.nextRetryAt).toBeUndefined();
+      expect(first.summary).toContain("incomplete for 1 cluster: Figma cannot render these elements.");
+      expect(first.summary).not.toMatch(/run ingest_board again/i);
+      expect(first.summary).not.toContain("focusNodeIds");
+      expect(refineClusterWithVisionMock).not.toHaveBeenCalled();
+      const rendersBefore = fetchRenderUrlsMock.mock.calls.length;
+      expect(rendersBefore).toBe(1);
+
+      readLatestBoardMock.mockResolvedValue(persistBoardMock.mock.calls.at(-1)![0]);
+      const second = await ingestBoard(balanced);
+      expect(fetchRenderUrlsMock).toHaveBeenCalledTimes(rendersBefore);
+      expect(second.qualityReport).toMatchObject({ fallbackReasons: { render_unavailable: 1 }, reusedClusters: 1, figmaRequests: { renders: 0 } });
+
+      const forced = await ingestBoard({ ...balanced, forceFullIngest: true });
+      expect(fetchRenderUrlsMock).toHaveBeenCalledTimes(rendersBefore + 1);
+      expect(forced.qualityReport).toMatchObject({ fallbackReasons: { render_unavailable: 1 }, reusedClusters: 0, figmaRequests: { renders: 1 } });
+    });
+
+    it("asks Figma again when the content of the cluster changed", async () => {
+      fetchFileTreeMock.mockResolvedValueOnce(pairTree());
+      nothingRendered();
+      await ingestBoard(balanced);
+      readLatestBoardMock.mockResolvedValue(persistBoardMock.mock.calls.at(-1)![0]);
+      const changed = pairTree();
+      fetchFileTreeMock.mockResolvedValueOnce({ document: { ...changed.document, children: [{ ...changed.document.children[0]!, children: [
+        ...changed.document.children[0]!.children, { id: "pair:c", name: "Element", type: "SHAPE_WITH_TEXT", absoluteBoundingBox: box(220) }] }] } });
+      await ingestBoard(balanced);
+      expect(fetchRenderUrlsMock).toHaveBeenCalledTimes(2);
     });
   });
 
