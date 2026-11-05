@@ -1,6 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-afterEach(() => { vi.restoreAllMocks(); vi.resetModules(); vi.unstubAllGlobals(); });
+afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); vi.resetModules(); vi.unstubAllGlobals(); });
 function json(data: unknown): Response { return new Response(JSON.stringify(data)); }
+async function failure(request: Promise<unknown>): Promise<Error & { retryAfter?: number }> {
+  return request.then(() => { throw new Error("expected the request to fail"); }, (error: unknown) => error as Error & { retryAfter?: number });
+}
 describe("bounded Figma requests", () => {
   it("wraps response body timeouts", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(new ReadableStream({ start(controller) { controller.error(new DOMException("expired", "TimeoutError")); } }))));
@@ -24,6 +27,126 @@ describe("bounded Figma requests", () => {
     const expected = "Figma file not found (404): AbC123. Check the file key in the board URL.";
     await expect(fetchFileTree("AbC123", "secret")).rejects.toThrow(expected);
     await expect(fetchImageRefs("AbC123", "secret")).rejects.toThrow(expected);
+  });
+  it("names the account of the token on 404, because Figma answers 404 for files the account cannot open", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("", { status: 404 })));
+    const { fetchFileTree } = await import("../src/lib/figmaApi.js");
+    await expect(fetchFileTree("AbC123", "secret")).rejects.toThrow(/Figma file not found \(404\): AbC123\..*account of FIGMA_ACCESS_TOKEN cannot open the file/);
+  });
+  describe("waits named by a 429", () => {
+    const now = Date.parse("2026-11-05T12:00:00Z");
+    it.each([
+      ["30 seconds", () => "30", "Retry after 30 seconds."],
+      ["120 seconds", () => "120", "Retry after 120 seconds."],
+      ["3600 seconds", () => "3600", "Retry after 2026-11-05 13:00 UTC (in about 1 hour)."],
+      ["396000 seconds", () => "396000", "Retry after 2026-11-10 02:00 UTC (in about 5 days)."],
+      ["an HTTP date", () => new Date(now + 2 * 3600_000).toUTCString(), "Retry after 2026-11-05 14:00 UTC (in about 2 hours)."],
+    ])("shows %s as %s", async (_name, header, expected) => {
+      vi.useFakeTimers({ toFake: ["Date"], now });
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("", { status: 429, headers: { "Retry-After": header() } })));
+      const { fetchFileTree } = await import("../src/lib/figmaApi.js");
+      const error = await failure(fetchFileTree("AbC123", "secret"));
+      expect(error.message).toContain(expected);
+      expect(error.message).toContain("by seat and plan");
+      expect(error.retryAfter).toBe(header().includes("GMT") ? 7200 : Number(header()));
+    });
+    it("is not retried", async () => {
+      const mock = vi.fn().mockResolvedValue(new Response("", { status: 429, headers: { "Retry-After": "1" } }));
+      vi.stubGlobal("fetch", mock);
+      const { fetchFileTree } = await import("../src/lib/figmaApi.js");
+      await expect(fetchFileTree("AbC123", "secret")).rejects.toMatchObject({ status: 429 });
+      expect(mock).toHaveBeenCalledTimes(1);
+    });
+  });
+  describe("Figma server errors", () => {
+    it.each([500, 502, 503, 504])("passes on a second request after HTTP %i", async (status) => {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      const mock = vi.fn().mockResolvedValueOnce(new Response("", { status })).mockResolvedValueOnce(json({ document: { id: "0:0" } }));
+      vi.stubGlobal("fetch", mock);
+      const { fetchFileTree } = await import("../src/lib/figmaApi.js");
+      const pending = fetchFileTree("AbC123", "secret");
+      await vi.advanceTimersByTimeAsync(2000);
+      await expect(pending).resolves.toEqual({ document: { id: "0:0" } });
+      expect(mock).toHaveBeenCalledTimes(2);
+    });
+    it.each([["3", 3000], ["30", 2000]])("waits for Retry-After %s s as %i ms", async (header, waitMs) => {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      const mock = vi.fn().mockResolvedValueOnce(new Response("", { status: 503, headers: { "Retry-After": header } })).mockResolvedValueOnce(json({ document: {} }));
+      vi.stubGlobal("fetch", mock);
+      const { fetchFileTree } = await import("../src/lib/figmaApi.js");
+      const pending = fetchFileTree("AbC123", "secret");
+      await vi.advanceTimersByTimeAsync(waitMs - 1);
+      expect(mock).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1);
+      await expect(pending).resolves.toBeDefined();
+      expect(mock).toHaveBeenCalledTimes(2);
+    });
+    it("reports a second failure without the API path", async () => {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      const mock = vi.fn().mockImplementation(() => Promise.resolve(new Response("", { status: 500, statusText: "Internal Server Error" })));
+      vi.stubGlobal("fetch", mock);
+      const { fetchFileTree } = await import("../src/lib/figmaApi.js");
+      const pending = failure(fetchFileTree("AbC123", "secret"));
+      await vi.advanceTimersByTimeAsync(2000);
+      const error = await pending;
+      expect(error.message).toBe("Figma is not available right now (HTTP 500, repeated once). Try again in a few minutes; status.figma.com shows outages.");
+      expect(error.message).not.toContain("/files/");
+      expect(mock).toHaveBeenCalledTimes(2);
+    });
+    it("ends the wait when the caller cancels", async () => {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      const mock = vi.fn().mockResolvedValue(new Response("", { status: 503 }));
+      vi.stubGlobal("fetch", mock);
+      const { fetchFileTree } = await import("../src/lib/figmaApi.js");
+      const controller = new AbortController();
+      const pending = fetchFileTree("AbC123", "secret", controller.signal).catch((caught: unknown) => caught);
+      await vi.advanceTimersByTimeAsync(100);
+      controller.abort(new Error("cancelled"));
+      await expect(pending).resolves.toMatchObject({ message: "cancelled" });
+      expect(mock).toHaveBeenCalledTimes(1);
+    });
+  });
+  describe("other client errors", () => {
+    it.each([
+      ["err", JSON.stringify({ status: 400, err: "Invalid\n  parameter" }), "Figma rejected the request (HTTP 400): Invalid parameter"],
+      ["message", JSON.stringify({ message: "Unprocessable ids" }), "Figma rejected the request (HTTP 400): Unprocessable ids"],
+      ["no text", "<html>Bad Request</html>", "Figma rejected the request (HTTP 400)."],
+    ])("shows Figma's %s instead of the path, once", async (_name, body, expected) => {
+      const mock = vi.fn().mockResolvedValue(new Response(body, { status: 400 }));
+      vi.stubGlobal("fetch", mock);
+      const { fetchFileTree } = await import("../src/lib/figmaApi.js");
+      const error = await failure(fetchFileTree("AbC123", "secret"));
+      expect(error.message).toBe(expected);
+      expect(mock).toHaveBeenCalledTimes(1);
+    });
+    it("shortens Figma's text", async () => {
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ err: "x".repeat(500) }), { status: 400 })));
+      const { fetchFileTree } = await import("../src/lib/figmaApi.js");
+      const error = await failure(fetchFileTree("AbC123", "secret"));
+      expect(error.message).toBe(`Figma rejected the request (HTTP 400): ${"x".repeat(200)}`);
+    });
+  });
+  describe("unreadable responses", () => {
+    it.each([
+      ["HTML with status 200", "<!DOCTYPE html><html></html>", "it was HTML, not JSON"],
+      ["no JSON", "service unavailable", "it was not JSON"],
+      ["an empty body", "", "it was empty"],
+      ["a cut-off body", `{"document":{"id":"0:0","children":[{"id":"1:1","na`, "it was cut off before the JSON was complete"],
+      ["a JSON value that is no object", "null", "it was not a JSON object"],
+      ["a file without document", JSON.stringify({ name: "Board", version: "1" }), "it held no document"],
+    ])("explains %s without parser text", async (_name, body, cause) => {
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(body)));
+      const { fetchFileTree } = await import("../src/lib/figmaApi.js");
+      const error = await failure(fetchFileTree("AbC123", "secret"));
+      expect(error.message).toMatch(new RegExp(`^Figma sent an unreadable response: ${cause}`));
+      expect(error.message).not.toMatch(/Unexpected|position|flattenNodeTree|JSON\.parse|DOCTYPE/);
+    });
+    it("applies to the image requests too", async () => {
+      vi.stubGlobal("fetch", vi.fn().mockImplementation(() => Promise.resolve(new Response("<html>"))));
+      const { fetchImageRefs, fetchRenderUrls } = await import("../src/lib/figmaApi.js");
+      await expect(fetchImageRefs("AbC123", "secret")).rejects.toThrow(/^Figma sent an unreadable response: it was HTML/);
+      await expect(fetchRenderUrls("AbC123", ["a"], "secret")).rejects.toThrow(/^Figma sent an unreadable response: it was HTML/);
+    });
   });
   it("rejects an oversized file before reading its body", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("{}", { headers: { "Content-Length": String(65 * 1024 * 1024) } })));

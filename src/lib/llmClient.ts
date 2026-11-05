@@ -4,6 +4,7 @@ import { getModelConfig, getModelsForRole } from "./modelRegistry.js";
 import { getLlmRequestTimeoutMs } from "./llmTimeouts.js";
 import { redactError, redactMessage, redactOutputSecrets, validateHeaderSecret } from "./secrets.js";
 import { missingEnvironmentHint } from "./envFile.js";
+import { parseRetryAfter, utcTime } from "./waitTime.js";
 
 /**
  * Shared LLM access for visionInterpreter.ts and answerFromBoard.ts.
@@ -549,11 +550,6 @@ function rateLimitMessage(waitMs: number | undefined): string {
     + `Wait, or use another model or API key. ${DIAGNOSE_HINT}`;
 }
 
-/** Rounded up to the minute, so that a retry at the named time is not too early. */
-function utcTime(ms: number): string {
-  return `${new Date(Math.ceil(ms / 60_000) * 60_000).toISOString().slice(0, 16).replace("T", " ")} UTC`;
-}
-
 /**
  * Failures that mean LLM_BASE_URL itself is wrong: no connection at all, or a 404/405 whose body holds no error message
  * (HTML, text, or JSON such as {"detail":"Not Found"} or {}). A missing model answers with a message, at the top level
@@ -769,15 +765,6 @@ function headerValue(name: string, headers: Headers | null | undefined, body: un
   const entries = Object.entries(nested as Record<string, unknown>);
   const value = entries.find(([key]) => key.toLowerCase() === name)?.[1];
   return typeof value === "string" || typeof value === "number" ? String(value) : undefined;
-}
-
-/** Retry-After in seconds or as an HTTP date, as milliseconds from now; undefined when absent, zero or past. */
-function parseRetryAfter(value: string | undefined, now = Date.now()): number | undefined {
-  const text = value?.trim();
-  if (!text) return undefined;
-  if (/^\d+(?:\.\d+)?$/.test(text)) return Number(text) > 0 ? Number(text) * 1000 : undefined;
-  const at = Date.parse(text);
-  return Number.isFinite(at) && at > now ? at - now : undefined;
 }
 
 /**
