@@ -1516,4 +1516,59 @@ describe("getBoardContext tables", () => {
         .rejects.toThrow("belongs to board Other456, but boardId is board Missing789");
     });
   });
+
+  describe("board URL as boardId", () => {
+    it("takes the board URL as boardId and names the file key", async () => {
+      const data = sectionBoard("UrlBoard123");
+      const result = await getBoardContext({ boardId: link(data.boardId, "t=abc") });
+      expect(result.text).toContain("FigJam board UrlBoard123 — snapshot");
+      expect(JSON.stringify(result.structuredContent)).not.toContain("figma.com/board/UrlBoard123/Example");
+      expect(result.structuredContent.totalMatched).toBe(3);
+    });
+
+    it.each([
+      ["5-87", ["Pain point: onboarding takes too long."], "Read 5-87 as 5:87."],
+      ["5%3A87", ["Pain point: onboarding takes too long."], undefined],
+      ["5:87", ["Pain point: onboarding takes too long."], undefined],
+    ])("reads the node-id %s of a board URL without nodeIds, topic and outsideSections", async (nodeId, expected, notice) => {
+      const data = sectionBoard("UrlNode123");
+      const result = await getBoardContext({ boardId: link(data.boardId, `node-id=${nodeId}&t=abc`), detail: "full" });
+      expect(texts(result)).toEqual(expected);
+      if (notice) expect(result.text).toContain(notice);
+      else expect(result.text).not.toContain("Read ");
+    });
+
+    it("reads the section of a board URL like nodeIds with that ID", async () => {
+      const data = sectionBoard("UrlSection123");
+      const byUrl = await getBoardContext({ boardId: link(data.boardId, "node-id=5-8"), detail: "full" });
+      const byIds = await getBoardContext({ boardId: data.boardId, nodeIds: ["5:8"], detail: "full" });
+      expect(texts(byUrl)).toEqual(texts(byIds));
+      expect(texts(byUrl)).toHaveLength(2);
+    });
+
+    it.each([
+      [{ topic: "checklist" }, ["Idea: a checklist."]],
+      [{ nodeIds: ["6:1"] }, ["Idea: a checklist."]],
+    ])("ignores the node-id of a board URL when %j is given", async (extra, expected) => {
+      const data = sectionBoard("UrlIgnored123");
+      const result = await getBoardContext({ boardId: link(data.boardId, "node-id=5-87"), detail: "full", ...extra });
+      expect(texts(result)).toEqual(expected);
+    });
+
+    it("ignores the node-id of a board URL with outsideSections", async () => {
+      const data = evidenceBoard("UrlOutside123", [{ ...textNode("5:87", "Inside."), sectionIds: ["5:8"] }, { ...textNode("7:1", "Outside."), sectionIds: [] }]);
+      data.nodes.push({ ...textNode("5:8", ""), name: "Pain points", type: "SECTION", sectionIds: [] });
+      setBoard(data.boardId, data);
+      const result = await getBoardContext({ boardId: link(data.boardId, "node-id=5-87"), outsideSections: true, detail: "full" });
+      expect(texts(result)).toEqual(["Outside."]);
+    });
+
+    it("pages through a board URL with the same URL and cursor", async () => {
+      const data = sectionBoard("UrlPages123");
+      const url = link(data.boardId, "node-id=5-8");
+      const first = await getBoardContext({ boardId: url, detail: "full", limit: 1 });
+      const second = await getBoardContext({ boardId: url, detail: "full", limit: 1, cursor: first.structuredContent.nextCursor });
+      expect([...texts(first), ...texts(second)].sort()).toEqual(["Pain point: onboarding takes too long.", "Pain point: reports are slow."]);
+    });
+  });
 });

@@ -5,6 +5,7 @@ import {
   type GetBoardContextOutput,
   type ContextEvidence,
 } from "../schemas/getBoardContext.js";
+import { parseBoardId } from "../schemas/common.js";
 import { getBoardOrRestore, getBoardReadWarning } from "../lib/cache.js";
 import { assertLinksOfBoard, conversionNotice, resolveNodeIds } from "../lib/nodeIds.js";
 import { readBoardHistory } from "../lib/persistentCache.js";
@@ -89,8 +90,9 @@ const EVIDENCE_POINTER = "Excerpts are in evidence, cluster by cluster; location
 export async function getBoardContext(input: GetBoardContextInput, extra: { notices?: string[] } = {}): Promise<BoardContextResult> {
   // Also validate cross-field rules here: MCP registration receives a raw field shape.
   const parsed = getBoardContextInputSchema.parse(input);
-  const boardId = parsed.boardId;
-  const requested = parsed;
+  // boardId is the file key or the board URL; a URL may also name the node to read.
+  const { fileKey: boardId, nodeId: linkNodeId } = parseBoardId(parsed.boardId)!;
+  const requested = { ...parsed, boardId };
   if (requested.nodeIds) assertLinksOfBoard(requested.nodeIds, boardId, "nodeIds", "boardId");
   const cursor = requested.cursor ? decodeCursor(requested.cursor) : undefined;
   const query = querySignature(requested);
@@ -104,8 +106,8 @@ export async function getBoardContext(input: GetBoardContextInput, extra: { noti
   if (!stored) throw new Error(`Board "${boardId}" not found — run ingest_board first.`);
   // Snapshots cached before redaction existed are redacted here too.
   const board = redactBoard(stored);
-  // IDs in link form are read as the IDs they stand for.
-  const requestedIds = requested.nodeIds;
+  // IDs in link form are read as the IDs they stand for; a link of the board names its node.
+  const requestedIds = requested.nodeIds ?? (linkNodeId && !requested.topic && !requested.outsideSections ? [linkNodeId] : undefined);
   const knownIds = requestedIds ? knownNodeIds(board) : undefined;
   const resolved = requestedIds ? resolveNodeIds(requestedIds, boardId, "nodeIds", "boardId", (id) => knownIds!.has(id)) : undefined;
   const options = { ...requested, ...(resolved ? { nodeIds: resolved.ids } : {}) };

@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { figmaFileKeySchema, ignoredArgumentsShape } from "./common.js";
+import { boardIdInputSchema, figmaFileKeySchema, ignoredArgumentsShape } from "./common.js";
 
 /**
  * diff_board — compares the two most recent ingest snapshots of a board
@@ -9,7 +9,7 @@ import { figmaFileKeySchema, ignoredArgumentsShape } from "./common.js";
  */
 
 export const diffBoardInputShape = {
-  boardId: figmaFileKeySchema.describe("The Figma file key, as returned by ingest_board"),
+  boardId: boardIdInputSchema.describe("The Figma file key, as returned by ingest_board, or the board URL"),
   compareTo: z
     .number()
     .int()

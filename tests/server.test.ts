@@ -320,3 +320,40 @@ describe("input keys hosts send", () => {
     for (const tool of tools) expect(tool.inputSchema).not.toHaveProperty("additionalProperties", false);
   });
 });
+
+describe("boardId as a key or a URL", () => {
+  it("advertises boardId as a key or URL without a pattern", async () => {
+    const { tools } = await client.listTools();
+    for (const name of ["get_board_context", "answer_from_board", "diff_board"]) {
+      const boardId = (tools.find(tool => tool.name === name)!.inputSchema.properties as Record<string, Record<string, unknown>>).boardId!;
+      expect(boardId).not.toHaveProperty("pattern");
+      expect(boardId).toMatchObject({ type: "string", minLength: 6, maxLength: 2048 });
+      expect(boardId.description).toMatch(/key.*URL/);
+    }
+  });
+
+  it.each([
+    ["get_board_context", { boardId: BOARD_URL }],
+    ["answer_from_board", { boardId: "https://www.figma.com/design/Board123/Example?node-id=5-87", question: "What changed?" }],
+    ["diff_board", { boardId: BOARD_URL }],
+  ] as const)("hands the board URL of %s to the tool", async (name, args) => {
+    const tool = toolCases.find(candidate => candidate.name === name)!;
+    tool.handler().mockResolvedValue(tool.result);
+    const result = await client.callTool({ name, arguments: args });
+    expect(result.isError).not.toBe(true);
+    expect(tool.handler().mock.calls[0]![0].boardId).toBe(args.boardId);
+  });
+
+  it.each([
+    ["not-a-board!", "ASCII-alphanumeric Figma file key"],
+    ["https://example.com/board/Board123/Example", "Expected a Figma URL like https://www.figma.com/board/<file_key>/<name>"],
+    ["https://www.figma.com/files/recent", "ASCII-alphanumeric Figma file key"],
+    ["abc", "boardId is too short to be a Figma file key"],
+  ])("rejects the boardId %j", async (boardId, message) => {
+    const result = await client.callTool({ name: "get_board_context", arguments: { boardId } });
+    expect(result.isError).toBe(true);
+    expect(JSON.stringify(result.content)).toContain(message);
+    expect(handlers.context).not.toHaveBeenCalled();
+  });
+});
+

@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { figmaFileKeySchema, ignoredArgumentsShape, questionSchema } from "./common.js";
+import { boardIdInputSchema, ignoredArgumentsShape, questionSchema } from "./common.js";
 
 /**
  * answer_from_board — answers a free-form question about a previously
@@ -7,7 +7,7 @@ import { figmaFileKeySchema, ignoredArgumentsShape, questionSchema } from "./com
  */
 
 export const answerFromBoardInputShape = {
-  boardId: figmaFileKeySchema.describe("The Figma file key returned by ingest_board"),
+  boardId: boardIdInputSchema.describe("The Figma file key returned by ingest_board, or the board URL"),
   question: questionSchema,
   snapshotId: z.string().min(1).max(128).regex(/^[A-Za-z0-9_-]+$/).optional(),
 };

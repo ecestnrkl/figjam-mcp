@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { figmaFileKeySchema, ignoredArgumentsShape, topicSchema } from "./common.js";
+import { boardIdInputSchema, ignoredArgumentsShape, topicSchema } from "./common.js";
 
 /**
  * get_board_context — returns readable source excerpts as text content and the
@@ -28,7 +28,7 @@ export const clusterContextSchema = z.object(clusterContextShape);
 export type ClusterContext = z.infer<typeof clusterContextSchema>;
 
 export const getBoardContextInputShape = {
-  boardId: figmaFileKeySchema.describe("The Figma file key returned by ingest_board"),
+  boardId: boardIdInputSchema.describe("The Figma file key returned by ingest_board, or the board URL. A URL with a node-id, without nodeIds, topic and outsideSections, reads that node"),
   topic: topicSchema.optional().describe('Words to search for. An excerpt matches when at least one of them is in its text, its section or node name, the label of an arrow attached to it or, for a table row, its column headings, as a whole word ignoring case and accents (words of five or more letters also match compounds that begin with them); excerpts with more of the words come first. Other word forms, synonyms and translations do not match: include them yourself, for example "payment payments pay Bezahlung". Cannot be combined with nodeIds or outsideSections.'),
   nodeIds: z.array(z.string().trim().min(1).max(200)).min(1).max(50).optional()
     .describe("Read exact source nodes, all rows of a table or the row of a table cell, or every excerpt inside a page, section, frame or group by its ID (nested sections included, in reading order); several IDs in one call share every page in request order; cannot be combined with topic"),

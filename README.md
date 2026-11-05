@@ -189,7 +189,9 @@ support](https://forum.cursor.com/t/agent-acp-mcp-tools-call-times-out-at-60s-wi
 
 Then ask your assistant to ingest a board URL, for example *"Ingest
 https://www.figma.com/board/FILE_KEY/Name and list the open questions."*
-The `boardId` of every later call is the file key from that URL. To summarize
+The `boardId` of every later call is the file key from that URL, or the URL
+itself; a URL with a `node-id` and without `nodeIds`, `topic` and
+`outsideSections` makes `get_board_context` read that node. To summarize
 a board, the assistant calls `ingest_board`, then `get_board_context` without
 parameters, whose first page names the largest sections and includes a section
 overview with IDs within the page's size limit, and then reads the largest sections

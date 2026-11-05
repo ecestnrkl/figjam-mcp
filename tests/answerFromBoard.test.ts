@@ -34,6 +34,20 @@ describe("answerFromBoard evidence grounding", () => {
   });
 
   it.each([
+    "https://www.figma.com/board/UrlAnswer123/Example",
+    "https://www.figma.com/design/UrlAnswer123/Example?node-id=1-1&t=abc",
+  ])("answers for the board URL %s with the file key of the board", async (url) => {
+    const data = evidenceBoard("UrlAnswer123");
+    setBoard(data.boardId, data);
+    const source = retrieveEvidence(data).evidence[0]!;
+    chatJsonMock.mockResolvedValueOnce({ kind: "answer", language: "en", answer: "Use an idempotency key.", evidenceIds: [source.evidenceId] });
+    const output = await answerFromBoard({ boardId: url, question: "What is required for payment retries?" });
+    expect(output.answer).toBe("Use an idempotency key.");
+    expect(output.citations[0]).toMatchObject({ nodeId: "1:1", snapshotId: data.snapshotId });
+    expect(output.citations[0]?.url).toContain("figma.com/board/UrlAnswer123");
+  });
+
+  it.each([
     { kind: "answer", language: "en", answer: "Invented answer", evidenceIds: ["ev_madeup"] },
     { kind: "answer", language: "en", answer: "Invented answer", citedClusters: ["Area 1"] },
   ])("rejects invented-ID and label-only claims: %j", async (reply) => {

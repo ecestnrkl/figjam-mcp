@@ -1,4 +1,5 @@
 import type { DiffBoardInput, DiffBoardOutput } from "../schemas/diffBoard.js";
+import { parseBoardId } from "../schemas/common.js";
 import { diffBoards } from "../lib/boardDiff.js";
 import { readBoardHistory, readCachedBoardState, readCachedBoard } from "../lib/persistentCache.js";
 import { redactBoard } from "../lib/redact.js";
@@ -12,7 +13,9 @@ import { redactBoard } from "../lib/redact.js";
  * diffs them. Typical flow: ingest during workshop 1, ingest again after
  * workshop 2, then diff_board.
  */
-export async function diffBoard(input: DiffBoardInput): Promise<DiffBoardOutput> {
+export async function diffBoard(rawInput: DiffBoardInput): Promise<DiffBoardOutput> {
+  // boardId is the file key or the board URL.
+  const input = { ...rawInput, boardId: parseBoardId(rawInput.boardId)?.fileKey ?? rawInput.boardId };
   const history = await readBoardHistory(input.boardId);
   if (history.length === 0) {
     throw new Error(

@@ -86,6 +86,28 @@ export const topicSchema = z
   .min(1, "topic must not be empty")
   .max(200, "topic must be at most 200 characters");
 
+export const BOARD_ID_MAX_LENGTH = 2048;
+const BOARD_ID_HINT =
+  "boardId must be an ASCII-alphanumeric Figma file key (the <key> in figma.com/board/<key>/…) or a Figma URL. " +
+  FIGMA_URL_HINT;
+
+/**
+ * The boardId of get_board_context, answer_from_board and diff_board: the file
+ * key, or the board URL as copied from the browser.
+ */
+export function parseBoardId(value: string): FigmaUrlReference | undefined {
+  const trimmed = value.trim();
+  const key = figmaFileKeySchema.safeParse(trimmed);
+  return key.success ? { fileKey: key.data } : parseFigmaUrl(trimmed);
+}
+
+export const boardIdInputSchema = z
+  .string()
+  .trim()
+  .min(FIGMA_FILE_KEY_MIN_LENGTH, { error: "boardId is too short to be a Figma file key", abort: true })
+  .max(BOARD_ID_MAX_LENGTH, { error: "boardId is too long", abort: true })
+  .refine((value) => parseBoardId(value) !== undefined, BOARD_ID_HINT);
+
 /** Output field of all tools: the unknown input keys that were dropped (never their values). */
 export const ignoredArgumentsShape = {
   ignoredArguments: z.array(z.string()).optional()
