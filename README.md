@@ -192,11 +192,35 @@ timeout](https://github.com/microsoft/vscode/issues/343135)).
 
 ### VS Code
 
-Open **MCP: Open User Configuration** from the Command Palette and add the server
-there. VS Code uses `servers` and `type: "stdio"`
-([VS Code MCP configuration](https://code.visualstudio.com/docs/agents/reference/mcp-configuration)).
-Ask for the token with an input marked `"password": true`, so it is not written
-in plain text:
+In the Copilot harness, add the server under **Global → Copilot Global** in
+Chat: Open Customizations (Command Palette), then **MCP Servers**. VS Code writes it to
+`~/.copilot/mcp-config.json`, the same file as in the Copilot CLI section, in the portable
+`mcpServers` format ([VS Code MCP servers](https://code.visualstudio.com/docs/copilot/chat/mcp-servers),
+[configuration reference](https://code.visualstudio.com/docs/agents/reference/mcp-configuration)):
+
+```json
+{
+  "mcpServers": {
+    "figjam-context": {
+      "type": "local",
+      "command": "npx",
+      "args": ["-y", "--prefer-online", "figjam-context-mcp@latest"],
+      "env": {
+        "FIGMA_ACCESS_TOKEN": "your-figma-token"
+      },
+      "tools": ["*"]
+    }
+  }
+}
+```
+
+The portable format has no input variables, so the token is stored in this file. Keep
+that file in your user directory and out of any repository.
+
+Local harness only: to keep the token out of the file, open **MCP: Open User
+Configuration** and use an input marked `"password": true`. VS Code does not forward
+servers that need inputs to Copilot harness sessions, so this works only in the Local
+harness ([VS Code MCP configuration](https://code.visualstudio.com/docs/agents/reference/mcp-configuration)):
 
 ```json
 {
@@ -222,12 +246,11 @@ in plain text:
 ```
 
 Do not put tokens in a `.vscode/mcp.json` in a repository; VS Code's documentation
-says not to commit tokens or passwords. VS Code does not forward servers that need
-inputs to Copilot harness sessions, so there, use a plain `env` value in the user
-configuration instead.
+says not to commit tokens or passwords.
 
-To use an environment file, set `"envFile": "${workspaceFolder}/.env"` on the server
-in VS Code's `mcp.json`; the server does not load a working-directory `.env` itself.
+In the Local harness, `"envFile": "${workspaceFolder}/.env"` on the server in `mcp.json`
+loads an environment file; the portable format does not support `envFile`, and the
+server does not load a working-directory `.env` itself.
 
 For longer ingests, use the Local harness with a per-server `"timeout": 300000` in
 `mcp.json` and `"INGEST_BOARD_VISION_BUDGET_MS": "270000"` in its `env` (about 30
@@ -282,6 +305,10 @@ its Figma link with the same `boardId` and `snapshotId`, the line's ID in
 `nodeIds`, and `detail: "full"`. For a table row, use its table ID.
 Everything that lies in no section, such as loose notes and tables, comes with
 `outsideSections: true`.
+Compact overviews show the Figma link pattern for their node IDs (URL-encode the ID)
+and shorten each text to a shared 50–120-character prefix with `…`; the host writes
+the summary. Topic searches, `outsideSections`, single leaf, table or cell IDs and
+small containers always return the full view.
 
 Inputs are read as hosts and users send them. A node ID in link form (`5-87`,
 `5%3A87`, `I5-87%3B1-2`) or a Figma link of the same board with a `node-id` is
