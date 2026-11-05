@@ -363,8 +363,8 @@ function boardLookups(board: BoardData): { nodesById: Map<string, NormalizedNode
   return found;
 }
 
-/** Requested IDs that name no node, table cell or excerpt of this snapshot, in request order. */
-export function unknownNodeIds(board: BoardData, nodeIds: string[]): string[] {
+/** IDs of the nodes, table cells and excerpts of this snapshot. */
+export function knownNodeIds(board: BoardData): Set<string> {
   const known = new Set(board.nodes.map((node) => node.id));
   // Empty cells of skipped empty rows are in no row excerpt but exist.
   for (const node of board.nodes) for (const cell of node.table?.cells ?? []) known.add(cell.id);
@@ -373,6 +373,12 @@ export function unknownNodeIds(board: BoardData, nodeIds: string[]): string[] {
     if (evidence.renderNodeId) known.add(evidence.renderNodeId);
     for (const id of cellIds ?? []) known.add(id);
   }
+  return known;
+}
+
+/** Requested IDs that name no node, table cell or excerpt of this snapshot, in request order. */
+export function unknownNodeIds(board: BoardData, nodeIds: string[]): string[] {
+  const known = knownNodeIds(board);
   return [...new Set(nodeIds)].filter((id) => !known.has(id));
 }
 

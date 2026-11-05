@@ -202,7 +202,11 @@ its Figma link with the same `boardId` and `snapshotId`, the line's ID in
 Everything that lies in no section, such as loose notes and tables, comes with
 `outsideSections: true`.
 
-Inputs are read as hosts and users send them. A key that differs from a parameter only in
+Inputs are read as hosts and users send them. A node ID in link form (`5-87`,
+`5%3A87`, `I5-87%3B1-2`) or a Figma link of the same board with a `node-id` is
+read as the ID it stands for (`5:87`) in `nodeIds` and `focusNodeIds`, and the
+text says so once; an ID that exists in the snapshot is never changed, and a
+link of another board is an error. A key that differs from a parameter only in
 case, `_` or `-` (`ingest_mode`, `node_ids`) ends the call with
 "did you mean …" before anything is done; any other unknown key is ignored and
 named, without its value, in the text and in `ignoredArguments` of

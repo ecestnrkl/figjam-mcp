@@ -6,12 +6,13 @@ import {
   type ContextEvidence,
 } from "../schemas/getBoardContext.js";
 import { getBoardOrRestore, getBoardReadWarning } from "../lib/cache.js";
+import { assertLinksOfBoard, conversionNotice, resolveNodeIds } from "../lib/nodeIds.js";
 import { readBoardHistory } from "../lib/persistentCache.js";
 import { redactBoard } from "../lib/redact.js";
 import {
   boundedText, connectionsForEvidence, countConnectionsForEvidence, enclosingIdsLookup, isGeneratedPlaceholder,
   formatEvidenceConnection, MAX_CONTEXT_RESPONSE_BYTES, readableContainerIds,
-  evidenceTokens, firstTableRow, retrieveEvidence, snapshotIdForBoard, tableCellPositions, unknownNodeIds, type Evidence,
+  evidenceTokens, firstTableRow, knownNodeIds, retrieveEvidence, snapshotIdForBoard, tableCellPositions, unknownNodeIds, type Evidence,
 } from "../lib/evidence.js";
 import { SectionIndex } from "../lib/sections.js";
 import type { BoardData, RefinedCluster } from "../types.js";
@@ -87,23 +88,32 @@ const EVIDENCE_POINTER = "Excerpts are in evidence, cluster by cluster; location
  */
 export async function getBoardContext(input: GetBoardContextInput, extra: { notices?: string[] } = {}): Promise<BoardContextResult> {
   // Also validate cross-field rules here: MCP registration receives a raw field shape.
-  const options = getBoardContextInputSchema.parse(input);
-  const cursor = options.cursor ? decodeCursor(options.cursor) : undefined;
-  const query = querySignature(options);
-  const cursorQuery = cursor?.version === 2 ? query : legacyQuerySignature(options);
+  const parsed = getBoardContextInputSchema.parse(input);
+  const boardId = parsed.boardId;
+  const requested = parsed;
+  if (requested.nodeIds) assertLinksOfBoard(requested.nodeIds, boardId, "nodeIds", "boardId");
+  const cursor = requested.cursor ? decodeCursor(requested.cursor) : undefined;
+  const query = querySignature(requested);
+  const cursorQuery = cursor?.version === 2 ? query : legacyQuerySignature(requested);
   if (cursor && ((cursor.query !== undefined && cursor.query !== cursorQuery) ||
-    (options.snapshotId && !(cursor.check ? options.snapshotId.startsWith(cursor.snapshot) : options.snapshotId === cursor.snapshot)))) {
+    (requested.snapshotId && !(cursor.check ? requested.snapshotId.startsWith(cursor.snapshot) : requested.snapshotId === cursor.snapshot)))) {
     throw new Error(CURSOR_MISMATCH);
   }
-  const stored = cursor && !options.snapshotId ? await cursorBoard(options.boardId, cursor)
-    : await getBoardOrRestore(options.boardId, options.snapshotId);
-  if (!stored) throw new Error(`Board "${options.boardId}" not found — run ingest_board first.`);
+  const stored = cursor && !requested.snapshotId ? await cursorBoard(boardId, cursor)
+    : await getBoardOrRestore(boardId, requested.snapshotId);
+  if (!stored) throw new Error(`Board "${boardId}" not found — run ingest_board first.`);
   // Snapshots cached before redaction existed are redacted here too.
   const board = redactBoard(stored);
+  // IDs in link form are read as the IDs they stand for.
+  const requestedIds = requested.nodeIds;
+  const knownIds = requestedIds ? knownNodeIds(board) : undefined;
+  const resolved = requestedIds ? resolveNodeIds(requestedIds, boardId, "nodeIds", "boardId", (id) => knownIds!.has(id)) : undefined;
+  const options = { ...requested, ...(resolved ? { nodeIds: resolved.ids } : {}) };
   const readWarning = getBoardReadWarning(stored);
   const emptyNotice = board.clusters.length === 0 && retrieveEvidence(board).evidence.length === 0
     ? "The board contains no readable content." : undefined;
-  const notices = [readWarning, emptyNotice, ...(extra.notices ?? [])].filter((notice): notice is string => Boolean(notice));
+  const notices = [readWarning, emptyNotice, conversionNotice(resolved?.conversions ?? []), ...(extra.notices ?? [])]
+    .filter((notice): notice is string => Boolean(notice));
   const retrieved = retrieveEvidence(board, {
     query: options.topic, nodeIds: options.nodeIds, outsideSections: options.outsideSections,
     includeNeighbors: Boolean(options.topic), neighborLimit: 6,

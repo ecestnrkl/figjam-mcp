@@ -23,6 +23,7 @@ import { describeWaitUntil } from "../lib/waitTime.js";
 import { getVisionMaxOutputTokens } from "../lib/llmOutputBudgets.js";
 import { getVisionRequestTimeoutMs } from "../lib/llmTimeouts.js";
 import { describeModelConfig } from "../lib/modelRegistry.js";
+import { assertLinksOfBoard, conversionNotice, resolveNodeIds } from "../lib/nodeIds.js";
 import { sectionGuide } from "../lib/sections.js";
 import { enclosingIdsLookup, retrieveEvidence } from "../lib/evidence.js";
 import {
@@ -95,6 +96,8 @@ const ingestQueues = new Map<string, Promise<unknown>>();
 
 export async function ingestBoard(input: IngestBoardInput, options: OperationOptions = {}): Promise<IngestBoardOutput> {
   const fileKey = parseFigmaFileKey(input.figmaFileUrl);
+  // A link of another board is a mistake that needs no Figma request to find.
+  if (input.focusNodeIds) assertLinksOfBoard(input.focusNodeIds, fileKey, "focusNodeIds", "figmaFileUrl");
   const pending = (ingestQueues.get(fileKey) ?? Promise.resolve()).catch(() => undefined)
     .then(() => withSecretScope([input.figmaAccessToken ?? ""], () => performIngest(input, options)));
   ingestQueues.set(fileKey, pending);
@@ -142,6 +145,11 @@ async function performIngest(input: IngestBoardInput, options: OperationOptions)
   const rawTree = await fetchFileTree(fileKey, token, signal);
   signal?.throwIfAborted();
   const nodes = flattenNodeTree(rawTree);
+  // IDs in link form (5-87, 5%3A87, a Figma link) are read as the IDs they stand for.
+  const knownIds = new Set(nodes.map(node => node.id));
+  const focusIds = input.focusNodeIds
+    ? resolveNodeIds(input.focusNodeIds, fileKey, "focusNodeIds", "figmaFileUrl", id => knownIds.has(id)) : undefined;
+  const conversionNote = conversionNotice(focusIds?.conversions ?? []);
   const figmaLastModified = extractFigmaLastModified(rawTree);
   const version = (rawTree as { version?: unknown } | null)?.version;
   const figmaVersion = typeof version === "string" ? version : undefined;
@@ -166,7 +174,7 @@ async function performIngest(input: IngestBoardInput, options: OperationOptions)
     // Phases follow the recomputed labels, as on a full ingest.
     const clusters = mapClustersToPhases(labelDeterministicClusters(cached.clusters, clusterNodes, nodes),
       input.docStructureHint, input.customPhases).map(cluster => ({ ...cluster, cacheHit: true }));
-    const focus = resolveFocus(input.focusNodeIds, clusterNodes, nodes);
+    const focus = resolveFocus(focusIds?.ids, clusterNodes, nodes);
     // Cached labels and summaries may predate redaction being switched on.
     const board = redactBoard({ ...cached, clusters, freshnessCheckedAt, figmaVersion, figmaLastModified,
       createdAt: previousBoard?.snapshotId === snapshotId ? previousBoard.createdAt : Date.now(),
@@ -175,7 +183,7 @@ async function performIngest(input: IngestBoardInput, options: OperationOptions)
     await progress("persist", 4);
     const historyReset = await publishBoard(board, signal);
     await complete();
-    return ingestResult(board, contentChanged, historyReset);
+    return ingestResult(board, contentChanged, historyReset, conversionNote);
   }
   await progress("cluster", 2);
   const reuseBoard = cached ?? previousBoard;
@@ -212,7 +220,7 @@ async function performIngest(input: IngestBoardInput, options: OperationOptions)
   // every ingest. Existing cache reasons are enough; no attempt log is needed.
   const retryPriorities = clusters.map(cluster => retryPriority(reuseIndex.get(contentHashes.get(cluster.id)!)));
   // Clusters within focusNodeIds come first, by their first matching ID; the usual order applies within and after them.
-  const focus = resolveFocus(input.focusNodeIds, clusterNodesByIndex, nodes);
+  const focus = resolveFocus(focusIds?.ids, clusterNodesByIndex, nodes);
   const focusRanks = focus?.ranks ?? clusters.map(() => 0);
   visionQueue.sort((left, right) => focusRanks[left]! - focusRanks[right]!
     || retryPriorities[left]! - retryPriorities[right]!
@@ -446,7 +454,7 @@ async function performIngest(input: IngestBoardInput, options: OperationOptions)
   await progress("persist", 4);
   const historyReset = await publishBoard(board, signal);
   await complete();
-  return ingestResult(board, contentChanged, historyReset);
+  return ingestResult(board, contentChanged, historyReset, conversionNote);
 }
 async function publishBoard(board: BoardData, signal?: AbortSignal): Promise<boolean> {
   signal?.throwIfAborted();
@@ -474,14 +482,15 @@ function persistenceFailureMessage(error: unknown): string {
   return `${prefix}${code ? `${redactMessage(code)}: ` : ""}${message || "unknown error"}; retry ingest_board.`;
 }
 const HISTORY_RESET_NOTICE = "The cache manifest cannot be read (damaged file); snapshot history has restarted; run ingest_board again after edits to record changes.";
-function ingestResult(board: BoardData, contentChanged?: boolean, historyReset = false): IngestBoardOutput {
+function ingestResult(board: BoardData, contentChanged?: boolean, historyReset = false, conversionNote?: string): IngestBoardOutput {
   const qualityReport = board.qualityReport ?? buildQualityReport(board.clusters, 0);
   return { boardId: board.boardId, ingestMode: board.ingestMode, clusterCount: board.clusters.length,
     relationCount: board.clusterRelations?.length ?? 0, qualityReport,
     snapshotId: board.snapshotId, figmaVersion: board.figmaVersion,
     freshnessCheckedAt: board.freshnessCheckedAt === undefined ? undefined : new Date(board.freshnessCheckedAt).toISOString(),
     persistenceWarning: board.persistenceWarning,
-    summary: buildSummary(board, qualityReport, historyReset ? undefined : contentChanged) + (historyReset ? ` ${HISTORY_RESET_NOTICE}` : "") };
+    summary: buildSummary(board, qualityReport, historyReset ? undefined : contentChanged) + (historyReset ? ` ${HISTORY_RESET_NOTICE}` : "")
+      + (conversionNote ? ` ${conversionNote}` : "") };
 }
 
 type VisionStage = "render" | "model";
