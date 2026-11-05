@@ -503,6 +503,44 @@ describe("answerFromBoard evidence grounding", () => {
     }
   });
 
+  describe("generated placeholders of clusters no model interpreted", () => {
+    const placeholder = "Cluster contains 2 board elements with 0 extracted text items. No readable text was extracted from this cluster. The source node IDs are retained for follow-up context.";
+    function placeholderBoard() {
+      const data = evidenceBoard("Placeholder123", [{ ...textNode("1:1", ""), name: "Drawing", type: "SHAPE_WITH_TEXT" }]);
+      data.clusters[0]!.summary = placeholder;
+      setBoard(data.boardId, data);
+      return data;
+    }
+    it("are not marked as model interpretations in the prompt, the answer or the citations", async () => {
+      const data = placeholderBoard();
+      chatJsonMock.mockImplementationOnce((_models, messages) => ({ kind: "answer", language: "en", answer: "Two elements.", evidenceIds: [firstPromptId(messages)] }));
+      const output = await answerFromBoard({ boardId: data.boardId, question: "How many board elements does the cluster contain?" });
+      const excerpt = prompt().match(/<excerpt [^>]*>/)![0];
+      expect(excerpt).toContain('source="GENERATED PLACEHOLDER, no model; verify against original"');
+      expect(excerpt).not.toContain("MODEL INTERPRETATION");
+      expect(prompt()).not.toContain("MODEL INTERPRETATION");
+      expect(output.citations[0]).toMatchObject({ sourceType: "cluster_summary", modelDerived: true });
+      expect(answerText(output)).toContain(`[Generated placeholder, no model] "${placeholder}"`);
+      expect(answerText(output)).not.toContain("[Model interpretation]");
+    });
+    it("are marked the same way in the excerpts of an answer without a usable reply", async () => {
+      const data = placeholderBoard();
+      chatJsonMock.mockImplementationOnce((_models, messages) => ({ kind: "unresolved_task", answer: "Unknown.", evidenceIds: [firstPromptId(messages)] }));
+      const output = await answerFromBoard({ boardId: data.boardId, question: "How many board elements does the cluster contain?" });
+      expect(output.answer).toContain("Matching source excerpts");
+      expect(output.answer).toContain(`[Generated placeholder, no model] ${placeholder}`);
+      expect(output.answer).not.toContain("[Model interpretation]");
+    });
+    it("tell the model that a placeholder is no interpretation", async () => {
+      const data = placeholderBoard();
+      chatJsonMock.mockResolvedValueOnce({ kind: "answer", answer: "x", evidenceIds: [] });
+      await answerFromBoard({ boardId: data.boardId, question: "How many board elements does the cluster contain?" });
+      const system = (chatJsonMock.mock.calls[0]?.[1] as Array<{ role: string; content: string }>).find(item => item.role === "system")!.content;
+      expect(system).toContain("A GENERATED PLACEHOLDER (no model ran)");
+      expect(system).toContain("is not an interpretation and establishes nothing");
+    });
+  });
+
   it("marks image-derived interpretations in prompts and citations", async () => {
     const data = evidenceBoard("Image123", [{ ...textNode("1:1", ""), imageRef: "image" }]);
     data.clusters[0]!.summarySource = "vision_llm";

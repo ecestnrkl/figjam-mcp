@@ -1,5 +1,6 @@
 import { readIntEnv } from "./env.js";
 import { redactError, redactMessage, validateHeaderSecret } from "./secrets.js";
+import { describeWaitUntil, parseRetryAfter } from "./waitTime.js";
 
 const FIGMA_API_BASE = "https://api.figma.com/v1";
 export const FILE_MAX_BYTES = 64 * 1024 * 1024;
@@ -14,35 +15,92 @@ export class FigmaApiError extends Error {
 export class FigmaDownloadBudgetError extends Error {
   constructor() { super("Figma download exceeds the configured byte budget"); this.name = "FigmaDownloadBudgetError"; }
 }
+/** Figma answered a render request but gave no image URL for any requested node: it cannot render them. */
+export class FigmaRenderUnavailableError extends Error {
+  constructor(message = "Figma cannot render these elements: it returned no image URL for the requested nodes") { super(message); this.name = "FigmaRenderUnavailableError"; }
+}
 export class FigmaTimeoutError extends Error {
   constructor(message: string) { super(message); this.name = "FigmaTimeoutError"; }
 }
 function combineSignals(timeoutMs: number, signal?: AbortSignal): AbortSignal {
   return signal ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs);
 }
+/** Figma server errors that a second request often passes. */
+const RETRIED_STATUSES = new Set([500, 502, 503, 504]);
+const SERVER_ERROR_WAIT_MS = 2000;
+const SERVER_ERROR_MAX_RETRY_AFTER_MS = 5000;
+const ERROR_TEXT_MAX_BYTES = 4096;
+const ERROR_TEXT_MAX_CHARS = 200;
+
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    signal?.throwIfAborted();
+    const onAbort = () => { clearTimeout(timer); reject(signal?.reason); };
+    const timer = setTimeout(() => { signal?.removeEventListener("abort", onAbort); resolve(); }, ms);
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+/** Figma's own error text (`err` or `message`) from a small error body; empty when there is none. */
+async function readErrorText(response: Response): Promise<string> {
+  if (!response.body) return "";
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let bytes = 0;
+  try {
+    while (bytes < ERROR_TEXT_MAX_BYTES) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(value);
+      bytes += value.byteLength;
+    }
+    const body = Buffer.concat(chunks, bytes).toString("utf8");
+    const parsed = JSON.parse(body) as { err?: unknown; message?: unknown } | null;
+    const text = [parsed?.err, parsed?.message].find((value): value is string => typeof value === "string" && value.trim() !== "");
+    return text?.replace(/\s+/g, " ").trim().slice(0, ERROR_TEXT_MAX_CHARS) ?? "";
+  } catch { return ""; }
+  finally { void reader.cancel().catch(() => undefined); }
+}
 async function figmaFetch(fileKey: string, apiPath: string, token: string, timeoutMs: number, externalSignal?: AbortSignal): Promise<Response> {
   validateHeaderSecret(token, token.trim() === process.env.FIGMA_ACCESS_TOKEN?.trim() ? "FIGMA_ACCESS_TOKEN" : "figmaAccessToken");
-  externalSignal?.throwIfAborted();
-  let response: Response;
-  try {
-    response = await fetch(`${FIGMA_API_BASE}${apiPath}`, { headers: { "X-Figma-Token": token.trim() }, signal: combineSignals(timeoutMs, externalSignal) });
-  } catch (error) {
+  for (let attempt = 0; ; attempt++) {
     externalSignal?.throwIfAborted();
-    if (isTimeout(error)) throw redactError(timeoutError("Figma API request", apiPath, timeoutMs), [token]);
-    throw redactError(error, [token]);
+    let response: Response;
+    try {
+      response = await fetch(`${FIGMA_API_BASE}${apiPath}`, { headers: { "X-Figma-Token": token.trim() }, signal: combineSignals(timeoutMs, externalSignal) });
+    } catch (error) {
+      externalSignal?.throwIfAborted();
+      if (isTimeout(error)) throw redactError(timeoutError("Figma API request", apiPath, timeoutMs), [token]);
+      throw redactError(error, [token]);
+    }
+    if (response.ok) return response;
+    const retryAfterMs = parseRetryAfter(response.headers.get("Retry-After"));
+    const status = response.status;
+    if (attempt === 0 && RETRIED_STATUSES.has(status)) {
+      await response.body?.cancel();
+      await sleep(retryAfterMs !== undefined && retryAfterMs <= SERVER_ERROR_MAX_RETRY_AFTER_MS ? retryAfterMs : SERVER_ERROR_WAIT_MS, externalSignal);
+      continue;
+    }
+    let message: string;
+    if (status === 401 || status === 403) {
+      message = `Figma access denied (${status}). Check FIGMA_ACCESS_TOKEN: it must be a valid token with the scope `
+        + `file_content:read, and its account must be able to open the file.`;
+    } else if (status === 404) {
+      message = `Figma file not found (404): ${fileKey}. Check the file key in the board URL. `
+        + "Figma also answers 404 when the account of FIGMA_ACCESS_TOKEN cannot open the file, typically a company board with a personal token.";
+    } else if (status === 429) {
+      message = `Figma API rate limit exceeded (429). ${retryAfterMs === undefined ? "Retry later." : `Retry after ${describeWaitUntil(Date.now() + retryAfterMs)}.`}`
+        + " Figma limits requests by seat and plan; View and Collab seats have the lowest limits.";
+    } else if (status >= 500) {
+      message = RETRIED_STATUSES.has(status)
+        ? `Figma is not available right now (HTTP ${status}, repeated once). Try again in a few minutes; status.figma.com shows outages.`
+        : `Figma API request failed (HTTP ${status}). Try again in a few minutes.`;
+    } else {
+      const text = await readErrorText(response);
+      message = `Figma rejected the request (HTTP ${status})${text ? `: ${text}` : "."}`;
+    }
+    await response.body?.cancel().catch(() => undefined);
+    throw new FigmaApiError(redactMessage(message, [token]), status, retryAfterMs === undefined ? undefined : Math.ceil(retryAfterMs / 1000));
   }
-  if (!response.ok) {
-    const retryAfter = Number(response.headers.get("Retry-After"));
-    const message = response.status === 401 || response.status === 403
-      ? `Figma access denied (${response.status}). Check FIGMA_ACCESS_TOKEN: it must be a valid token with the scope `
-        + `file_content:read, and its account must be able to open the file.`
-      : response.status === 404 ? `Figma file not found (404): ${fileKey}. Check the file key in the board URL.`
-      : response.status === 429 ? `Figma API rate limit exceeded (429).${retryAfter > 0 ? ` Retry after ${retryAfter} second${retryAfter === 1 ? "" : "s"}.` : " Retry later."}`
-      : `Figma API request failed (${response.status} ${response.statusText}): ${apiPath}`;
-    await response.body?.cancel();
-    throw new FigmaApiError(redactMessage(message, [token]), response.status, retryAfter > 0 ? retryAfter : undefined);
-  }
-  return response;
 }
 /** Enforces the limit while streaming, including servers that omit Content-Length. */
 async function readBounded(response: Response, maxBytes: number, signal?: AbortSignal, budget?: DownloadBudget): Promise<Buffer> {
@@ -78,18 +136,37 @@ async function readBounded(response: Response, maxBytes: number, signal?: AbortS
     reader.releaseLock();
   }
 }
+/** An answer that Figma sent but that cannot be used; `cause` says why in words, without parser text. */
+function unreadableResponse(cause: string): Error {
+  return new Error(`Figma sent an unreadable response: ${cause}. Try again in a few minutes; if it persists, check the network and status.figma.com.`);
+}
+function describeUnreadableBody(text: string): string {
+  const start = text.trimStart();
+  if (!start) return "it was empty";
+  if (start.startsWith("<")) return "it was HTML, not JSON, as a proxy or login page would send";
+  if (start.startsWith("{") || start.startsWith("[")) return "it was cut off before the JSON was complete";
+  return "it was not JSON";
+}
 async function readJson<T>(response: Response, apiPath: string, timeoutMs: number, signal?: AbortSignal, token?: string): Promise<T> {
-  try { return JSON.parse((await readBounded(response, FILE_MAX_BYTES, signal)).toString("utf8")) as T; }
+  let text: string;
+  try { text = (await readBounded(response, FILE_MAX_BYTES, signal)).toString("utf8"); }
   catch (error) {
     signal?.throwIfAborted();
     if (isTimeout(error)) throw redactError(timeoutError("Figma API response body", apiPath, timeoutMs), token ? [token] : []);
     throw redactError(error, typeof token === "string" ? [token] : []);
   }
+  let parsed: unknown;
+  try { parsed = JSON.parse(text); }
+  catch { throw unreadableResponse(describeUnreadableBody(text)); }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw unreadableResponse("it was not a JSON object");
+  return parsed as T;
 }
 export async function fetchFileTree(fileKey: string, token: string, signal?: AbortSignal): Promise<unknown> {
   const FIGMA_FILE_REQUEST_TIMEOUT_MS = readIntEnv("FIGMA_FILE_REQUEST_TIMEOUT_MS", 60000, 1000);
   const apiPath = `/files/${fileKey}`;
-  return readJson(await figmaFetch(fileKey, apiPath, token, FIGMA_FILE_REQUEST_TIMEOUT_MS, signal), apiPath, FIGMA_FILE_REQUEST_TIMEOUT_MS, signal, token);
+  const tree = await readJson<{ document?: unknown }>(await figmaFetch(fileKey, apiPath, token, FIGMA_FILE_REQUEST_TIMEOUT_MS, signal), apiPath, FIGMA_FILE_REQUEST_TIMEOUT_MS, signal, token);
+  if (!tree.document || typeof tree.document !== "object") throw unreadableResponse("it held no document");
+  return tree;
 }
 /** One GET /v1/files/:key/images request (Tier 2): imageRef → URL of the original image, for the whole file. */
 export async function fetchImageRefs(fileKey: string, token: string, signal?: AbortSignal): Promise<Record<string, string>> {
@@ -183,7 +260,7 @@ export async function downloadRenders(nodeIds: string[], renderUrls: RenderUrls,
   const DOWNLOAD_CONCURRENCY = readIntEnv("FIGMA_SCREENSHOT_DOWNLOAD_CONCURRENCY", 3, 1);
   if (!nodeIds.length) throw new Error("downloadRenders: nodeIds must not be empty");
   const urls = nodeIds.map(id => renderUrls[id]).filter((url): url is string => Boolean(url));
-  if (!urls.length) throw new Error("Figma image render returned no URLs for the requested nodes");
+  if (!urls.length) throw new FigmaRenderUnavailableError("Figma image render returned no URLs for the requested nodes");
   if (urls.length !== nodeIds.length) throw new Error("Figma image render was incomplete; some requested nodes have no image URL");
   let index = 0;
   const images: Buffer[] = [];
@@ -200,6 +277,8 @@ export async function downloadRenders(nodeIds: string[], renderUrls: RenderUrls,
         if (!response.ok) {
           const retryAfter = Number(response.headers.get("Retry-After"));
           await response.body?.cancel();
+          // These URLs are loaded without the token, so only a rate limit says anything about the Figma API; any other status means this image is unavailable.
+          if (response.status !== 429) throw new Error(`Screenshot download failed (${response.status})`);
           throw new FigmaApiError(`Screenshot download failed (${response.status})`, response.status,
             Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter : undefined);
         }

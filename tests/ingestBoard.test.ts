@@ -446,16 +446,18 @@ describe("ingestBoard", () => {
     ["render", new Error("private provider body"), "render_failed"],
     ["download", new Error("private provider body"), "render_failed"],
     ["model", new Error("private provider body"), "model_failed"],
-    ["render", new FigmaTimeoutError("private provider body"), "timeout"],
-    ["download", new FigmaTimeoutError("private provider body"), "timeout"],
+    ["render", new FigmaTimeoutError("private provider body"), "figma_timeout"],
+    ["download", new FigmaTimeoutError("private provider body"), "figma_timeout"],
     ["model", new LlmTimeoutError("private provider body"), "timeout"],
     ["model", new LLMConfigurationError("private provider body"), "config"],
     ["model", new LlmRequestError("private provider body", 401), "auth"],
     ["model", new LlmRequestError("private provider body", 402), "payment"],
     ["model", new LlmRequestError("private provider body", 403), "auth"],
     ["render", new FigmaApiError("private provider body", 402), "render_failed"],
-    ["render", new FigmaApiError("private provider body", 403), "auth"],
-    ["render", new FigmaApiError("private provider body", 429), "rate_limit"],
+    ["render", new FigmaApiError("private provider body", 401), "figma_auth"],
+    ["render", new FigmaApiError("private provider body", 403), "figma_auth"],
+    ["render", new FigmaApiError("private provider body", 429), "figma_rate_limit"],
+    ["download", new FigmaApiError("private provider body", 429), "figma_rate_limit"],
     ["model", new LlmRequestError("private provider body", 429), "rate_limit"],
     ["model", new LlmInvalidJsonError("private provider body", "private reply text"), "invalid_reply"],
     ["model", new LlmEmptyReplyError("private provider body", "refusal"), "invalid_reply"],
@@ -576,7 +578,8 @@ describe("ingestBoard", () => {
     expect(output.qualityReport?.nextRetryAt).toBeUndefined();
     expect(output.summary).toContain("Visual interpretation is incomplete for 10 clusters: the model provider requires payment or more credits.");
     expect(output.summary).toContain("Add credits or raise the API key's credit limit at the model provider, or choose a free model; diagnose_llm_config can test the configured model provider.");
-    expect(output.summary).toContain("Run ingest_board again to retry pending work; successful interpretations are kept.");
+    expect(output.summary).toContain("After that, run ingest_board again; finished clusters are kept.");
+    expect(output.summary).not.toContain("Run ingest_board again");
     expect(output.summary).not.toContain("Retry after");
     expect(output.summary).not.toContain("private provider body");
     // Eight workers began; the nine untouched clusters emit no cluster progress.
@@ -803,7 +806,7 @@ describe("ingestBoard", () => {
     expect(limited.qualityReport?.fallbackReasons).toEqual({ rate_limit: 12 });
   });
 
-  it("marks every cluster of a rate-limited render batch as rate_limit and keeps the cooldown", async () => {
+  it("marks every cluster of a rate-limited render batch as figma_rate_limit and keeps the cooldown", async () => {
     fetchFileTreeMock.mockResolvedValueOnce(drawingClusterTree(5));
     fetchRenderUrlsMock.mockRejectedValueOnce(new FigmaApiError("private provider body", 429, 30));
     const before = Date.now();
@@ -812,7 +815,7 @@ describe("ingestBoard", () => {
     expect(fetchRenderUrlsMock).toHaveBeenCalledTimes(1);
     expect(downloadRendersMock).not.toHaveBeenCalled();
     expect(refineClusterWithVisionMock).not.toHaveBeenCalled();
-    expect(output.qualityReport?.fallbackReasons).toEqual({ rate_limit: 5 });
+    expect(output.qualityReport?.fallbackReasons).toEqual({ figma_rate_limit: 5 });
     expect(output.qualityReport?.nextRetryAt).toBeGreaterThanOrEqual(before + 30_000);
   });
 
@@ -888,6 +891,44 @@ describe("ingestBoard", () => {
         jpeg("https://originals.example/good"), render("https://cdn.example/missing"), render("https://cdn.example/large"), render("https://cdn.example/svg"),
       ]);
       expect(output.qualityReport).toMatchObject({ visionClusters: 1, figmaRequests: { imageFills: 1, renders: 1 } });
+    });
+
+    it.each([[30, [12, 18]], [40, [12, 18, 10]], [3, [3]]])("renders the nodes of %i image clusters without image fills in bundles of at most 18 nodes", async (count, sizes) => {
+      fetchFileTreeMock.mockResolvedValueOnce(treeWith(Array.from({ length: count }, (_, index) => imageNode(`image:${index}`, `ref-${index}`, index * 1000))));
+      fetchImageRefsMock.mockResolvedValueOnce({});
+      const output = await ingestBoard(balanced);
+      expect(fetchRenderUrlsMock.mock.calls.map(call => (call[1] as string[]).length)).toEqual(sizes);
+      expect(fetchRenderUrlsMock.mock.calls.flatMap(call => call[1] as string[]).sort())
+        .toEqual(Array.from({ length: count }, (_, index) => `image:${index}`).sort());
+      expect(output.qualityReport).toMatchObject({ visionClusters: count, fallbackCount: 0, figmaRequests: { imageFills: 1, renders: sizes.length } });
+      // Each cluster receives the render of its own node.
+      for (const [cluster, images] of refineClusterWithVisionMock.mock.calls as Array<[Cluster, Buffer[]]>) {
+        expect(images).toEqual([render(`https://cdn.example/${cluster.nodeIds[0]}`)]);
+      }
+    });
+
+    it("bundles missing image fills with originals that turn out unusable while downloading", async () => {
+      // Five clusters, all started at once: two without an image fill, three whose original is forbidden, gone or no image.
+      vi.stubEnv("INGEST_BOARD_VISION_CONCURRENCY", "5");
+      fetchFileTreeMock.mockResolvedValueOnce(treeWith(["forbidden", "gone", "svg", "nofill-a", "nofill-b"]
+        .map((name, index) => imageNode(name, `${name}-ref`, index * 1000))));
+      fetchImageRefsMock.mockResolvedValueOnce(Object.fromEntries(["forbidden", "gone", "svg"].map(name => [`${name}-ref`, `https://originals.example/${name}`])));
+      downloadFetchMock.mockImplementation(async (url: string) => url.endsWith("/forbidden") ? new Response("", { status: 403 })
+        : url.endsWith("/gone") ? new Response("", { status: 404 }) : url.endsWith("/svg") ? imageResponse(Buffer.from("<svg/>")) : imageResponse(jpeg(url)));
+      const output = await ingestBoard(balanced);
+      expect(fetchRenderUrlsMock).toHaveBeenCalledTimes(1);
+      expect([...(fetchRenderUrlsMock.mock.calls[0]![1] as string[])].sort()).toEqual(["forbidden", "gone", "nofill-a", "nofill-b", "svg"]);
+      expect(output.qualityReport).toMatchObject({ visionClusters: 5, fallbackCount: 0, figmaRequests: { imageFills: 1, renders: 1 } });
+    });
+
+    it("starts a new render request for nodes that turn up after the first one was sent", async () => {
+      fetchFileTreeMock.mockResolvedValueOnce(treeWith(["first", "second"].map((name, index) => imageNode(name, `${name}-ref`, index * 1000))));
+      fetchImageRefsMock.mockResolvedValueOnce({ "first-ref": "https://originals.example/first", "second-ref": "https://originals.example/second" });
+      vi.stubEnv("INGEST_BOARD_VISION_CONCURRENCY", "1");
+      downloadFetchMock.mockImplementation(async () => new Response("", { status: 403 }));
+      const output = await ingestBoard(balanced);
+      expect(fetchRenderUrlsMock.mock.calls.map(call => call[1] as string[]).sort()).toEqual([["first"], ["second"]]);
+      expect(output.qualityReport).toMatchObject({ visionClusters: 2, figmaRequests: { imageFills: 1, renders: 2 } });
     });
 
     it("keeps each vision request within 8 MiB of image data", async () => {
@@ -982,9 +1023,9 @@ describe("ingestBoard", () => {
     });
 
     it.each([
-      ["rate limit", () => new FigmaApiError("private provider body", 429, 30), "rate_limit"],
-      ["access", () => new FigmaApiError("private provider body", 403), "auth"],
-      ["timeout", () => new FigmaTimeoutError("private provider body"), "timeout"],
+      ["rate limit", () => new FigmaApiError("private provider body", 429, 30), "figma_rate_limit"],
+      ["access", () => new FigmaApiError("private provider body", 403), "figma_auth"],
+      ["timeout", () => new FigmaTimeoutError("private provider body"), "figma_timeout"],
     ] as const)("handles an image fills %s failure like the same render failure", async (_case, error, reason) => {
       fetchFileTreeMock.mockResolvedValueOnce(drawingClusterTree(3));
       fetchRenderUrlsMock.mockRejectedValueOnce(error());
@@ -1000,15 +1041,233 @@ describe("ingestBoard", () => {
       expect(filled.qualityReport?.fallbackReasons).toEqual(rendered.qualityReport?.fallbackReasons);
       expect(filled.qualityReport?.figmaRequests).toEqual({ imageFills: 1, renders: 0 });
       expect(JSON.stringify(filled)).not.toContain("private provider body");
-      if (reason !== "rate_limit") return;
+      if (reason !== "figma_rate_limit") return;
       expect(filled.qualityReport?.nextRetryAt).toBeGreaterThanOrEqual(before + 30_000);
       // During the cooldown, the next ingest keeps the pending clusters without another Figma request.
       fetchFileTreeMock.mockResolvedValueOnce(imageClusterTree(3));
       readLatestBoardMock.mockResolvedValueOnce(persistBoardMock.mock.calls.at(-1)![0]);
       const cooling = await ingestBoard(balanced);
       expect(fetchImageRefsMock).toHaveBeenCalledTimes(1);
-      expect(cooling.qualityReport).toMatchObject({ fallbackReasons: { rate_limit: 3 }, figmaRequests: { imageFills: 0, renders: 0 } });
+      expect(cooling.qualityReport).toMatchObject({ fallbackReasons: { figma_rate_limit: 3 }, figmaRequests: { imageFills: 0, renders: 0 } });
       expect(cooling.summary).not.toContain("Figma requests");
+    });
+  });
+
+  describe("failure reasons name the failing side", () => {
+    const balanced = { figmaFileUrl: "https://www.figma.com/board/AbC123/Test", docStructureHint: "freeform", ingestMode: "balanced" } as const;
+    const noon = Date.parse("2026-11-05T12:00:00Z");
+    it.each([
+      { name: "image fills 403", tree: () => imageClusterTree(3), count: 3, reason: "figma_auth",
+        setup: () => fetchImageRefsMock.mockRejectedValueOnce(new FigmaApiError("private provider body", 403)),
+        text: "Figma denied access (FIGMA_ACCESS_TOKEN)", next: "Check FIGMA_ACCESS_TOKEN: it needs the scope file_content:read, and its account must be able to open the file.",
+        absent: ["LLM_API_KEY", "diagnose_llm_config", "Retry after"] },
+      { name: "image fills 429", tree: () => imageClusterTree(3), count: 3, reason: "figma_rate_limit",
+        setup: () => fetchImageRefsMock.mockRejectedValueOnce(new FigmaApiError("private provider body", 429, 3600)),
+        text: "Figma's rate limit was reached", next: "Retry after 2026-11-05 13:00 UTC (in about 1 hour): Figma limits requests by seat and plan; View and Collab seats are limited most strictly.",
+        absent: ["model provider", "diagnose_llm_config"] },
+      { name: "render 429", tree: () => drawingClusterTree(2), count: 2, reason: "figma_rate_limit",
+        setup: () => fetchRenderUrlsMock.mockRejectedValueOnce(new FigmaApiError("private provider body", 429, 396000)),
+        text: "Figma's rate limit was reached", next: "Retry after 2026-11-10 02:00 UTC (in about 5 days): Figma limits requests by seat and plan",
+        absent: ["model provider", "diagnose_llm_config"] },
+      { name: "render download timeout", tree: () => drawingClusterTree(1), count: 1, reason: "figma_timeout",
+        setup: () => downloadRendersMock.mockRejectedValueOnce(new FigmaTimeoutError("private provider body")),
+        text: "Figma did not answer in time", next: "Run ingest_board again to retry pending work; successful interpretations are kept.",
+        absent: ["the model did not answer", "LLM_API_KEY", "FIGMA_ACCESS_TOKEN"] },
+      { name: "provider 401", tree: () => drawingClusterTree(1), count: 1, reason: "auth",
+        setup: () => refineClusterWithVisionMock.mockRejectedValueOnce(new LlmRequestError("private provider body", 401)),
+        text: "the model provider denied access (LLM_API_KEY)", next: "Check LLM_API_KEY and the key's access to the configured models; diagnose_llm_config can test the configured model provider.",
+        absent: ["FIGMA_ACCESS_TOKEN", "file_content:read"] },
+      { name: "provider 429", tree: () => drawingClusterTree(1), count: 1, reason: "rate_limit",
+        setup: () => refineClusterWithVisionMock.mockRejectedValueOnce(new LlmRequestError("private provider body", 429, 7200)),
+        text: "the model provider's rate limit was reached", next: "Retry after 2026-11-05 14:00 UTC (in about 2 hours) for the pending provider cooldown.",
+        absent: ["Figma's", "seat and plan", "FIGMA_ACCESS_TOKEN"] },
+    ])("$name is $reason with its own text and next step", async ({ tree, count, reason, setup, text, next, absent }) => {
+      vi.useFakeTimers({ toFake: ["Date"], now: noon });
+      fetchFileTreeMock.mockResolvedValueOnce(tree());
+      setup();
+      const output = await ingestBoard(balanced);
+      expect(output.qualityReport?.fallbackReasons).toEqual({ [reason]: count });
+      expect(output.summary).toContain(`incomplete for ${count} cluster${count === 1 ? "" : "s"}: ${text}.`);
+      expect(output.summary).toContain(next);
+      for (const fragment of absent) expect(output.summary).not.toContain(fragment);
+      expect(output.summary).not.toContain("private provider body");
+    });
+
+    it.each([
+      { name: "figma_auth", error: () => new FigmaApiError("private provider body", 403), retryAfterMs: undefined },
+      { name: "figma_rate_limit", error: () => new FigmaApiError("private provider body", 429, 90), retryAfterMs: 90_000 },
+    ])("$name stops further image requests and takes nextRetryAt from Retry-After", async ({ name, error, retryAfterMs }) => {
+      fetchFileTreeMock.mockResolvedValueOnce(imageClusterTree(8));
+      // Every original is unusable, so each cluster needs a render, which fails.
+      downloadFetchMock.mockImplementation(async () => new Response("", { status: 403 }));
+      fetchRenderUrlsMock.mockRejectedValue(error());
+      const before = Date.now();
+      const output = await ingestBoard(balanced);
+      expect(fetchImageRefsMock).toHaveBeenCalledTimes(1);
+      expect(downloadFetchMock).toHaveBeenCalledTimes(3);
+      expect(refineClusterWithVisionMock).not.toHaveBeenCalled();
+      expect(output.qualityReport?.fallbackReasons).toEqual({ [name]: 8 });
+      if (retryAfterMs === undefined) expect(output.qualityReport?.nextRetryAt).toBeUndefined();
+      else expect(output.qualityReport?.nextRetryAt).toBeGreaterThanOrEqual(before + retryAfterMs);
+    });
+
+    describe("next steps", () => {
+      /** A previous snapshot whose image clusters wait with the given reasons, so that the ingest reuses them. */
+      function previousWith(reasons: string[]): void {
+        const tree = imageClusterTree(reasons.length);
+        const nodes = flattenNodeTree(tree);
+        fetchFileTreeMock.mockResolvedValueOnce(tree);
+        readLatestBoardMock.mockResolvedValueOnce({ ...cachedBoard(), nodes, clusters: partitionedBoardClusters(nodes).map((cluster, index) => ({
+          ...cluster, label: `Pending ${index}`, summary: "Placeholder.", confirmedNodeIds: [...cluster.nodeIds], summarySource: "deterministic" as const,
+          incomplete: true, fallbackReason: reasons[index], retryAfter: Date.now() + 2 * 3600_000 })) });
+      }
+      it.each(["config", "auth", "figma_auth", "payment", "base_url"])("tells to change something first for %s alone", async reason => {
+        previousWith([reason]);
+        const output = await ingestBoard(balanced);
+        expect(output.qualityReport?.fallbackReasons).toEqual({ [reason]: 1 });
+        expect(output.summary).toContain("After that, run ingest_board again; finished clusters are kept.");
+        expect(output.summary).not.toContain("Run ingest_board again");
+      });
+      it.each([
+        ["a transient reason", ["model_failed"]],
+        ["a transient reason beside one that needs a change", ["figma_auth", "render_failed"]],
+        ["a rate limit", ["rate_limit"]],
+        ["a Figma rate limit", ["figma_rate_limit"]],
+        ["an old reason", ["vision_failed"]],
+      ])("says to run again for %s", async (_name, reasons) => {
+        previousWith(reasons);
+        const output = await ingestBoard(balanced);
+        expect(output.summary).toContain("Run ingest_board again to retry pending work; successful interpretations are kept.");
+        expect(output.summary).not.toContain("After that, run ingest_board again");
+      });
+      it("says nothing about a rerun when only Figma's inability to render is left", async () => {
+        previousWith(["render_unavailable"]);
+        const output = await ingestBoard(balanced);
+        expect(output.qualityReport?.fallbackReasons).toEqual({ render_unavailable: 1 });
+        expect(output.summary).toContain("incomplete for 1 cluster: Figma cannot render these elements. Original extracted texts, tables and node references remain available for search.");
+        expect(output.summary).not.toMatch(/run ingest_board again/i);
+      });
+      it("names only the change when Figma's inability to render comes with a reason that needs one", async () => {
+        previousWith(["render_unavailable", "figma_auth"]);
+        const output = await ingestBoard(balanced);
+        expect(output.summary).toContain("After that, run ingest_board again; finished clusters are kept.");
+        expect(output.summary).not.toContain("Run ingest_board again");
+      });
+      it("names the time before the rerun for a rate limit", async () => {
+        previousWith(["figma_rate_limit"]);
+        const output = await ingestBoard(balanced);
+        expect(output.summary).toMatch(/Retry after 20\d\d-\d\d-\d\d \d\d:\d\d UTC \(in about 2 hours\): Figma limits requests by seat and plan.* Run ingest_board again/);
+      });
+    });
+
+    it("reads reasons of older snapshots", async () => {
+      const previous = cachedBoard();
+      previous.clusters = previous.clusters.map(cluster => cluster.nodeIds.includes("1:2")
+        ? { ...cluster, summarySource: "deterministic", incomplete: true, fallbackReason: "auth", retryAfter: Date.now() + 60_000 } : cluster);
+      readLatestBoardMock.mockResolvedValueOnce(previous);
+      const output = await ingestBoard(balanced);
+      expect(output.qualityReport?.fallbackReasons).toEqual({ auth: 1 });
+      expect(output.summary).toContain("incomplete for 1 cluster: the model provider denied access (LLM_API_KEY).");
+    });
+  });
+
+  it.each([401, 403, 404])("treats HTTP %i when downloading a rendered image as render_failed of that cluster only", async status => {
+    const tree = rawTree();
+    tree.document.children[0]!.children = [
+      { id: "drawing:0", name: "Drawing", type: "SHAPE_WITH_TEXT", absoluteBoundingBox: { x: 0, y: 0, width: 100, height: 100 } },
+      { id: "image:0", name: "Image", type: "SHAPE_WITH_TEXT", absoluteBoundingBox: { x: 5000, y: 0, width: 100, height: 100 },
+        fills: [{ type: "IMAGE", imageRef: "image-0" }] },
+    ] as typeof tree.document.children[0]["children"];
+    fetchFileTreeMock.mockResolvedValueOnce(tree);
+    // The real download runs; the render links answer with the status, the original of the image works.
+    const { downloadRenders } = await vi.importActual<typeof import("../src/lib/figmaApi.js")>("../src/lib/figmaApi.js");
+    downloadRendersMock.mockImplementation(downloadRenders);
+    downloadFetchMock.mockImplementation(async (url: string) => url.startsWith("https://cdn.example/") ? new Response("", { status }) : imageResponse(jpeg(url)));
+    const output = await ingestBoard({ figmaFileUrl: "https://www.figma.com/board/AbC123/Test", docStructureHint: "freeform", ingestMode: "balanced" });
+    expect(output.qualityReport).toMatchObject({ visionClusters: 1, fallbackCount: 1, fallbackReasons: { render_failed: 1 } });
+    expect(refineClusterWithVisionMock).toHaveBeenCalledTimes(1);
+    expect((refineClusterWithVisionMock.mock.calls[0]![0] as Cluster).nodeIds).toEqual(["image:0"]);
+    expect(output.summary).toContain("incomplete for 1 cluster: Figma could not provide the images.");
+    expect(output.summary).not.toContain("FIGMA_ACCESS_TOKEN");
+    expect(output.summary).not.toContain("After that");
+  });
+
+  it("names the 64 MiB download budget instead of large images", async () => {
+    fetchFileTreeMock.mockResolvedValueOnce(drawingClusterTree(2));
+    downloadRendersMock.mockRejectedValueOnce(new FigmaDownloadBudgetError());
+    const output = await ingestBoard({ figmaFileUrl: "https://www.figma.com/board/AbC123/Test", docStructureHint: "freeform", ingestMode: "balanced" });
+    expect(output.qualityReport?.fallbackReasons).toEqual({ download_budget: 1 });
+    expect(output.summary).toContain("incomplete for 1 cluster: the images of this ingest exceeded the 64 MiB download budget.");
+    expect(output.summary).toContain("Run ingest_board again to retry pending work; successful interpretations are kept.");
+    expect(output.summary).not.toContain("too large");
+  });
+
+  describe("elements Figma renders without an image URL", () => {
+    const balanced = { figmaFileUrl: "https://www.figma.com/board/AbC123/Test", docStructureHint: "freeform", ingestMode: "balanced" } as const;
+    const box = (x: number) => ({ x, y: 0, width: 100, height: 100 });
+    /** One cluster of two drawings, or of two images when `ref` is set. */
+    function pairTree(ref?: boolean) {
+      const tree = rawTree();
+      tree.document.children[0]!.children = ["a", "b"].map((name, index) => ({ id: `pair:${name}`, name: "Element", type: "SHAPE_WITH_TEXT",
+        absoluteBoundingBox: box(index * 110), ...(ref ? { fills: [{ type: "IMAGE", imageRef: `${name}-ref` }] } : {}) })) as typeof tree.document.children[0]["children"];
+      return tree;
+    }
+    const nothingRendered = () => fetchRenderUrlsMock.mockImplementation(async (_key: string, ids: string[]) => Object.fromEntries(ids.map(id => [id, null])));
+
+    it("interprets a cluster from the nodes Figma rendered when another has no URL", async () => {
+      fetchFileTreeMock.mockResolvedValueOnce(pairTree());
+      fetchRenderUrlsMock.mockResolvedValueOnce({ "pair:a": "https://cdn.example/pair:a", "pair:b": null });
+      const output = await ingestBoard(balanced);
+      expect(refineClusterWithVisionMock.mock.calls[0]![1] as Buffer[]).toEqual([render("https://cdn.example/pair:a")]);
+      expect(output.qualityReport).toMatchObject({ visionClusters: 1, fallbackCount: 0, fallbackReasons: {} });
+    });
+
+    it("keeps the usable original of an image cluster when Figma cannot render its other image", async () => {
+      fetchFileTreeMock.mockResolvedValueOnce(pairTree(true));
+      fetchImageRefsMock.mockResolvedValueOnce({ "a-ref": "https://originals.example/a" });
+      nothingRendered();
+      const output = await ingestBoard(balanced);
+      expect(refineClusterWithVisionMock.mock.calls[0]![1] as Buffer[]).toEqual([jpeg("https://originals.example/a")]);
+      expect(output.qualityReport).toMatchObject({ visionClusters: 1, fallbackCount: 0 });
+    });
+
+    it.each([
+      ["drawings", () => pairTree(), () => undefined],
+      ["images without fills", () => pairTree(true), () => fetchImageRefsMock.mockResolvedValue({})],
+    ])("marks a cluster of %s render_unavailable, does not ask again for unchanged content and asks again when forced", async (_name, tree, setup) => {
+      fetchFileTreeMock.mockImplementation(async () => tree());
+      setup();
+      nothingRendered();
+      const first = await ingestBoard(balanced);
+      expect(first.qualityReport).toMatchObject({ visionClusters: 0, fallbackCount: 1, fallbackReasons: { render_unavailable: 1 } });
+      expect(first.qualityReport?.nextRetryAt).toBeUndefined();
+      expect(first.summary).toContain("incomplete for 1 cluster: Figma cannot render these elements.");
+      expect(first.summary).not.toMatch(/run ingest_board again/i);
+      expect(first.summary).not.toContain("focusNodeIds");
+      expect(refineClusterWithVisionMock).not.toHaveBeenCalled();
+      const rendersBefore = fetchRenderUrlsMock.mock.calls.length;
+      expect(rendersBefore).toBe(1);
+
+      readLatestBoardMock.mockResolvedValue(persistBoardMock.mock.calls.at(-1)![0]);
+      const second = await ingestBoard(balanced);
+      expect(fetchRenderUrlsMock).toHaveBeenCalledTimes(rendersBefore);
+      expect(second.qualityReport).toMatchObject({ fallbackReasons: { render_unavailable: 1 }, reusedClusters: 1, figmaRequests: { renders: 0 } });
+
+      const forced = await ingestBoard({ ...balanced, forceFullIngest: true });
+      expect(fetchRenderUrlsMock).toHaveBeenCalledTimes(rendersBefore + 1);
+      expect(forced.qualityReport).toMatchObject({ fallbackReasons: { render_unavailable: 1 }, reusedClusters: 0, figmaRequests: { renders: 1 } });
+    });
+
+    it("asks Figma again when the content of the cluster changed", async () => {
+      fetchFileTreeMock.mockResolvedValueOnce(pairTree());
+      nothingRendered();
+      await ingestBoard(balanced);
+      readLatestBoardMock.mockResolvedValue(persistBoardMock.mock.calls.at(-1)![0]);
+      const changed = pairTree();
+      fetchFileTreeMock.mockResolvedValueOnce({ document: { ...changed.document, children: [{ ...changed.document.children[0]!, children: [
+        ...changed.document.children[0]!.children, { id: "pair:c", name: "Element", type: "SHAPE_WITH_TEXT", absoluteBoundingBox: box(220) }] }] } });
+      await ingestBoard(balanced);
+      expect(fetchRenderUrlsMock).toHaveBeenCalledTimes(2);
     });
   });
 
@@ -1272,7 +1531,7 @@ describe("ingestBoard", () => {
     expect(signals).toHaveLength(1);
     expect(signals.every((signal) => signal.aborted)).toBe(true);
     expect(refineClusterWithVisionMock).not.toHaveBeenCalled();
-    expect(output.qualityReport).toMatchObject({ fallbackCount: 2, visionClusters: 0, fallbackReasons: { timeout: 2 } });
+    expect(output.qualityReport).toMatchObject({ fallbackCount: 2, visionClusters: 0, fallbackReasons: { figma_timeout: 2 } });
   });
 
   it("loads unchanged boards from persistent cache", async () => {

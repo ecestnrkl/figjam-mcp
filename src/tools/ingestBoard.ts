@@ -3,7 +3,7 @@ import { setImmediate as yieldToRequests } from "node:timers/promises";
 import { extractFigmaFileKeyFromUrl, FIGMA_URL_HINT } from "../schemas/common.js";
 import type { Cluster, IngestFocusReport, IngestMode, IngestQualityReport, NormalizedNode, RefinedCluster, BoardData, OperationOptions } from "../types.js";
 import { fetchFileTree, fetchRenderUrls, downloadRenders, fetchImageRefs, downloadOriginals, FigmaApiError, FigmaDownloadBudgetError,
-  FigmaTimeoutError, IMAGE_MAX_BYTES, INGEST_IMAGE_MAX_BYTES, type OriginalImage, type RenderUrls } from "../lib/figmaApi.js";
+  FigmaRenderUnavailableError, FigmaTimeoutError, IMAGE_MAX_BYTES, INGEST_IMAGE_MAX_BYTES, type OriginalImage, type RenderUrls } from "../lib/figmaApi.js";
 import {
   LLMConfigurationError, LlmBaseUrlError, LlmRequestError, LlmTimeoutError, LlmUnusableReplyError, llmBaseUrlProblem, missingLlmConfigurationMessage, validateLlmConfiguration,
   validateLlmRuntimeConfiguration,
@@ -19,6 +19,7 @@ import { redactBoard } from "../lib/redact.js";
 import { readIntEnv } from "../lib/env.js";
 import { missingEnvironmentHint } from "../lib/envFile.js";
 import { redactMessage, validateHeaderSecret, withSecretScope } from "../lib/secrets.js";
+import { describeWaitUntil } from "../lib/waitTime.js";
 import { getVisionMaxOutputTokens } from "../lib/llmOutputBudgets.js";
 import { getVisionRequestTimeoutMs } from "../lib/llmTimeouts.js";
 import { describeModelConfig } from "../lib/modelRegistry.js";
@@ -75,6 +76,11 @@ export function getVisionConcurrency(): number {
  * request timeout. Larger batches would delay every vision call of the ingest.
  */
 const MAX_RENDER_BATCH_NODES = 18;
+/**
+ * A render request for image nodes waits this long after its first node is needed. Nodes whose original proves
+ * unusable only while downloading (403, 404, damaged) arrive from several workers within moments and share the request.
+ */
+const FALLBACK_RENDER_WINDOW_MS = 25;
 
 /**
  * ingest_board — full pipeline: fetch the Figma file, flatten + filter the
@@ -195,7 +201,7 @@ async function performIngest(input: IngestBoardInput, options: OperationOptions)
     const contentHash = contentHashes.get(cluster.id)!;
     const previous = reuseIndex.get(contentHash);
     // forceFullIngest re-reads the board only; interpretations of unchanged clusters are kept in every mode.
-    if (previous && canReusePrevious(previous, members, ingestMode)) {
+    if (previous && canReusePrevious(previous, members, ingestMode, input.forceFullIngest)) {
       refined[index] = { ...reuseCluster(cluster, previous, contentHash), cacheHit: true };
       reusedCount++;
     } else if (shouldUseVision(members, ingestMode)) visionQueue.push(index);
@@ -253,12 +259,73 @@ async function performIngest(input: IngestBoardInput, options: OperationOptions)
     if (batch < plannedBatches && !renderRequests[batch] && !sharedFailure &&
       hasVisionBudget(deadline, requiredSlotMs(clusterDurations, minVisionSlotMs))) void renderBatch(batch);
   };
+  /**
+   * Nodes of image clusters that a render must replace (no image fill, or an original that cannot be used) are rendered in
+   * bundles of at most MAX_RENDER_BATCH_NODES, like the screenshots of other clusters. Nodes without an image fill are
+   * assigned to batches as soon as the fills are known; a batch is sent shortly after its first node is needed, so that
+   * nodes that turn out unusable while downloading can still join it.
+   */
+  interface FallbackRenderBatch { ids: string[]; urls: Promise<RenderUrls>; started: boolean; demand(): void; start(): void; dispose(): void }
+  const fallbackBatchOfNode = new Map<string, FallbackRenderBatch>();
+  const fallbackBatches: FallbackRenderBatch[] = [];
+  const newFallbackBatch = (): FallbackRenderBatch => {
+    const ids: string[] = [];
+    let timer: NodeJS.Timeout | undefined;
+    let settle!: { resolve: (urls: RenderUrls) => void; reject: (error: unknown) => void };
+    const urls = new Promise<RenderUrls>((resolve, reject) => { settle = { resolve, reject }; });
+    urls.catch(() => undefined);
+    const batch: FallbackRenderBatch = { ids, urls, started: false,
+      demand() {
+        if (batch.started) return;
+        if (ids.length >= MAX_RENDER_BATCH_NODES) batch.start();
+        else timer ??= setTimeout(() => batch.start(), FALLBACK_RENDER_WINDOW_MS);
+      },
+      start() {
+        if (batch.started) return;
+        batch.started = true;
+        clearTimeout(timer);
+        figmaRequests.renders++;
+        (async () => fetchRenderUrls(fileKey, ids, token!, renderSignal))().then(settle.resolve, settle.reject);
+      },
+      dispose() { clearTimeout(timer); } };
+    fallbackBatches.push(batch);
+    return batch;
+  };
+  const requestFallbackRenders = (ids: string[]): Promise<RenderUrls> => {
+    const batches = new Set<FallbackRenderBatch>();
+    for (const id of ids) {
+      let batch = fallbackBatchOfNode.get(id);
+      if (!batch) {
+        batch = fallbackBatches.find(candidate => !candidate.started && candidate.ids.length < MAX_RENDER_BATCH_NODES) ?? newFallbackBatch();
+        batch.ids.push(id);
+        fallbackBatchOfNode.set(id, batch);
+      }
+      batches.add(batch);
+    }
+    batches.forEach(batch => batch.demand());
+    return Promise.all([...batches].map(batch => batch.urls)).then(all => Object.assign({}, ...all) as RenderUrls);
+  };
+  /** Assigns all image nodes without an image fill to batches, in queue order; clusters the budget may not reach batch apart. */
+  const planFallbackRenders = (fills: Record<string, string>) => {
+    if (sharedFailure || !hasVisionBudget(deadline, minVisionSlotMs)) return;
+    let current: { batch: FallbackRenderBatch; planned: boolean } | undefined;
+    visionQueue.forEach((index, position) => {
+      const planned = position < plannedClusters;
+      for (const node of imageNodes.get(index) ?? []) {
+        if (fills[node.imageRef!]) continue;
+        if (!current || current.batch.ids.length >= MAX_RENDER_BATCH_NODES || current.planned !== planned) current = { batch: newFallbackBatch(), planned };
+        current.batch.ids.push(node.id);
+        fallbackBatchOfNode.set(node.id, current.batch);
+      }
+    });
+  };
   // One image fills request (Tier 2) serves every image cluster of the ingest.
   let imageFillsRequest: Promise<Record<string, string>> | undefined;
   const imageFills = (): Promise<Record<string, string>> => {
     if (!imageFillsRequest) {
       figmaRequests.imageFills++;
       imageFillsRequest = fetchImageRefs(fileKey, token!, renderSignal);
+      imageFillsRequest.then(planFallbackRenders, () => undefined);
       imageFillsRequest.catch(() => undefined);
     }
     return imageFillsRequest;
@@ -296,16 +363,22 @@ async function performIngest(input: IngestBoardInput, options: OperationOptions)
     }
     const renderIds = nodes.filter((_node, position) => "fallback" in originals[position]!).map(node => node.id);
     const renders = new Map<string, Buffer | undefined>();
+    let rendered: string[] = [];
     if (renderIds.length) {
-      figmaRequests.renders++;
-      const renderUrls = await fetchRenderUrls(fileKey, renderIds, token!, requestSignal);
-      (await prepareRenders(await downloadRenders(renderIds, renderUrls, requestSignal, imageBudget), requestSignal))
-        .forEach((image, position) => renders.set(renderIds[position]!, image));
+      const renderUrls = await requestFallbackRenders(renderIds);
+      rendered = renderIds.filter(id => renderUrls[id]);
+      if (rendered.length) {
+        (await prepareRenders(await downloadRenders(rendered, renderUrls, requestSignal, imageBudget), requestSignal))
+          .forEach((image, position) => renders.set(rendered[position]!, image));
+      }
     }
-    return withinRequestLimit(nodes.map((node, position) => {
+    const images = nodes.map((node, position) => {
       const original = originals[position]!;
       return "data" in original ? original.data : renders.get(node.id);
-    }));
+    });
+    // Originals that work are enough; Figma's refusal to render the others fails the cluster only when nothing else is left.
+    if (renderIds.length && !rendered.length && !images.some(Boolean)) throw new FigmaRenderUnavailableError();
+    return withinRequestLimit(images);
   }
   async function worker(): Promise<void> {
     while (queueCursor < visionQueue.length) {
@@ -325,7 +398,8 @@ async function performIngest(input: IngestBoardInput, options: OperationOptions)
           const batch = batchOfCluster.get(index)!;
           const renderUrls = await renderBatch(batch);
           prefetchRenderBatch(batch + 1);
-          return withinRequestLimit(await prepareRenders(await downloadRenders(screenshotNodes.get(index)!, renderUrls, requestSignal, imageBudget), requestSignal));
+          const rendered = renderedNodeIds(screenshotNodes.get(index)!, renderUrls);
+          return withinRequestLimit(await prepareRenders(await downloadRenders(rendered, renderUrls, requestSignal, imageBudget), requestSignal));
         }, deadline, visionBudgetMs, signal);
         const failureAfterRendering = currentSharedFailure();
         if (failureAfterRendering) { fallback(index, failureAfterRendering.reason, failureAfterRendering.retryAfter); continue; }
@@ -344,8 +418,8 @@ async function performIngest(input: IngestBoardInput, options: OperationOptions)
         const reason = classifyVisionFailure(error, stage);
         const retryDelay = reason !== "payment" && (error instanceof FigmaApiError || error instanceof LlmRequestError) ? error.retryAfter : undefined;
         const retryAfter = retryDelay && Number.isFinite(retryDelay) && retryDelay > 0
-          ? Date.now() + retryDelay * 1000 : reason === "rate_limit" ? Date.now() + 60_000 : undefined;
-        if (reason === "rate_limit" || reason === "config" || reason === "auth" || reason === "payment" || reason === "base_url") sharedFailure = { reason, retryAfter };
+          ? Date.now() + retryDelay * 1000 : reason === "rate_limit" || reason === "figma_rate_limit" ? Date.now() + 60_000 : undefined;
+        if (STOPPING_REASONS.has(reason)) sharedFailure = { reason, retryAfter };
         fallback(index, reason, retryAfter);
         console.error(`Vision refinement incomplete (${reason}); original sources are retained.`);
       } finally {
@@ -354,7 +428,7 @@ async function performIngest(input: IngestBoardInput, options: OperationOptions)
     }
   }
   try { await Promise.all(Array.from({ length: Math.min(concurrency, visionQueue.length) }, worker)); }
-  finally { clearTimeout(renderPhaseTimer); renderPhase.abort(); }
+  finally { clearTimeout(renderPhaseTimer); fallbackBatches.forEach(batch => batch.dispose()); renderPhase.abort(); }
   signal?.throwIfAborted();
   const finalClusters = mapClustersToPhases(labelDeterministicClusters(refined, clusterNodesByIndex, nodes),
     input.docStructureHint, input.customPhases);
@@ -411,17 +485,27 @@ function ingestResult(board: BoardData, contentChanged?: boolean, historyReset =
 }
 
 type VisionStage = "render" | "model";
-type VisionFallbackReason = "config" | "base_url" | "auth" | "payment" | "rate_limit" | "timeout" | "invalid_reply"
-  | "download_budget" | "render_failed" | "model_failed" | "time_budget";
+type VisionFallbackReason = "config" | "base_url" | "auth" | "figma_auth" | "payment" | "rate_limit" | "figma_rate_limit" | "timeout"
+  | "figma_timeout" | "invalid_reply" | "download_budget" | "render_failed" | "render_unavailable" | "model_failed" | "time_budget";
+
+/** Failures that every further image request of this ingest would repeat. */
+const STOPPING_REASONS: ReadonlySet<VisionFallbackReason> = new Set(["rate_limit", "figma_rate_limit", "config", "auth", "figma_auth", "payment", "base_url"]);
 
 function classifyVisionFailure(error: unknown, stage: VisionStage): VisionFallbackReason {
   if (error instanceof LLMConfigurationError) return "config";
   if (error instanceof FigmaDownloadBudgetError) return "download_budget";
-  if (error instanceof VisionDeadlineExceededError || error instanceof FigmaTimeoutError || error instanceof LlmTimeoutError) return "timeout";
+  if (error instanceof FigmaRenderUnavailableError) return "render_unavailable";
+  // A deadline that expires while rendering or downloading ends a Figma step, one in the model step a model request.
+  if (error instanceof FigmaTimeoutError || (error instanceof VisionDeadlineExceededError && stage === "render")) return "figma_timeout";
+  if (error instanceof VisionDeadlineExceededError || error instanceof LlmTimeoutError) return "timeout";
   if (error instanceof LlmUnusableReplyError) return "invalid_reply";
   if (error instanceof LlmBaseUrlError) return "base_url";
   if (error instanceof LlmRequestError && error.status === 402) return "payment";
-  if (error instanceof FigmaApiError || error instanceof LlmRequestError) {
+  if (error instanceof FigmaApiError) {
+    if (error.status === 429) return "figma_rate_limit";
+    if (error.status === 401 || error.status === 403) return "figma_auth";
+  }
+  if (error instanceof LlmRequestError) {
     if (error.status === 429) return "rate_limit";
     if (error.status === 401 || error.status === 403) return "auth";
   }
@@ -475,6 +559,13 @@ export function parseFigmaFileKey(url: string): string {
     throw new Error(`Invalid Figma URL — ${FIGMA_URL_HINT}.`);
   }
   return fileKey;
+}
+
+/** The nodes Figma rendered; a cluster uses those and fails only when Figma rendered none of them. */
+function renderedNodeIds(nodeIds: string[], renderUrls: RenderUrls): string[] {
+  const rendered = nodeIds.filter(id => renderUrls[id]);
+  if (!rendered.length) throw new FigmaRenderUnavailableError();
+  return rendered;
 }
 
 /** Chooses which cluster members to render (see MAX_SCREENSHOTS_PER_CLUSTER). */
@@ -707,7 +798,10 @@ function canReusePrevious(
   previous: RefinedCluster,
   clusterNodes: NormalizedNode[],
   ingestMode: IngestMode,
+  forced = false,
 ): boolean {
+  // Figma could not render these elements; unchanged content would fail again, so only forceFullIngest asks again.
+  if (previous.incomplete && previous.fallbackReason === "render_unavailable") return !forced && shouldUseVision(clusterNodes, ingestMode);
   if (previous.incomplete) return shouldUseVision(clusterNodes, ingestMode)
     && previous.retryAfter !== undefined && previous.retryAfter > Date.now();
   if (previous.summarySource === "vision_llm") {
@@ -940,12 +1034,14 @@ function describeFocus(focus: IngestFocusReport, ingestMode?: IngestMode): strin
 function describeFallbackReasons(reasons?: Record<string, number>): string {
   const labels: Record<string, string> = {
     time_budget: "the time for images in this run ran out", vision_budget: "the time for images in an earlier run ran out",
-    timeout: "the model did not answer in time", config: "the model settings are missing or invalid",
+    timeout: "the model did not answer in time", figma_timeout: "Figma did not answer in time",
+    config: "the model settings are missing or invalid",
     base_url: "LLM_BASE_URL does not lead to a reachable OpenAI-compatible API",
-    auth: "Figma or the model provider denied access", rate_limit: "the model provider's rate limit was reached",
+    auth: "the model provider denied access (LLM_API_KEY)", figma_auth: "Figma denied access (FIGMA_ACCESS_TOKEN)",
+    rate_limit: "the model provider's rate limit was reached", figma_rate_limit: "Figma's rate limit was reached",
     payment: "the model provider requires payment or more credits",
-    invalid_reply: "the model's reply was unusable", download_budget: "the images were too large to download",
-    render_failed: "Figma could not provide the images", model_failed: "the model request failed",
+    invalid_reply: "the model's reply was unusable", download_budget: `the images of this ingest exceeded the ${INGEST_IMAGE_MAX_BYTES / 1024 / 1024} MiB download budget`,
+    render_failed: "Figma could not provide the images", render_unavailable: "Figma cannot render these elements", model_failed: "the model request failed",
     vision_failed: "an earlier run failed without a recorded cause", unknown: "the cause was not recorded",
   };
   const counted = Object.entries(reasons ?? {}).filter(([, count]) => count > 0);
@@ -954,17 +1050,33 @@ function describeFallbackReasons(reasons?: Record<string, number>): string {
   return counted.map(([reason, count]) => `${labels[reason] ?? labels.unknown} (${count} cluster${count === 1 ? "" : "s"})`).join("; ");
 }
 
+/** Reasons that a new run repeats until a setting, key, token or plan is changed. */
+const NEEDS_CHANGE_REASONS: ReadonlySet<string> = new Set(["config", "auth", "figma_auth", "payment", "base_url"]);
+
 function describeNextSteps(report: IngestQualityReport): string {
   const reasons = report.fallbackReasons ?? {};
   const instructions: string[] = [];
   if (reasons.config) instructions.push(`${missingLlmConfigurationMessage() ?? llmBaseUrlProblem() ?? "Check the model settings."} diagnose_llm_config can test the configured model provider.`);
   if (reasons.base_url) instructions.push("Check LLM_BASE_URL, then run diagnose_llm_config.");
-  if (reasons.auth) instructions.push("Check Figma and model-provider access permissions; diagnose_llm_config can test the configured model provider.");
+  if (reasons.auth) instructions.push("Check LLM_API_KEY and the key's access to the configured models; diagnose_llm_config can test the configured model provider.");
+  if (reasons.figma_auth) instructions.push("Check FIGMA_ACCESS_TOKEN: it needs the scope file_content:read, and its account must be able to open the file.");
   if (reasons.payment) instructions.push("Add credits or raise the API key's credit limit at the model provider, or choose a free model; diagnose_llm_config can test the configured model provider.");
-  if (report.nextRetryAt) instructions.push(`Retry after ${new Date(report.nextRetryAt).toISOString()} for the pending provider cooldown.`);
-  instructions.push(reasons.time_budget || reasons.vision_budget
-    ? "Run ingest_board again to continue the remaining visual interpretation; finished clusters are reused."
-    : "Run ingest_board again to retry pending work; successful interpretations are kept.");
-  if (!report.focus) instructions.push("To interpret the images of particular sections first, pass their section IDs as focusNodeIds.");
-  return ` ${instructions.join(" ")}`;
+  if (report.nextRetryAt) {
+    const wait = `Retry after ${describeWaitUntil(report.nextRetryAt)}`;
+    instructions.push(reasons.figma_rate_limit && reasons.rate_limit
+      ? `${wait}, the earlier of both cooldowns: Figma limits requests by seat and plan, and the model provider has its own limit.`
+      : reasons.figma_rate_limit ? `${wait}: Figma limits requests by seat and plan; View and Collab seats are limited most strictly.`
+      : `${wait} for the pending provider cooldown.`);
+  } else if (reasons.figma_rate_limit) instructions.push("Figma limits requests by seat and plan; wait until its limit resets.");
+  // A new run helps without any change when a reason is transient; a rate limit counts once its time has passed.
+  const present = Object.entries(reasons).filter(([, count]) => count > 0).map(([reason]) => reason);
+  if (present.some(reason => !NEEDS_CHANGE_REASONS.has(reason) && reason !== "render_unavailable")) {
+    instructions.push(reasons.time_budget || reasons.vision_budget
+      ? "Run ingest_board again to continue the remaining visual interpretation; finished clusters are reused."
+      : "Run ingest_board again to retry pending work; successful interpretations are kept.");
+  } else if (present.some(reason => NEEDS_CHANGE_REASONS.has(reason))) {
+    instructions.push("After that, run ingest_board again; finished clusters are kept.");
+  }
+  if (!report.focus && instructions.length) instructions.push("To interpret the images of particular sections first, pass their section IDs as focusNodeIds.");
+  return instructions.length ? ` ${instructions.join(" ")}` : "";
 }

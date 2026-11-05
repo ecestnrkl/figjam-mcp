@@ -34,15 +34,27 @@ cause. Original text and table rows stay searchable in every case.
 | Reason | Meaning | What to do |
 | --- | --- | --- |
 | `time_budget` | Not started before the vision deadline | Run `ingest_board` again |
-| `timeout` | A Figma or model request ran past its deadline | Run again or choose a faster model |
-| `rate_limit` | Figma or the provider returned 429 | Wait until `qualityReport.nextRetryAt` |
+| `timeout` | A model request ran past its deadline | Run again or choose a faster model |
+| `figma_timeout` | A Figma request or download ran past its deadline, or the time for images ended while rendering | Run again; raise `FIGMA_REQUEST_TIMEOUT_MS` if it repeats |
+| `rate_limit` | The model provider returned 429 | Wait until `qualityReport.nextRetryAt` |
+| `figma_rate_limit` | Figma returned 429 for the image fills or a render; Figma limits requests by seat and plan, and View and Collab seats can wait weeks | Wait until `qualityReport.nextRetryAt` (from Figma's `Retry-After`); no further image requests are sent in this run |
 | `config` | `LLM_BASE_URL` or `LLM_API_KEY` missing or invalid | Fix the named setting, then restart the server |
 | `base_url` | `LLM_BASE_URL` leads to no reachable OpenAI-compatible API: no connection, a wrong path, or an HTTP 200 body that is no JSON object | Check `LLM_BASE_URL`, then run `diagnose_llm_config`; no further image requests are sent |
-| `auth` | Figma or the provider rejected the credentials | Check the token, scopes and file access |
+| `auth` | The model provider rejected `LLM_API_KEY` | Check the key and its access to the configured models; run `diagnose_llm_config` |
+| `figma_auth` | The Figma API answered 401 or 403 for the image fills or a render request | Check `FIGMA_ACCESS_TOKEN`: scope `file_content:read`, and its account must be able to open the file; no further image requests are sent in this run |
 | `payment` | The model provider returned HTTP 402 (payment or more credits required) | Add credits, raise the API key's credit limit, or choose a free model |
 | `invalid_reply` | The model returned no usable reply: no JSON, empty text, no `choices`, a refusal, a content-filter block, a reply cut off at `max_tokens` before any text, only reasoning, or a tool call | Choose another model; for a cut-off reply raise `LLM_VISION_MAX_OUTPUT_TOKENS` |
-| `render_failed`, `download_budget` | Figma could not list the image fills or render the nodes, or images exceeded 64 MiB per ingest | Ingest again later or split the board |
+| `render_failed` | Figma could not list the image fills or render the nodes, or the download of a rendered image failed (any status except 429; these links are loaded without the token, so only this cluster is affected) | Ingest again later |
+| `download_budget` | The images of this ingest together exceeded the 64 MiB download budget | Run `ingest_board` again: the next ingest continues with the clusters left; or split the board |
+| `render_unavailable` | Figma returned no image URL for any element of the cluster; it cannot render them. A cluster with at least one rendered element is interpreted from it | Nothing to retry: later ingests keep the cluster while its content is unchanged and send no render request; `forceFullIngest: true` asks Figma again. Its text stays searchable |
 | `model_failed` | Any other model error | Run `diagnose_llm_config` |
+
+The summary says "Run ingest_board again to retry pending work" only for reasons
+that a new run can resolve unchanged (`time_budget`, `timeout`, `figma_timeout`,
+`render_failed`, `model_failed`, `invalid_reply`, `download_budget`, and the
+rate limits after the named time). For `config`, `auth`, `figma_auth`, `payment`
+and `base_url` it names the change first and ends with "After that, run
+ingest_board again; finished clusters are kept."
 
 ## MCP Inspector
 
@@ -93,8 +105,11 @@ configuration, then restart the server in the client.
 | `FIGJAM_MCP_ENV_FILE could not load "/path": ENOENT.` | Check the configured path and file permissions (`EACCES` means access denied). The server keeps running; missing-credential errors include this load failure. |
 | `Invalid Figma URL — Expected a Figma URL like https://www.figma.com/board/<file_key>/<name> …` | Pass the board URL from the browser, e.g. `https://www.figma.com/board/FILE_KEY/Name`. |
 | `Figma access denied (403). Check FIGMA_ACCESS_TOKEN: …` | The token is invalid or expired, lacks `file_content:read`, or its account cannot open the file. The same applies to 401. |
-| `Figma file not found (404): …` | Check the file key; the token's account must have access. |
-| `Figma API rate limit exceeded (429). …` | Figma limits requests by seat and plan; see [rate limits](https://developers.figma.com/docs/rest-api/rate-limits/). `max_speed` makes no image requests; the other modes need one image fills request per ingest and renders only for drawings without an image. |
+| `Figma file not found (404): …` | Check the file key in the board URL. Figma also answers 404 when the account of `FIGMA_ACCESS_TOKEN` cannot open the file, typically a company board with a personal token: use a token of an account with access. |
+| `Figma API rate limit exceeded (429). Retry after 2026-11-10 02:00 UTC (in about 5 days). …` | Figma limits requests by seat and plan; View and Collab seats have the lowest limits, see [rate limits](https://developers.figma.com/docs/rest-api/rate-limits/). A wait up to 120 s is shown in seconds, a longer one as a UTC time (from `Retry-After`, in seconds or as an HTTP date). The request is not repeated. `max_speed` makes no image requests; the other modes need one image fills request per ingest and render only drawings without an image and images without a usable original, bundled up to 18 nodes per request. |
+| `Figma is not available right now (HTTP 503, repeated once). …` | Figma answered HTTP 500, 502, 503 or 504 twice: the server repeats the request once after 2 s (or after `Retry-After` up to 5 s). Try again in a few minutes; status.figma.com shows outages. |
+| `Figma rejected the request (HTTP 400): …` | Any other 4xx; the text is Figma's own `err` or `message`, shortened. The request is not repeated. |
+| `Figma sent an unreadable response: it was HTML, not JSON, … ` | The answer was HTML (a proxy or login page), no JSON, empty, cut off, or held no `document`. The message names which one. Check the network or proxy, then try again. |
 | `Figma download exceeds the configured byte budget` | The board's file data is larger than 64 MiB. Split the board into smaller files. |
 | `LLM_BASE_URL and LLM_API_KEY are not set. …` | Set `LLM_API_KEY` and `LLM_BASE_URL` in the client's `env` and restart. A Figma token does not replace the provider key. |
 | `LLM_BASE_URL must be an absolute http or https URL of the API root, without /chat/completions, …` | Use the API root, for example `https://openrouter.ai/api/v1`, with the scheme and without `/chat/completions`; the SDK adds that path. The value itself is never printed. |

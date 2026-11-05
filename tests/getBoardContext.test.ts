@@ -674,6 +674,22 @@ describe("getBoardContext response size", () => {
     expect(topic.text).not.toContain("read sections by ID instead");
   });
 
+  it("marks the placeholder of a cluster without text as generated, not as a model interpretation", async () => {
+    const data = evidenceBoard("Placeholder123", [{ ...textNode("1:1", ""), name: "Drawing", type: "SHAPE_WITH_TEXT" }]);
+    data.clusters[0]!.summary = "Cluster contains 2 board elements with 0 extracted text items. No readable text was extracted from this cluster.";
+    setBoard(data.boardId, data);
+    for (const request of [{ boardId: data.boardId }, { boardId: data.boardId, topic: "board elements" }, { boardId: data.boardId, nodeIds: ["1:1"] }]) {
+      const { text, structuredContent: output } = await getBoardContext(request);
+      const placeholder = output.evidence.find(item => item.sourceType === "cluster_summary");
+      expect(placeholder, JSON.stringify(request)).toMatchObject({ modelDerived: true });
+      expect(text).toMatch(/GENERATED PLACEHOLDER, no model/);
+      expect(text).not.toMatch(/MODEL INTERPRETATION/);
+      expect(text).toContain("Model interpretations and generated placeholders are marked.");
+    }
+    const detail = await getBoardContext({ boardId: data.boardId, nodeIds: ["1:1"] });
+    expect(detail.text).toContain("GENERATED PLACEHOLDER, no model — verify against original");
+  });
+
   it("does not repeat node names that open the text and keeps model interpretations marked", async () => {
     const data = largeBoard("Names123", 3, 4, 1);
     data.clusters[1]!.summarySource = "vision_llm";

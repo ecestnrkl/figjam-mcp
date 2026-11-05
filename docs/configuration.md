@@ -149,7 +149,7 @@ deferred by the budget go before clusters that failed. Raise
   request per ingest. Other clusters, and image nodes whose original is missing,
   malformed, above 8 MiB or 40 megapixels, a GIF or WebP above 1,024 px, or in
   another format than PNG, JPEG, GIF or WebP, are rendered by Figma in requests of
-  up to 18 nodes (8 MiB each).
+  up to 18 nodes (8 MiB each); fallback renders of several image clusters share requests.
 - Vision text per cluster: 160 nodes and 24,000 characters (300 per node).
   Groups of more than 250 nodes are split before vision.
 - `get_board_context`: default `detail: "auto"` uses compact source-ID lines for
