@@ -18,27 +18,33 @@
       "environmentVariables": [
         {
           "name": "FIGMA_ACCESS_TOKEN",
-          "description": "Figma token with file_content:read; file_metadata:read also enables cheap freshness checks.",
+          "description": "Figma personal access token with file_content:read; ingest_board reads the board with it.",
           "isSecret": true,
-          "isRequired": false,
+          "isRequired": true,
           "format": "string"
         },
         {
           "name": "LLM_API_KEY",
-          "description": "Key for the configured OpenAI-compatible provider; required for vision and answers.",
+          "description": "API key of the OpenAI-compatible provider in LLM_BASE_URL. Needed with LLM_BASE_URL for image interpretation and answers; a local server without sign-in needs any non-empty value.",
           "isSecret": true,
           "isRequired": false,
           "format": "string"
         },
         {
           "name": "LLM_BASE_URL",
-          "description": "Explicit OpenAI-compatible provider base URL; .env.example uses OpenRouter.",
+          "description": "API root of an OpenAI-compatible provider, for example https://openrouter.ai/api/v1. Needed with LLM_API_KEY for image interpretation and answers.",
           "format": "string",
           "isRequired": false
         },
         {
           "name": "FIGJAM_MCP_CACHE_DIR",
           "description": "Private local cache root; v4 snapshots are stored in a subdirectory.",
+          "format": "string",
+          "isRequired": false
+        },
+        {
+          "name": "FIGJAM_MCP_ENV_FILE",
+          "description": "Absolute path of an env file to load; variables already set win. The server does not read a .env from its working directory.",
           "format": "string",
           "isRequired": false
         }
