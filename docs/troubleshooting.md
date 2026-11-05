@@ -47,6 +47,13 @@ cause. Original text and table rows stay searchable in every case.
 | `render_failed`, `download_budget` | Figma could not list the image fills or render the nodes, or images exceeded 64 MiB per ingest | Ingest again later or split the board |
 | `model_failed` | Any other model error | Run `diagnose_llm_config` |
 
+The summary says "Run ingest_board again to retry pending work" only for reasons
+that a new run can resolve unchanged (`time_budget`, `timeout`, `figma_timeout`,
+`render_failed`, `model_failed`, `invalid_reply`, `download_budget`, and the
+rate limits after the named time). For `config`, `auth`, `figma_auth`, `payment`
+and `base_url` it names the change first and ends with "After that, run
+ingest_board again; finished clusters are kept."
+
 ## MCP Inspector
 
 `inspector.config.json` starts the local source with `requestTimeout: 180000`

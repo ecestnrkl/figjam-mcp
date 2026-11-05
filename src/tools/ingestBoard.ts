@@ -966,6 +966,9 @@ function describeFallbackReasons(reasons?: Record<string, number>): string {
   return counted.map(([reason, count]) => `${labels[reason] ?? labels.unknown} (${count} cluster${count === 1 ? "" : "s"})`).join("; ");
 }
 
+/** Reasons that a new run repeats until a setting, key, token or plan is changed. */
+const NEEDS_CHANGE_REASONS: ReadonlySet<string> = new Set(["config", "auth", "figma_auth", "payment", "base_url"]);
+
 function describeNextSteps(report: IngestQualityReport): string {
   const reasons = report.fallbackReasons ?? {};
   const instructions: string[] = [];
@@ -981,9 +984,15 @@ function describeNextSteps(report: IngestQualityReport): string {
       : reasons.figma_rate_limit ? `${wait}: Figma limits requests by seat and plan; View and Collab seats are limited most strictly.`
       : `${wait} for the pending provider cooldown.`);
   } else if (reasons.figma_rate_limit) instructions.push("Figma limits requests by seat and plan; wait until its limit resets.");
-  instructions.push(reasons.time_budget || reasons.vision_budget
-    ? "Run ingest_board again to continue the remaining visual interpretation; finished clusters are reused."
-    : "Run ingest_board again to retry pending work; successful interpretations are kept.");
-  if (!report.focus) instructions.push("To interpret the images of particular sections first, pass their section IDs as focusNodeIds.");
-  return ` ${instructions.join(" ")}`;
+  // A new run helps without any change when a reason is transient; a rate limit counts once its time has passed.
+  const present = Object.entries(reasons).filter(([, count]) => count > 0).map(([reason]) => reason);
+  if (present.some(reason => !NEEDS_CHANGE_REASONS.has(reason) && reason !== "render_unavailable")) {
+    instructions.push(reasons.time_budget || reasons.vision_budget
+      ? "Run ingest_board again to continue the remaining visual interpretation; finished clusters are reused."
+      : "Run ingest_board again to retry pending work; successful interpretations are kept.");
+  } else if (present.some(reason => NEEDS_CHANGE_REASONS.has(reason))) {
+    instructions.push("After that, run ingest_board again; finished clusters are kept.");
+  }
+  if (!report.focus && instructions.length) instructions.push("To interpret the images of particular sections first, pass their section IDs as focusNodeIds.");
+  return instructions.length ? ` ${instructions.join(" ")}` : "";
 }

@@ -578,7 +578,8 @@ describe("ingestBoard", () => {
     expect(output.qualityReport?.nextRetryAt).toBeUndefined();
     expect(output.summary).toContain("Visual interpretation is incomplete for 10 clusters: the model provider requires payment or more credits.");
     expect(output.summary).toContain("Add credits or raise the API key's credit limit at the model provider, or choose a free model; diagnose_llm_config can test the configured model provider.");
-    expect(output.summary).toContain("Run ingest_board again to retry pending work; successful interpretations are kept.");
+    expect(output.summary).toContain("After that, run ingest_board again; finished clusters are kept.");
+    expect(output.summary).not.toContain("Run ingest_board again");
     expect(output.summary).not.toContain("Retry after");
     expect(output.summary).not.toContain("private provider body");
     // Eight workers began; the nine untouched clusters emit no cluster progress.
@@ -1070,6 +1071,42 @@ describe("ingestBoard", () => {
       expect(output.qualityReport?.fallbackReasons).toEqual({ [name]: 8 });
       if (retryAfterMs === undefined) expect(output.qualityReport?.nextRetryAt).toBeUndefined();
       else expect(output.qualityReport?.nextRetryAt).toBeGreaterThanOrEqual(before + retryAfterMs);
+    });
+
+    describe("next steps", () => {
+      /** A previous snapshot whose image clusters wait with the given reasons, so that the ingest reuses them. */
+      function previousWith(reasons: string[]): void {
+        const tree = imageClusterTree(reasons.length);
+        const nodes = flattenNodeTree(tree);
+        fetchFileTreeMock.mockResolvedValueOnce(tree);
+        readLatestBoardMock.mockResolvedValueOnce({ ...cachedBoard(), nodes, clusters: partitionedBoardClusters(nodes).map((cluster, index) => ({
+          ...cluster, label: `Pending ${index}`, summary: "Placeholder.", confirmedNodeIds: [...cluster.nodeIds], summarySource: "deterministic" as const,
+          incomplete: true, fallbackReason: reasons[index], retryAfter: Date.now() + 2 * 3600_000 })) });
+      }
+      it.each(["config", "auth", "figma_auth", "payment", "base_url"])("tells to change something first for %s alone", async reason => {
+        previousWith([reason]);
+        const output = await ingestBoard(balanced);
+        expect(output.qualityReport?.fallbackReasons).toEqual({ [reason]: 1 });
+        expect(output.summary).toContain("After that, run ingest_board again; finished clusters are kept.");
+        expect(output.summary).not.toContain("Run ingest_board again");
+      });
+      it.each([
+        ["a transient reason", ["model_failed"]],
+        ["a transient reason beside one that needs a change", ["figma_auth", "render_failed"]],
+        ["a rate limit", ["rate_limit"]],
+        ["a Figma rate limit", ["figma_rate_limit"]],
+        ["an old reason", ["vision_failed"]],
+      ])("says to run again for %s", async (_name, reasons) => {
+        previousWith(reasons);
+        const output = await ingestBoard(balanced);
+        expect(output.summary).toContain("Run ingest_board again to retry pending work; successful interpretations are kept.");
+        expect(output.summary).not.toContain("After that, run ingest_board again");
+      });
+      it("names the time before the rerun for a rate limit", async () => {
+        previousWith(["figma_rate_limit"]);
+        const output = await ingestBoard(balanced);
+        expect(output.summary).toMatch(/Retry after 20\d\d-\d\d-\d\d \d\d:\d\d UTC \(in about 2 hours\): Figma limits requests by seat and plan.* Run ingest_board again/);
+      });
     });
 
     it("reads reasons of older snapshots", async () => {
