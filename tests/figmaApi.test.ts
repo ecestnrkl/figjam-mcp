@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); vi.resetModules(); vi.unstubAllGlobals(); });
 function json(data: unknown): Response { return new Response(JSON.stringify(data)); }
-async function failure(request: Promise<unknown>): Promise<Error & { retryAfter?: number }> {
-  return request.then(() => { throw new Error("expected the request to fail"); }, (error: unknown) => error as Error & { retryAfter?: number });
+async function failure(request: Promise<unknown>): Promise<Error & { retryAfter?: number; retryAt?: number }> {
+  return request.then(() => { throw new Error("expected the request to fail"); }, (error: unknown) => error as Error & { retryAfter?: number; retryAt?: number });
 }
 describe("bounded Figma requests", () => {
   it("wraps response body timeouts", async () => {

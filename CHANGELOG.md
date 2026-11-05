@@ -1,6 +1,9 @@
 # Changelog
 
-## 0.12.0 — Unreleased
+## 0.12.0 — 2026-11-05
+
+- Breaking: the server no longer loads a `.env` from its working directory. Put the variables into the `env` block of the MCP client configuration, or set `FIGJAM_MCP_ENV_FILE` to the file's absolute path; in VS Code's Local harness, `envFile` works too.
+- Content fingerprints use redacted text and hashes no longer depend on locale; the first ingest after this update reinterprets images.
 
 - A key that equals a parameter except for case, `_` or `-` (`ingest_mode`, `node_ids`, `figma_file_url`) ends the call with "did you mean …" before any work; other unknown keys are ignored as before, named without their values in the text and in the new `ignoredArguments` of `structuredContent`.
 - `nodeIds` and `focusNodeIds` read IDs in link form (`5-87`, `5%3A87`, `I5-87%3B1-2`) and Figma links of the board with a `node-id`, name the conversion once, and reject links of another board with both file keys.
@@ -21,11 +24,8 @@
 - Processes sharing a cache refresh boards from the latest saved snapshot before reading from memory.
 - Empty boards are saved as empty snapshots, replacing old content and allowing comparisons with the previous state.
 - Damaged snapshots fall back to readable history with a notice; damaged manifests report a history restart, and cleanup skips damaged entries and removes old temporary files.
-- Startup and environment-file tests run mostly in process, and CI runs once per PR commit.
 - Hidden elements and their descendants are excluded from snapshots, excerpts, search, clusters and image requests.
 - Credential redaction covers qualified labels, next-line values, underscore separators, PIN codes, Zugangscode, Bearer tokens, JWTs and credential-labelled table columns and rows; `Pin: Feature X to the top` remains unchanged.
-- Content fingerprints use redacted text and hashes no longer depend on locale; the first ingest after this update reinterprets images.
-- The server no longer loads a working-directory `.env` automatically; move variables to the MCP client configuration, use `envFile` in VS Code, or set `FIGJAM_MCP_ENV_FILE` to the absolute file path.
 - Messages redact configured credentials, and tokens with invalid HTTP-header characters fail before any request.
 - Environment values are validated when a tool needs them; invalid values do not stop startup, and `max_speed` needs no model configuration.
 - `FIGJAM_MCP_CACHE_DIR` and `FIGJAM_MCP_ENV_FILE` expand a leading `~` or `~/` to the home directory.
