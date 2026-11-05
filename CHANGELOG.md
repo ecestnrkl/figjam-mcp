@@ -2,6 +2,7 @@
 
 ## 0.12.0 — Unreleased
 
+- A key that equals a parameter except for case, `_` or `-` (`ingest_mode`, `node_ids`, `figma_file_url`) ends the call with "did you mean …" before any work; other unknown keys are ignored as before, named without their values in the text and in the new `ignoredArguments` of `structuredContent`.
 - Named enclosing frames and groups become searchable excerpt provenance; generic names and image filenames are omitted, and nonempty frames and groups no longer produce name excerpts.
 - Model-generated cluster labels are marked in context and answer prompts, and answer source locations use sections or frames.
 - Full context quotes each excerpt text line, and names are flattened to one line in readable output and answer prompts.

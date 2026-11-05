@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { figmaFileKeySchema, questionSchema } from "./common.js";
+import { figmaFileKeySchema, ignoredArgumentsShape, questionSchema } from "./common.js";
 
 /**
  * answer_from_board — answers a free-form question about a previously
@@ -29,6 +29,7 @@ export const answerFromBoardOutputShape = {
     pageId: z.string().optional(), sectionIds: z.array(z.string()).optional(),
     row: z.number().optional(), column: z.number().optional(),
   })),
+  ...ignoredArgumentsShape,
 };
 
 export const answerFromBoardOutputSchema = z.object(answerFromBoardOutputShape);

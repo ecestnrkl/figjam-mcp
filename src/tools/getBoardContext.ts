@@ -85,7 +85,7 @@ const EVIDENCE_POINTER = "Excerpts are in evidence, cluster by cluster; location
  * JSON.stringify(structuredContent), so each carries the excerpt text once and
  * maxChars bounds each of them.
  */
-export async function getBoardContext(input: GetBoardContextInput): Promise<BoardContextResult> {
+export async function getBoardContext(input: GetBoardContextInput, extra: { notices?: string[] } = {}): Promise<BoardContextResult> {
   // Also validate cross-field rules here: MCP registration receives a raw field shape.
   const options = getBoardContextInputSchema.parse(input);
   const cursor = options.cursor ? decodeCursor(options.cursor) : undefined;
@@ -103,7 +103,7 @@ export async function getBoardContext(input: GetBoardContextInput): Promise<Boar
   const readWarning = getBoardReadWarning(stored);
   const emptyNotice = board.clusters.length === 0 && retrieveEvidence(board).evidence.length === 0
     ? "The board contains no readable content." : undefined;
-  const notices = [readWarning, emptyNotice].filter((notice): notice is string => Boolean(notice));
+  const notices = [readWarning, emptyNotice, ...(extra.notices ?? [])].filter((notice): notice is string => Boolean(notice));
   const retrieved = retrieveEvidence(board, {
     query: options.topic, nodeIds: options.nodeIds, outsideSections: options.outsideSections,
     includeNeighbors: Boolean(options.topic), neighborLimit: 6,

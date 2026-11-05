@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { figmaFileKeySchema } from "./common.js";
+import { figmaFileKeySchema, ignoredArgumentsShape } from "./common.js";
 
 /**
  * diff_board — compares the two most recent ingest snapshots of a board
@@ -92,6 +92,7 @@ export const diffBoardOutputShape = {
   addedConnectionsOmitted: z.number().int().positive().optional().describe("Added connections beyond the first 50"),
   removedConnectionsOmitted: z.number().int().positive().optional().describe("Removed connections beyond the first 50"),
   tableCellChangesOmitted: z.number().int().positive().optional().describe("Table cell changes beyond the first 50"),
+  ...ignoredArgumentsShape,
 };
 
 export const diffBoardOutputSchema = z.object(diffBoardOutputShape);

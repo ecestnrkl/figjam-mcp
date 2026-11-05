@@ -1424,4 +1424,28 @@ describe("getBoardContext tables", () => {
       cursor: (await getBoardContext({ boardId: data.boardId, topic: "budget", limit: 2 })).structuredContent.nextCursor });
     expect(second.text).toMatch(/\] row 0: Item \| Owner\n\[ev_[a-f0-9]+\] row 3: Budget approval \| Linus/);
   });
+
+  function sectionBoard(boardId: string) {
+    const data = evidenceBoard(boardId, [
+      { ...textNode("5:87", "Pain point: onboarding takes too long."), sectionIds: ["5:8"] },
+      { ...textNode("5:90", "Pain point: reports are slow."), sectionIds: ["5:8"] },
+      { ...textNode("6:1", "Idea: a checklist."), sectionIds: ["6:0"] },
+    ]);
+    data.nodes.push({ ...textNode("5:8", ""), name: "Pain points", type: "SECTION", sectionIds: [] },
+      { ...textNode("6:0", ""), name: "Ideas", type: "SECTION", sectionIds: [] });
+    setBoard(data.boardId, data);
+    return data;
+  }
+
+  describe("notices of the server", () => {
+    it("puts extra notices into the text and into contextText within maxChars", async () => {
+      const data = sectionBoard("Extra123");
+      const sentence = "Ignored unknown argument foo; get_board_context takes boardId, topic.";
+      const result = await getBoardContext({ boardId: data.boardId, maxChars: 2000 }, { notices: [sentence] });
+      expect(result.text).toContain(sentence);
+      expect(result.structuredContent.contextText).toContain(sentence);
+      expect(result.text.length).toBeLessThanOrEqual(2000);
+      expect(JSON.stringify(result.structuredContent).length).toBeLessThanOrEqual(2000);
+    });
+  });
 });

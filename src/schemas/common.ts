@@ -72,3 +72,9 @@ export const topicSchema = z
   .trim()
   .min(1, "topic must not be empty")
   .max(200, "topic must be at most 200 characters");
+
+/** Output field of all tools: the unknown input keys that were dropped (never their values). */
+export const ignoredArgumentsShape = {
+  ignoredArguments: z.array(z.string()).optional()
+    .describe("Unknown input keys that were ignored; their values are not echoed. Absent when none"),
+};

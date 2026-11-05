@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { ignoredArgumentsShape } from "./common.js";
 
 export const diagnoseLlmConfigInputShape = {};
 
@@ -25,6 +26,7 @@ export const diagnoseLlmConfigOutputShape = {
     }),
   ),
   summary: z.string(),
+  ...ignoredArgumentsShape,
 };
 
 export const diagnoseLlmConfigOutputSchema = z.object(diagnoseLlmConfigOutputShape);

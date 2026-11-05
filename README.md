@@ -202,6 +202,12 @@ its Figma link with the same `boardId` and `snapshotId`, the line's ID in
 Everything that lies in no section, such as loose notes and tables, comes with
 `outsideSections: true`.
 
+Inputs are read as hosts and users send them. A key that differs from a parameter only in
+case, `_` or `-` (`ingest_mode`, `node_ids`) ends the call with
+"did you mean …" before anything is done; any other unknown key is ignored and
+named, without its value, in the text and in `ignoredArguments` of
+`structuredContent`.
+
 All settings: [configuration](https://github.com/ecestnrkl/figjam-mcp/blob/main/docs/configuration.md).
 Problems: [troubleshooting](https://github.com/ecestnrkl/figjam-mcp/blob/main/docs/troubleshooting.md).
 

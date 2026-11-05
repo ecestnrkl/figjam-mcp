@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { figmaFileKeySchema, topicSchema } from "./common.js";
+import { figmaFileKeySchema, ignoredArgumentsShape, topicSchema } from "./common.js";
 
 /**
  * get_board_context — returns readable source excerpts as text content and the
@@ -131,6 +131,7 @@ export const getBoardContextOutputShape = {
     .array(clusterRelationContextSchema)
     .optional()
     .describe("Cluster-to-cluster relations derived from connector arrows"),
+  ...ignoredArgumentsShape,
 };
 
 export const getBoardContextOutputSchema = z.object(getBoardContextOutputShape);
