@@ -276,8 +276,9 @@ larger ones are scaled down locally.
   most 20 per month. Every `ingest_board` call is one file download, so a View or
   Collab seat allows about 20 ingests a month. Images come from the image fills instead, Tier 2 with at
   least 5 requests per minute, in one request per ingest. Renders are left for
-  drawings without an image and as a fallback for single images; one render
-  request covers up to 18 nodes. `max_speed` needs neither.
+  drawings without an image and as a fallback for images without a usable original;
+  renders of several clusters share requests of up to 18 nodes, so 30 image clusters
+  without image fills need 2 render requests. `max_speed` needs neither.
 - `LLM_BASE_URL` takes any OpenAI-compatible endpoint; for paid models, set
   `LLM_TEXT_MODELS`, `LLM_FAST_TEXT_MODELS` and `LLM_VISION_MODELS`, for example
   all three to `openai/gpt-4.1-mini` (provider charges apply).

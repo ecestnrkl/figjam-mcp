@@ -76,6 +76,11 @@ export function getVisionConcurrency(): number {
  * request timeout. Larger batches would delay every vision call of the ingest.
  */
 const MAX_RENDER_BATCH_NODES = 18;
+/**
+ * A render request for image nodes waits this long after its first node is needed. Nodes whose original proves
+ * unusable only while downloading (403, 404, damaged) arrive from several workers within moments and share the request.
+ */
+const FALLBACK_RENDER_WINDOW_MS = 25;
 
 /**
  * ingest_board — full pipeline: fetch the Figma file, flatten + filter the
@@ -254,12 +259,73 @@ async function performIngest(input: IngestBoardInput, options: OperationOptions)
     if (batch < plannedBatches && !renderRequests[batch] && !sharedFailure &&
       hasVisionBudget(deadline, requiredSlotMs(clusterDurations, minVisionSlotMs))) void renderBatch(batch);
   };
+  /**
+   * Nodes of image clusters that a render must replace (no image fill, or an original that cannot be used) are rendered in
+   * bundles of at most MAX_RENDER_BATCH_NODES, like the screenshots of other clusters. Nodes without an image fill are
+   * assigned to batches as soon as the fills are known; a batch is sent shortly after its first node is needed, so that
+   * nodes that turn out unusable while downloading can still join it.
+   */
+  interface FallbackRenderBatch { ids: string[]; urls: Promise<RenderUrls>; started: boolean; demand(): void; start(): void; dispose(): void }
+  const fallbackBatchOfNode = new Map<string, FallbackRenderBatch>();
+  const fallbackBatches: FallbackRenderBatch[] = [];
+  const newFallbackBatch = (): FallbackRenderBatch => {
+    const ids: string[] = [];
+    let timer: NodeJS.Timeout | undefined;
+    let settle!: { resolve: (urls: RenderUrls) => void; reject: (error: unknown) => void };
+    const urls = new Promise<RenderUrls>((resolve, reject) => { settle = { resolve, reject }; });
+    urls.catch(() => undefined);
+    const batch: FallbackRenderBatch = { ids, urls, started: false,
+      demand() {
+        if (batch.started) return;
+        if (ids.length >= MAX_RENDER_BATCH_NODES) batch.start();
+        else timer ??= setTimeout(() => batch.start(), FALLBACK_RENDER_WINDOW_MS);
+      },
+      start() {
+        if (batch.started) return;
+        batch.started = true;
+        clearTimeout(timer);
+        figmaRequests.renders++;
+        (async () => fetchRenderUrls(fileKey, ids, token!, renderSignal))().then(settle.resolve, settle.reject);
+      },
+      dispose() { clearTimeout(timer); } };
+    fallbackBatches.push(batch);
+    return batch;
+  };
+  const requestFallbackRenders = (ids: string[]): Promise<RenderUrls> => {
+    const batches = new Set<FallbackRenderBatch>();
+    for (const id of ids) {
+      let batch = fallbackBatchOfNode.get(id);
+      if (!batch) {
+        batch = fallbackBatches.find(candidate => !candidate.started && candidate.ids.length < MAX_RENDER_BATCH_NODES) ?? newFallbackBatch();
+        batch.ids.push(id);
+        fallbackBatchOfNode.set(id, batch);
+      }
+      batches.add(batch);
+    }
+    batches.forEach(batch => batch.demand());
+    return Promise.all([...batches].map(batch => batch.urls)).then(all => Object.assign({}, ...all) as RenderUrls);
+  };
+  /** Assigns all image nodes without an image fill to batches, in queue order; clusters the budget may not reach batch apart. */
+  const planFallbackRenders = (fills: Record<string, string>) => {
+    if (sharedFailure || !hasVisionBudget(deadline, minVisionSlotMs)) return;
+    let current: { batch: FallbackRenderBatch; planned: boolean } | undefined;
+    visionQueue.forEach((index, position) => {
+      const planned = position < plannedClusters;
+      for (const node of imageNodes.get(index) ?? []) {
+        if (fills[node.imageRef!]) continue;
+        if (!current || current.batch.ids.length >= MAX_RENDER_BATCH_NODES || current.planned !== planned) current = { batch: newFallbackBatch(), planned };
+        current.batch.ids.push(node.id);
+        fallbackBatchOfNode.set(node.id, current.batch);
+      }
+    });
+  };
   // One image fills request (Tier 2) serves every image cluster of the ingest.
   let imageFillsRequest: Promise<Record<string, string>> | undefined;
   const imageFills = (): Promise<Record<string, string>> => {
     if (!imageFillsRequest) {
       figmaRequests.imageFills++;
       imageFillsRequest = fetchImageRefs(fileKey, token!, renderSignal);
+      imageFillsRequest.then(planFallbackRenders, () => undefined);
       imageFillsRequest.catch(() => undefined);
     }
     return imageFillsRequest;
@@ -298,8 +364,7 @@ async function performIngest(input: IngestBoardInput, options: OperationOptions)
     const renderIds = nodes.filter((_node, position) => "fallback" in originals[position]!).map(node => node.id);
     const renders = new Map<string, Buffer | undefined>();
     if (renderIds.length) {
-      figmaRequests.renders++;
-      const renderUrls = await fetchRenderUrls(fileKey, renderIds, token!, requestSignal);
+      const renderUrls = await requestFallbackRenders(renderIds);
       (await prepareRenders(await downloadRenders(renderIds, renderUrls, requestSignal, imageBudget), requestSignal))
         .forEach((image, position) => renders.set(renderIds[position]!, image));
     }
@@ -355,7 +420,7 @@ async function performIngest(input: IngestBoardInput, options: OperationOptions)
     }
   }
   try { await Promise.all(Array.from({ length: Math.min(concurrency, visionQueue.length) }, worker)); }
-  finally { clearTimeout(renderPhaseTimer); renderPhase.abort(); }
+  finally { clearTimeout(renderPhaseTimer); fallbackBatches.forEach(batch => batch.dispose()); renderPhase.abort(); }
   signal?.throwIfAborted();
   const finalClusters = mapClustersToPhases(labelDeterministicClusters(refined, clusterNodesByIndex, nodes),
     input.docStructureHint, input.customPhases);

@@ -893,6 +893,44 @@ describe("ingestBoard", () => {
       expect(output.qualityReport).toMatchObject({ visionClusters: 1, figmaRequests: { imageFills: 1, renders: 1 } });
     });
 
+    it.each([[30, [12, 18]], [40, [12, 18, 10]], [3, [3]]])("renders the nodes of %i image clusters without image fills in bundles of at most 18 nodes", async (count, sizes) => {
+      fetchFileTreeMock.mockResolvedValueOnce(treeWith(Array.from({ length: count }, (_, index) => imageNode(`image:${index}`, `ref-${index}`, index * 1000))));
+      fetchImageRefsMock.mockResolvedValueOnce({});
+      const output = await ingestBoard(balanced);
+      expect(fetchRenderUrlsMock.mock.calls.map(call => (call[1] as string[]).length)).toEqual(sizes);
+      expect(fetchRenderUrlsMock.mock.calls.flatMap(call => call[1] as string[]).sort())
+        .toEqual(Array.from({ length: count }, (_, index) => `image:${index}`).sort());
+      expect(output.qualityReport).toMatchObject({ visionClusters: count, fallbackCount: 0, figmaRequests: { imageFills: 1, renders: sizes.length } });
+      // Each cluster receives the render of its own node.
+      for (const [cluster, images] of refineClusterWithVisionMock.mock.calls as Array<[Cluster, Buffer[]]>) {
+        expect(images).toEqual([render(`https://cdn.example/${cluster.nodeIds[0]}`)]);
+      }
+    });
+
+    it("bundles missing image fills with originals that turn out unusable while downloading", async () => {
+      // Five clusters, all started at once: two without an image fill, three whose original is forbidden, gone or no image.
+      vi.stubEnv("INGEST_BOARD_VISION_CONCURRENCY", "5");
+      fetchFileTreeMock.mockResolvedValueOnce(treeWith(["forbidden", "gone", "svg", "nofill-a", "nofill-b"]
+        .map((name, index) => imageNode(name, `${name}-ref`, index * 1000))));
+      fetchImageRefsMock.mockResolvedValueOnce(Object.fromEntries(["forbidden", "gone", "svg"].map(name => [`${name}-ref`, `https://originals.example/${name}`])));
+      downloadFetchMock.mockImplementation(async (url: string) => url.endsWith("/forbidden") ? new Response("", { status: 403 })
+        : url.endsWith("/gone") ? new Response("", { status: 404 }) : url.endsWith("/svg") ? imageResponse(Buffer.from("<svg/>")) : imageResponse(jpeg(url)));
+      const output = await ingestBoard(balanced);
+      expect(fetchRenderUrlsMock).toHaveBeenCalledTimes(1);
+      expect([...(fetchRenderUrlsMock.mock.calls[0]![1] as string[])].sort()).toEqual(["forbidden", "gone", "nofill-a", "nofill-b", "svg"]);
+      expect(output.qualityReport).toMatchObject({ visionClusters: 5, fallbackCount: 0, figmaRequests: { imageFills: 1, renders: 1 } });
+    });
+
+    it("starts a new render request for nodes that turn up after the first one was sent", async () => {
+      fetchFileTreeMock.mockResolvedValueOnce(treeWith(["first", "second"].map((name, index) => imageNode(name, `${name}-ref`, index * 1000))));
+      fetchImageRefsMock.mockResolvedValueOnce({ "first-ref": "https://originals.example/first", "second-ref": "https://originals.example/second" });
+      vi.stubEnv("INGEST_BOARD_VISION_CONCURRENCY", "1");
+      downloadFetchMock.mockImplementation(async () => new Response("", { status: 403 }));
+      const output = await ingestBoard(balanced);
+      expect(fetchRenderUrlsMock.mock.calls.map(call => call[1] as string[]).sort()).toEqual([["first"], ["second"]]);
+      expect(output.qualityReport).toMatchObject({ visionClusters: 2, figmaRequests: { imageFills: 1, renders: 2 } });
+    });
+
     it("keeps each vision request within 8 MiB of image data", async () => {
       fetchFileTreeMock.mockResolvedValueOnce(treeWith([
         imageNode("first", "first-ref", 0, 140), imageNode("second", "second-ref", 110, 130), imageNode("third", "third-ref", 220, 120),
