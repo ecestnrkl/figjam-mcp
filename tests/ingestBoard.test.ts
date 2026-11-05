@@ -1171,6 +1171,16 @@ describe("ingestBoard", () => {
     });
   });
 
+  it("names the 64 MiB download budget instead of large images", async () => {
+    fetchFileTreeMock.mockResolvedValueOnce(drawingClusterTree(2));
+    downloadRendersMock.mockRejectedValueOnce(new FigmaDownloadBudgetError());
+    const output = await ingestBoard({ figmaFileUrl: "https://www.figma.com/board/AbC123/Test", docStructureHint: "freeform", ingestMode: "balanced" });
+    expect(output.qualityReport?.fallbackReasons).toEqual({ download_budget: 1 });
+    expect(output.summary).toContain("incomplete for 1 cluster: the images of this ingest exceeded the 64 MiB download budget.");
+    expect(output.summary).toContain("Run ingest_board again to retry pending work; successful interpretations are kept.");
+    expect(output.summary).not.toContain("too large");
+  });
+
   describe("elements Figma renders without an image URL", () => {
     const balanced = { figmaFileUrl: "https://www.figma.com/board/AbC123/Test", docStructureHint: "freeform", ingestMode: "balanced" } as const;
     const box = (x: number) => ({ x, y: 0, width: 100, height: 100 });

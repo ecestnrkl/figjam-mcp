@@ -16,7 +16,7 @@ const CONTAINER_TYPES = new Set(["DOCUMENT", "CANVAS", "PAGE", "SECTION"]);
 const READABLE_CONTAINER_TYPES = new Set(["CANVAS", "PAGE", "SECTION", "FRAME", "GROUP"]);
 const MAX_ENCLOSING_DEPTH = 1024;
 
-/** Original board text and model interpretations remain distinguishable at every boundary. */
+/** Original board text, model interpretations and generated placeholders remain distinguishable at every boundary. */
 export interface Evidence {
   evidenceId: string;
   snapshotId: string;
@@ -517,9 +517,13 @@ function interleaveClusters(entries: IndexedEvidence[]): IndexedEvidence[] {
   return ordered;
 }
 
-/** Where an excerpt comes from: original board text or metadata, a table row, or a model interpretation. */
+/** Whether a derived excerpt is text the server generated without a model (a cluster that no model interpreted). */
+export const isGeneratedPlaceholder = (item: Pick<Evidence, "sourceType">): boolean => item.sourceType === "cluster_summary";
+
+/** Where an excerpt comes from: original board text or metadata, a table row, a model interpretation or a generated placeholder. */
 export function evidenceProvenance(item: Evidence): string {
-  return item.modelDerived ? "MODEL INTERPRETATION; verify against original" :
+  return isGeneratedPlaceholder(item) ? "GENERATED PLACEHOLDER, no model; verify against original" :
+    item.modelDerived ? "MODEL INTERPRETATION; verify against original" :
     item.sourceType === "board_metadata" ? "original board metadata" :
     item.sourceType === "table_row" ? `original table row; cells separated by "${TABLE_CELL_SEPARATOR.trim()}"` : "original board text";
 }

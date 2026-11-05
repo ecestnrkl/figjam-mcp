@@ -37,6 +37,7 @@
 - The `ingest_board` summary says to run it again only where a new run helps unchanged; for `config`, `auth`, `figma_auth`, `payment` and `base_url` it names the change first and ends with "After that, run ingest_board again; finished clusters are kept."; waits in "Retry after" appear in seconds up to two minutes and otherwise as a UTC time with a rough duration.
 - Fallback renders of image clusters are bundled: nodes without an image fill, or whose original proves unusable while downloading, share `/v1/images` requests of up to 18 nodes, so 30 image clusters without image fills cost 2 render requests instead of 30.
 - A cluster uses the nodes Figma rendered and fails only when Figma renders none of them; then it gets the new reason `render_unavailable` ("Figma cannot render these elements"), which later ingests keep without another render request while its content is unchanged, and `forceFullIngest` asks again.
+- Text that the server generates for a cluster without text or model is marked "generated placeholder, no model" instead of "model interpretation" in `get_board_context`, the answer prompt and answers (`modelDerived` stays `true`); the reason `download_budget` says that the images of an ingest exceeded the 64 MiB download budget.
 
 ## 0.11.0 — 2026-10-26
 

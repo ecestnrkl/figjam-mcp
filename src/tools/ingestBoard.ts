@@ -1040,7 +1040,7 @@ function describeFallbackReasons(reasons?: Record<string, number>): string {
     auth: "the model provider denied access (LLM_API_KEY)", figma_auth: "Figma denied access (FIGMA_ACCESS_TOKEN)",
     rate_limit: "the model provider's rate limit was reached", figma_rate_limit: "Figma's rate limit was reached",
     payment: "the model provider requires payment or more credits",
-    invalid_reply: "the model's reply was unusable", download_budget: "the images were too large to download",
+    invalid_reply: "the model's reply was unusable", download_budget: `the images of this ingest exceeded the ${INGEST_IMAGE_MAX_BYTES / 1024 / 1024} MiB download budget`,
     render_failed: "Figma could not provide the images", render_unavailable: "Figma cannot render these elements", model_failed: "the model request failed",
     vision_failed: "an earlier run failed without a recorded cause", unknown: "the cause was not recorded",
   };
