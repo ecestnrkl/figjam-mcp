@@ -33,6 +33,7 @@
 - Removing evidence IDs from an answer and extracting JSON from a model reply take linear time; long runs of whitespace or opening braces no longer block the server for seconds.
 - The answer prompt shows each excerpt as an `<excerpt id="…" node="…" source="…">` element; board text that imitates a header, an ID or a closing tag stays text inside its own element, and connection lines stay on one line.
 - Figma request errors help: 404 names the token's account, a 429 wait over two minutes is shown as a UTC time with a rough duration, HTTP 500, 502, 503 and 504 are repeated once, other 4xx show Figma's error text, and unreadable answers (HTML, cut off, no JSON, no document) are named without parser text.
+- `ingest_board` separates Figma from model-provider failures for images: the new fallback reasons `figma_auth` (401/403), `figma_rate_limit` (429, with `nextRetryAt` from `Retry-After`) and `figma_timeout` name `FIGMA_ACCESS_TOKEN` and Figma's seat limit; `auth`, `rate_limit` and `timeout` now mean the model provider (`LLM_API_KEY`). Snapshots with the old reasons stay readable.
 
 ## 0.11.0 — 2026-10-26
 

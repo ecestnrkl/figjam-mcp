@@ -34,11 +34,14 @@ cause. Original text and table rows stay searchable in every case.
 | Reason | Meaning | What to do |
 | --- | --- | --- |
 | `time_budget` | Not started before the vision deadline | Run `ingest_board` again |
-| `timeout` | A Figma or model request ran past its deadline | Run again or choose a faster model |
-| `rate_limit` | Figma or the provider returned 429 | Wait until `qualityReport.nextRetryAt` |
+| `timeout` | A model request ran past its deadline | Run again or choose a faster model |
+| `figma_timeout` | A Figma request or download ran past its deadline, or the time for images ended while rendering | Run again; raise `FIGMA_REQUEST_TIMEOUT_MS` if it repeats |
+| `rate_limit` | The model provider returned 429 | Wait until `qualityReport.nextRetryAt` |
+| `figma_rate_limit` | Figma returned 429 for the image fills or a render; Figma limits requests by seat and plan, and View and Collab seats can wait weeks | Wait until `qualityReport.nextRetryAt` (from Figma's `Retry-After`); no further image requests are sent in this run |
 | `config` | `LLM_BASE_URL` or `LLM_API_KEY` missing or invalid | Fix the named setting, then restart the server |
 | `base_url` | `LLM_BASE_URL` leads to no reachable OpenAI-compatible API: no connection, a wrong path, or an HTTP 200 body that is no JSON object | Check `LLM_BASE_URL`, then run `diagnose_llm_config`; no further image requests are sent |
-| `auth` | Figma or the provider rejected the credentials | Check the token, scopes and file access |
+| `auth` | The model provider rejected `LLM_API_KEY` | Check the key and its access to the configured models; run `diagnose_llm_config` |
+| `figma_auth` | Figma answered 401 or 403 for the image fills or a render | Check `FIGMA_ACCESS_TOKEN`: scope `file_content:read`, and its account must be able to open the file; no further image requests are sent in this run |
 | `payment` | The model provider returned HTTP 402 (payment or more credits required) | Add credits, raise the API key's credit limit, or choose a free model |
 | `invalid_reply` | The model returned no usable reply: no JSON, empty text, no `choices`, a refusal, a content-filter block, a reply cut off at `max_tokens` before any text, only reasoning, or a tool call | Choose another model; for a cut-off reply raise `LLM_VISION_MAX_OUTPUT_TOKENS` |
 | `render_failed`, `download_budget` | Figma could not list the image fills or render the nodes, or images exceeded 64 MiB per ingest | Ingest again later or split the board |

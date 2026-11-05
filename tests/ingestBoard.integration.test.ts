@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import type { BoardData, Cluster, NormalizedNode, RefinedCluster } from "../src/types.js";
 import { pngHeader } from "./fixtures/images.js";
+import { utcTime } from "../src/lib/waitTime.js";
 
 const { fileTreeMock, screenshotMock, downloadMock, imageFillsMock, visionMock } = vi.hoisted(() => ({
   fileTreeMock: vi.fn(), screenshotMock: vi.fn(), downloadMock: vi.fn(), imageFillsMock: vi.fn(), visionMock: vi.fn(),
@@ -266,7 +267,8 @@ describe("offline ingest pipeline with actual persistent cache", () => {
       const result = await ingestBoard(input);
       expect(result.qualityReport?.fallbackReasons).toEqual({ rate_limit: 1 });
       expect(Math.abs(result.qualityReport!.nextRetryAt! - reset)).toBeLessThanOrEqual(2000);
-      expect(result.summary).toContain(`Retry after ${new Date(result.qualityReport!.nextRetryAt!).toISOString()}`);
+      // Shortly before midnight UTC the wait is under two minutes and shown in seconds.
+      expect(result.summary).toMatch(new RegExp(`Retry after (${utcTime(result.qualityReport!.nextRetryAt!)} \\(in about \\d+ (minute|hour)s?\\)|\\d+ seconds?)`));
     } finally {
       provider.closeAllConnections();
       await new Promise<void>(resolve => provider.close(() => resolve()));

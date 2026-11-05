@@ -19,6 +19,7 @@ import { redactBoard } from "../lib/redact.js";
 import { readIntEnv } from "../lib/env.js";
 import { missingEnvironmentHint } from "../lib/envFile.js";
 import { redactMessage, validateHeaderSecret, withSecretScope } from "../lib/secrets.js";
+import { describeWaitUntil } from "../lib/waitTime.js";
 import { getVisionMaxOutputTokens } from "../lib/llmOutputBudgets.js";
 import { getVisionRequestTimeoutMs } from "../lib/llmTimeouts.js";
 import { describeModelConfig } from "../lib/modelRegistry.js";
@@ -344,8 +345,8 @@ async function performIngest(input: IngestBoardInput, options: OperationOptions)
         const reason = classifyVisionFailure(error, stage);
         const retryDelay = reason !== "payment" && (error instanceof FigmaApiError || error instanceof LlmRequestError) ? error.retryAfter : undefined;
         const retryAfter = retryDelay && Number.isFinite(retryDelay) && retryDelay > 0
-          ? Date.now() + retryDelay * 1000 : reason === "rate_limit" ? Date.now() + 60_000 : undefined;
-        if (reason === "rate_limit" || reason === "config" || reason === "auth" || reason === "payment" || reason === "base_url") sharedFailure = { reason, retryAfter };
+          ? Date.now() + retryDelay * 1000 : reason === "rate_limit" || reason === "figma_rate_limit" ? Date.now() + 60_000 : undefined;
+        if (STOPPING_REASONS.has(reason)) sharedFailure = { reason, retryAfter };
         fallback(index, reason, retryAfter);
         console.error(`Vision refinement incomplete (${reason}); original sources are retained.`);
       } finally {
@@ -411,17 +412,26 @@ function ingestResult(board: BoardData, contentChanged?: boolean, historyReset =
 }
 
 type VisionStage = "render" | "model";
-type VisionFallbackReason = "config" | "base_url" | "auth" | "payment" | "rate_limit" | "timeout" | "invalid_reply"
-  | "download_budget" | "render_failed" | "model_failed" | "time_budget";
+type VisionFallbackReason = "config" | "base_url" | "auth" | "figma_auth" | "payment" | "rate_limit" | "figma_rate_limit" | "timeout"
+  | "figma_timeout" | "invalid_reply" | "download_budget" | "render_failed" | "model_failed" | "time_budget";
+
+/** Failures that every further image request of this ingest would repeat. */
+const STOPPING_REASONS: ReadonlySet<VisionFallbackReason> = new Set(["rate_limit", "figma_rate_limit", "config", "auth", "figma_auth", "payment", "base_url"]);
 
 function classifyVisionFailure(error: unknown, stage: VisionStage): VisionFallbackReason {
   if (error instanceof LLMConfigurationError) return "config";
   if (error instanceof FigmaDownloadBudgetError) return "download_budget";
-  if (error instanceof VisionDeadlineExceededError || error instanceof FigmaTimeoutError || error instanceof LlmTimeoutError) return "timeout";
+  // A deadline that expires while rendering or downloading ends a Figma step, one in the model step a model request.
+  if (error instanceof FigmaTimeoutError || (error instanceof VisionDeadlineExceededError && stage === "render")) return "figma_timeout";
+  if (error instanceof VisionDeadlineExceededError || error instanceof LlmTimeoutError) return "timeout";
   if (error instanceof LlmUnusableReplyError) return "invalid_reply";
   if (error instanceof LlmBaseUrlError) return "base_url";
   if (error instanceof LlmRequestError && error.status === 402) return "payment";
-  if (error instanceof FigmaApiError || error instanceof LlmRequestError) {
+  if (error instanceof FigmaApiError) {
+    if (error.status === 429) return "figma_rate_limit";
+    if (error.status === 401 || error.status === 403) return "figma_auth";
+  }
+  if (error instanceof LlmRequestError) {
     if (error.status === 429) return "rate_limit";
     if (error.status === 401 || error.status === 403) return "auth";
   }
@@ -940,9 +950,11 @@ function describeFocus(focus: IngestFocusReport, ingestMode?: IngestMode): strin
 function describeFallbackReasons(reasons?: Record<string, number>): string {
   const labels: Record<string, string> = {
     time_budget: "the time for images in this run ran out", vision_budget: "the time for images in an earlier run ran out",
-    timeout: "the model did not answer in time", config: "the model settings are missing or invalid",
+    timeout: "the model did not answer in time", figma_timeout: "Figma did not answer in time",
+    config: "the model settings are missing or invalid",
     base_url: "LLM_BASE_URL does not lead to a reachable OpenAI-compatible API",
-    auth: "Figma or the model provider denied access", rate_limit: "the model provider's rate limit was reached",
+    auth: "the model provider denied access (LLM_API_KEY)", figma_auth: "Figma denied access (FIGMA_ACCESS_TOKEN)",
+    rate_limit: "the model provider's rate limit was reached", figma_rate_limit: "Figma's rate limit was reached",
     payment: "the model provider requires payment or more credits",
     invalid_reply: "the model's reply was unusable", download_budget: "the images were too large to download",
     render_failed: "Figma could not provide the images", model_failed: "the model request failed",
@@ -959,9 +971,16 @@ function describeNextSteps(report: IngestQualityReport): string {
   const instructions: string[] = [];
   if (reasons.config) instructions.push(`${missingLlmConfigurationMessage() ?? llmBaseUrlProblem() ?? "Check the model settings."} diagnose_llm_config can test the configured model provider.`);
   if (reasons.base_url) instructions.push("Check LLM_BASE_URL, then run diagnose_llm_config.");
-  if (reasons.auth) instructions.push("Check Figma and model-provider access permissions; diagnose_llm_config can test the configured model provider.");
+  if (reasons.auth) instructions.push("Check LLM_API_KEY and the key's access to the configured models; diagnose_llm_config can test the configured model provider.");
+  if (reasons.figma_auth) instructions.push("Check FIGMA_ACCESS_TOKEN: it needs the scope file_content:read, and its account must be able to open the file.");
   if (reasons.payment) instructions.push("Add credits or raise the API key's credit limit at the model provider, or choose a free model; diagnose_llm_config can test the configured model provider.");
-  if (report.nextRetryAt) instructions.push(`Retry after ${new Date(report.nextRetryAt).toISOString()} for the pending provider cooldown.`);
+  if (report.nextRetryAt) {
+    const wait = `Retry after ${describeWaitUntil(report.nextRetryAt)}`;
+    instructions.push(reasons.figma_rate_limit && reasons.rate_limit
+      ? `${wait}, the earlier of both cooldowns: Figma limits requests by seat and plan, and the model provider has its own limit.`
+      : reasons.figma_rate_limit ? `${wait}: Figma limits requests by seat and plan; View and Collab seats are limited most strictly.`
+      : `${wait} for the pending provider cooldown.`);
+  } else if (reasons.figma_rate_limit) instructions.push("Figma limits requests by seat and plan; wait until its limit resets.");
   instructions.push(reasons.time_budget || reasons.vision_budget
     ? "Run ingest_board again to continue the remaining visual interpretation; finished clusters are reused."
     : "Run ingest_board again to retry pending work; successful interpretations are kept.");
