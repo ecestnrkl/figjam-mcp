@@ -44,31 +44,98 @@ this one reports the change.
 | `diff_board` | Compares snapshots with bounded lists and full totals: clusters, nodes, table cells (0-based), arrows with source IDs, section/frame renames and layout counts. Notes unchanged re-ingests. | No |
 | `diagnose_llm_config` | Tests the configured models with small text and image JSON checks. | Yes |
 
+`ingest_board` also reads Figma design files (`/design/`, `/file/` and `/proto/`
+URLs), but clustering and reading order are made for FigJam boards.
+
 ## Quick start
 
-Requires Node.js 22.12 or later.
+Five steps. Requires Node.js 22.12 or later. Step 4 sets the model provider that
+`answer_from_board`, `diagnose_llm_config` and image interpretation need; it is optional.
 
-1. Create a Figma personal access token under **Settings → Security → Personal
-   access tokens** with the scope `file_content:read`. The token's account
-   needs access to the board.
-2. Optional: create an OpenRouter key at
-   [openrouter.ai/keys](https://openrouter.ai/keys). It enables image
-   interpretation, `answer_from_board` and `diagnose_llm_config`. Without it, use
-   `ingestMode: "max_speed"` with `get_board_context` and `diff_board`.
-3. Add the server using the example for your client below. `@latest` with
-   `--prefer-online` makes npx check the registry for the latest release on every
-   start, even when package metadata is cached ([npm configuration](https://docs.npmjs.com/cli/v11/using-npm/config#prefer-online)).
+1. **Node.js.** Check the installed version with `node --version`; install Node.js 22.12
+   or later if it is older.
+2. **Figma token.** Create a personal access token under **Settings → Security →
+   Personal access tokens** with the scope `file_content:read`. The token's account
+   must be able to open the board. Every `ingest_board` call is one Figma file
+   download, a Tier 1 request. Figma allows View and Collab seats up to 20 Tier 1
+   requests a month on every plan, and says the actual limit may be lower
+   ([rate limits](https://developers.figma.com/docs/rest-api/rate-limits/)).
+3. **Add the server** with the example for your client below. The examples set only
+   `FIGMA_ACCESS_TOKEN`, so the server starts and `ingest_board` works in
+   `ingestMode: "max_speed"` without a model provider. `@latest` with `--prefer-online`
+   makes npx check the registry for the latest release on every start, even when
+   package metadata is cached ([npm configuration](https://docs.npmjs.com/cli/v11/using-npm/config#prefer-online)).
+4. **Optional: model provider.** Add `LLM_BASE_URL` and `LLM_API_KEY` to the server's
+   `env` block, then restart the client. Both are needed together; without them,
+   `balanced` ingests run text-only and say that the model settings are missing.
+   Example with OpenRouter ([create a key](https://openrouter.ai/keys)):
+
+   ```
+   LLM_BASE_URL=https://openrouter.ai/api/v1
+   LLM_API_KEY=your-openrouter-key
+   ```
+
+   In Claude Code, remove the entry with `claude mcp remove figjam-context` (with the
+   same `--scope` as when you added it), then add it again with an `--env` flag for each
+   variable ([Claude Code](https://code.claude.com/docs/en/mcp)).
+   A local OpenAI-compatible server without sign-in still needs `LLM_API_KEY` set to
+   any non-empty value. Set `LLM_TEXT_MODELS`, `LLM_FAST_TEXT_MODELS` and
+   `LLM_VISION_MODELS` to its model names ([configuration](https://github.com/ecestnrkl/figjam-mcp/blob/main/docs/configuration.md#models)).
+   Then run `diagnose_llm_config` in step 5.
+5. **Check the setup.** Ask your assistant to ingest one of your boards with
+   `ingestMode: "max_speed"`, for example *"Ingest https://www.figma.com/board/FILE_KEY/Name
+   with ingestMode max_speed."* That makes one Figma request and no model call. A
+   working setup answers with a line that starts `Ingested board FILE_KEY (snapshot …):`
+   and counts the `clusters`. Clients that show their tools, such as Claude Code with
+   `/mcp`, list the server there ([Claude Code](https://code.claude.com/docs/en/mcp)).
+   With a provider from step 4, also run `diagnose_llm_config`; it checks the configured
+   models with small synthetic inputs. For error messages, see
+   [common errors](https://github.com/ecestnrkl/figjam-mcp/blob/main/docs/troubleshooting.md#common-errors).
+
+All settings: [configuration](https://github.com/ecestnrkl/figjam-mcp/blob/main/docs/configuration.md).
 
 ### Claude Code
 
 ```bash
-claude mcp add figjam-context -e FIGMA_ACCESS_TOKEN=your-figma-token -e LLM_BASE_URL=https://openrouter.ai/api/v1 -e LLM_API_KEY=your-openrouter-key -- npx -y --prefer-online figjam-context-mcp@latest
+claude mcp add --scope user --env FIGMA_ACCESS_TOKEN=your-figma-token --transport stdio figjam-context -- npx -y --prefer-online figjam-context-mcp@latest
 ```
+
+`--scope user` makes the server available in all your projects. Without it, Claude
+Code stores the server for the current project only ([scopes](https://code.claude.com/docs/en/mcp)).
 
 For longer ingests, set `MCP_TOOL_TIMEOUT=300000` in the environment that launches
 Claude Code and `INGEST_BOARD_VISION_BUDGET_MS=270000` in the server environment,
 leaving about 30 seconds for the rest of the ingest ([Claude Code environment
 variables](https://code.claude.com/docs/en/env-vars)).
+
+### Claude Desktop
+
+Open **Settings → Developer → Edit Config** in Claude Desktop. This opens
+`claude_desktop_config.json`; the file is at:
+
+- macOS: `~/Library/Application Support/Claude/claude_desktop_config.json`
+- Windows: `%APPDATA%\Claude\claude_desktop_config.json`
+
+Add the server under `mcpServers`, keeping any other entries in the file:
+
+```json
+{
+  "mcpServers": {
+    "figjam-context": {
+      "command": "npx",
+      "args": ["-y", "--prefer-online", "figjam-context-mcp@latest"],
+      "env": {
+        "FIGMA_ACCESS_TOKEN": "your-figma-token"
+      }
+    }
+  }
+}
+```
+
+Then quit Claude Desktop completely and start it again; the server starts with the app
+([MCP quickstart](https://modelcontextprotocol.io/docs/develop/connect-local-servers)).
+The MCP documentation names no tool timeout setting for Claude Desktop, so keep the
+default image budget.
 
 ### Codex CLI and ChatGPT desktop app
 
@@ -85,8 +152,6 @@ default_tools_approval_mode = "approve"
 
 [mcp_servers.figjam-context-mcp.env]
 FIGMA_ACCESS_TOKEN = "your-figma-token"
-LLM_BASE_URL = "https://openrouter.ai/api/v1"
-LLM_API_KEY = "your-openrouter-key"
 ```
 
 Without `default_tools_approval_mode = "approve"`, ChatGPT may ask for approval
@@ -112,9 +177,7 @@ Add this to `~/.copilot/mcp-config.json`
       "command": "npx",
       "args": ["-y", "--prefer-online", "figjam-context-mcp@latest"],
       "env": {
-        "FIGMA_ACCESS_TOKEN": "your-figma-token",
-        "LLM_BASE_URL": "https://openrouter.ai/api/v1",
-        "LLM_API_KEY": "your-openrouter-key"
+        "FIGMA_ACCESS_TOKEN": "your-figma-token"
       },
       "tools": ["*"]
     }
@@ -129,26 +192,39 @@ timeout](https://github.com/microsoft/vscode/issues/343135)).
 
 ### VS Code
 
-Add this to `.vscode/mcp.json` in your workspace, or open **MCP: Open User
-Configuration** for your profile. VS Code uses `servers` and `type: "stdio"`
-([VS Code MCP configuration](https://code.visualstudio.com/docs/agents/reference/mcp-configuration)):
+Open **MCP: Open User Configuration** from the Command Palette and add the server
+there. VS Code uses `servers` and `type: "stdio"`
+([VS Code MCP configuration](https://code.visualstudio.com/docs/agents/reference/mcp-configuration)).
+Ask for the token with an input marked `"password": true`, so it is not written
+in plain text:
 
 ```json
 {
+  "inputs": [
+    {
+      "type": "promptString",
+      "id": "figma-token",
+      "description": "Figma personal access token (file_content:read)",
+      "password": true
+    }
+  ],
   "servers": {
     "figjam-context": {
       "type": "stdio",
       "command": "npx",
       "args": ["-y", "--prefer-online", "figjam-context-mcp@latest"],
       "env": {
-        "FIGMA_ACCESS_TOKEN": "your-figma-token",
-        "LLM_BASE_URL": "https://openrouter.ai/api/v1",
-        "LLM_API_KEY": "your-openrouter-key"
+        "FIGMA_ACCESS_TOKEN": "${input:figma-token}"
       }
     }
   }
 }
 ```
+
+Do not put tokens in a `.vscode/mcp.json` in a repository; VS Code's documentation
+says not to commit tokens or passwords. VS Code does not forward servers that need
+inputs to Copilot harness sessions, so there, use a plain `env` value in the user
+configuration instead.
 
 To use an environment file, set `"envFile": "${workspaceFolder}/.env"` on the server
 in VS Code's `mcp.json`; the server does not load a working-directory `.env` itself.
@@ -170,9 +246,7 @@ For clients that accept `mcpServers`, add this to their MCP configuration:
       "command": "npx",
       "args": ["-y", "--prefer-online", "figjam-context-mcp@latest"],
       "env": {
-        "FIGMA_ACCESS_TOKEN": "your-figma-token",
-        "LLM_BASE_URL": "https://openrouter.ai/api/v1",
-        "LLM_API_KEY": "your-openrouter-key"
+        "FIGMA_ACCESS_TOKEN": "your-figma-token"
       }
     }
   }
@@ -187,6 +261,8 @@ stop at 60 seconds even with progress, so keep the default image budget on that 
 ([Cursor
 support](https://forum.cursor.com/t/agent-acp-mcp-tools-call-times-out-at-60s-with-no-way-to-configure-it/163925/5)).
 
+## Using the tools
+
 Then ask your assistant to ingest a board URL, for example *"Ingest
 https://www.figma.com/board/FILE_KEY/Name and list the open questions."*
 The `boardId` of every later call is the file key from that URL, or the URL
@@ -195,7 +271,10 @@ itself; a URL with a `node-id` and without `nodeIds`, `topic` and
 a board, the assistant calls `ingest_board`, then `get_board_context` without
 parameters, whose first page names the largest sections and includes a section
 overview with IDs within the page's size limit, and then reads the largest sections
-by passing their IDs as `nodeIds`.
+by passing their IDs as `nodeIds`. Several IDs in one call take turns in request
+order, up to 50 per call. For a whole-board summary, pass all top-level section IDs
+with `maxChars: 24000`, follow the cursor in the text with the same arguments, then
+read `outsideSections: true`.
 Large `nodeIds` reads automatically use short source-ID lines, grouped by section,
 when the first full page would leave unread excerpts. `limit` applies only with
 the full view; an overview ignores it even when supplied. Read complete text and
@@ -215,9 +294,6 @@ named, without its value, in the text and in `ignoredArguments` of
 `structuredContent`. File keys are case-sensitive: an unknown `boardId` lists
 the stored boards (at most 10, most recent first) and names a key that differs
 only in case.
-
-All settings: [configuration](https://github.com/ecestnrkl/figjam-mcp/blob/main/docs/configuration.md).
-Problems: [troubleshooting](https://github.com/ecestnrkl/figjam-mcp/blob/main/docs/troubleshooting.md).
 
 ## How it works
 
@@ -250,19 +326,10 @@ Problems: [troubleshooting](https://github.com/ecestnrkl/figjam-mcp/blob/main/do
    match whole words ignoring case and accents (words of five or more letters
    also match compounds that begin with them), but not other word forms,
    synonyms or translations. Use the board's words and language; an empty search
-   does not prove the board lacks the topic. The first `get_board_context` page
-   includes a size-limited section overview with IDs; pass a page, section,
-   frame or group ID as `nodeIds` to read everything inside it; several IDs in
-   one call take turns in request order. For a whole-board summary, pass all
-   top-level section IDs (up to 50 per call) with `maxChars: 24000`, follow the
-   cursor in the text with the same arguments, then read `outsideSections: true`.
-   Compact overviews show the Figma link pattern for their node IDs. With default
-   `detail: "auto"`, reads of multiple distinct IDs or one container use a compact
-   overview when the first full page would leave unread excerpts. Text is shortened
-   to a shared 50–120-character prefix with `…`; the host writes the summary.
-   Topic searches, `outsideSections`, single leaf/table/cell IDs and small
-   containers stay full. Full-view excerpt text is quoted with `> ` on every
-   line, and model-generated cluster labels are marked as model labels.
+   does not prove the board lacks the topic. Paging, overviews and the `detail`
+   setting are described in [Using the tools](#using-the-tools). Full-view excerpt
+   text is quoted with `> ` on every line, and model-generated cluster labels are
+   marked as model labels.
    Text `content` is the readable page; `structuredContent` holds each excerpt
    once, in `overview.text` (with empty `evidence` and `clusters`) or in `evidence`
    for the full view. Full excerpts inherit `snapshotId` from the response;
