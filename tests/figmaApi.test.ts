@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); vi.resetModules(); vi.unstubAllGlobals(); });
 function json(data: unknown): Response { return new Response(JSON.stringify(data)); }
-async function failure(request: Promise<unknown>): Promise<Error & { retryAfter?: number }> {
-  return request.then(() => { throw new Error("expected the request to fail"); }, (error: unknown) => error as Error & { retryAfter?: number });
+async function failure(request: Promise<unknown>): Promise<Error & { retryAfter?: number; retryAt?: number }> {
+  return request.then(() => { throw new Error("expected the request to fail"); }, (error: unknown) => error as Error & { retryAfter?: number; retryAt?: number });
 }
 describe("bounded Figma requests", () => {
   it("wraps response body timeouts", async () => {
@@ -36,19 +36,22 @@ describe("bounded Figma requests", () => {
   describe("waits named by a 429", () => {
     const now = Date.parse("2026-11-05T12:00:00Z");
     it.each([
-      ["30 seconds", () => "30", "Retry after 30 seconds."],
-      ["120 seconds", () => "120", "Retry after 120 seconds."],
-      ["3600 seconds", () => "3600", "Retry after 2026-11-05 13:00 UTC (in about 1 hour)."],
-      ["396000 seconds", () => "396000", "Retry after 2026-11-10 02:00 UTC (in about 5 days)."],
-      ["an HTTP date", () => new Date(now + 2 * 3600_000).toUTCString(), "Retry after 2026-11-05 14:00 UTC (in about 2 hours)."],
-    ])("shows %s as %s", async (_name, header, expected) => {
+      ["30 seconds", () => "30", "Retry after 30 seconds.", undefined],
+      ["120 seconds", () => "120", "Retry after 120 seconds.", undefined],
+      ["3600 seconds", () => "3600", "Retry after 2026-11-05 13:00 UTC (in about 1 hour).", undefined],
+      ["396000 seconds", () => "396000", "Retry after 2026-11-10 02:00 UTC (in about 5 days).", undefined],
+      ["an HTTP date", () => new Date(now + 2 * 3600_000).toUTCString(), "Retry after 2026-11-05 14:00 UTC (in about 2 hours).", now + 2 * 3600_000],
+    ])("shows %s as %s", async (_name, header, expected, retryAt) => {
       vi.useFakeTimers({ toFake: ["Date"], now });
+      let clock = now;
+      vi.spyOn(Date, "now").mockImplementation(() => clock++);
       vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("", { status: 429, headers: { "Retry-After": header() } })));
       const { fetchFileTree } = await import("../src/lib/figmaApi.js");
       const error = await failure(fetchFileTree("AbC123", "secret"));
       expect(error.message).toContain(expected);
       expect(error.message).toContain("by seat and plan");
       expect(error.retryAfter).toBe(header().includes("GMT") ? 7200 : Number(header()));
+      if (retryAt !== undefined) expect(error.retryAt).toBe(retryAt);
     });
     it("is not retried", async () => {
       const mock = vi.fn().mockResolvedValue(new Response("", { status: 429, headers: { "Retry-After": "1" } }));

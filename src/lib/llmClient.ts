@@ -22,7 +22,7 @@ let clientConfig: string | undefined;
 
 export class LlmRequestError extends Error {
   /** retryAfter is the wait in seconds the provider named, if any. */
-  constructor(message: string, readonly status?: number, readonly retryAfter?: number) { super(message); }
+  constructor(message: string, readonly status?: number, readonly retryAfter?: number, readonly retryAt?: number) { super(message); }
 }
 /**
  * LLM_BASE_URL does not lead to a working OpenAI-compatible API: no connection, a wrong path, or a body that is no
@@ -525,8 +525,9 @@ function withoutDiagnoseHint(message: string): string {
 function normalizeLlmError(error: unknown): unknown {
   if (!(error instanceof OpenAI.APIError)) return redactError(error);
   const { status } = error;
-  const waitMs = status === 429 ? rateLimitWaitMs(error.headers, error.error)
-    : parseRetryAfter(headerValue("retry-after", error.headers, error.error));
+  const now = Date.now();
+  const timing = status === 429 ? rateLimitTiming(error.headers, error.error, now) : undefined;
+  const waitMs = timing?.waitMs ?? parseRetryAfter(headerValue("retry-after", error.headers, error.error), now);
   const message = status === 402
     ? "LLM request failed (HTTP 402): the model provider requires payment or more credits for this model. "
       + "Add credits or raise the API key's credit limit, or use a free model."
@@ -536,16 +537,16 @@ function normalizeLlmError(error: unknown): unknown {
     : status === 403
       ? "LLM request failed (HTTP 403): the model provider denies access to the model or rejects the request, "
         + `for example because of moderation. Check the API key's permissions and the configured models. ${DIAGNOSE_HINT}`
-    : status === 429 ? rateLimitMessage(waitMs)
+    : status === 429 ? rateLimitMessage(timing?.retryAt)
     : reasoningRejections.has(error)
       ? `LLM request failed (HTTP ${status}): the model provider rejected the reasoning setting. `
         + `Unset LLM_ANSWER_REASONING_EFFORT, choose another value or another model. ${DIAGNOSE_HINT}`
     : `LLM request failed (HTTP ${status ?? "unknown"}). Check provider availability and configuration. ${DIAGNOSE_HINT}`;
-  return new LlmRequestError(redactMessage(message), status, waitMs === undefined ? undefined : Math.ceil(waitMs / 1000));
+  return new LlmRequestError(redactMessage(message), status, waitMs === undefined ? undefined : Math.ceil(waitMs / 1000), timing?.retryAt);
 }
 
-function rateLimitMessage(waitMs: number | undefined): string {
-  const when = waitMs === undefined ? "" : `; it accepts requests again at about ${utcTime(Date.now() + waitMs)}`;
+function rateLimitMessage(retryAt: number | undefined): string {
+  const when = retryAt === undefined ? "" : `; it accepts requests again at about ${utcTime(retryAt)}`;
   return `LLM request failed (HTTP 429): the model provider's request limit is reached${when}. `
     + `Wait, or use another model or API key. ${DIAGNOSE_HINT}`;
 }
@@ -683,7 +684,8 @@ async function createCompletion(
       if (!(error instanceof OpenAI.RateLimitError) || attempt >= readIntEnv("LLM_RATE_LIMIT_RETRIES", 1, 0)) {
         throw error;
       }
-      const waitMs = rateLimitWaitMs(error.headers, error.error);
+      const timing = rateLimitTiming(error.headers, error.error);
+      const waitMs = timing?.waitMs;
       if (waitMs !== undefined && !fitsRetryWindow(waitMs, options)) throw error;
       await backoff(waitMs ?? 2 ** attempt * 2000, attempt, signal);
       continue;
@@ -705,12 +707,14 @@ async function createCompletion(
       return completion;
     }
     if (isRateLimit(embedded)) {
-      const waitMs = rateLimitWaitMs(undefined, embedded);
+      const timing = rateLimitTiming(undefined, embedded);
+      const waitMs = timing?.waitMs;
       if (attempt < readIntEnv("LLM_RATE_LIMIT_RETRIES", 1, 0) && (waitMs === undefined || fitsRetryWindow(waitMs, options))) {
         await backoff(waitMs ?? 2 ** attempt * 2000, attempt, signal);
         continue;
       }
-      const limited = new LlmRequestError(redactMessage(rateLimitMessage(waitMs)), 429, waitMs === undefined ? undefined : Math.ceil(waitMs / 1000));
+      const limited = new LlmRequestError(redactMessage(rateLimitMessage(timing?.retryAt)), 429,
+        waitMs === undefined ? undefined : Math.ceil(waitMs / 1000), timing?.retryAt);
       embeddedErrors.set(limited, embedded);
       throw limited;
     }
@@ -771,13 +775,14 @@ function headerValue(name: string, headers: Headers | null | undefined, body: un
  * How long the provider asks to wait after a 429, in milliseconds from now: Retry-After, or when X-RateLimit-Remaining
  * is 0, X-RateLimit-Reset (milliseconds since 1970). Undefined when it names no time.
  */
-function rateLimitWaitMs(headers: Headers | null | undefined, body: unknown, now = Date.now()): number | undefined {
+function rateLimitTiming(headers: Headers | null | undefined, body: unknown, now = Date.now()):
+  { waitMs: number; retryAt: number } | undefined {
   const retryAfter = parseRetryAfter(headerValue("retry-after", headers, body), now);
-  if (retryAfter !== undefined) return retryAfter;
+  if (retryAfter !== undefined) return { waitMs: retryAfter, retryAt: now + retryAfter };
   const remaining = headerValue("x-ratelimit-remaining", headers, body)?.trim();
   const reset = Number(headerValue("x-ratelimit-reset", headers, body)?.trim() || NaN);
   if (!remaining || Number(remaining) !== 0 || !Number.isFinite(reset) || reset <= now) return undefined;
-  return reset - now;
+  return { waitMs: reset - now, retryAt: reset };
 }
 
 /** A retry waits only up to LLM_RATE_LIMIT_MAX_BACKOFF_MS and only when a request still fits into the deadline after it. */

@@ -51,6 +51,14 @@ installable in two minutes, documented, and used on real boards.
 - [x] Read large sections as compact overviews; `detail: "full"` reads complete excerpts
 - [x] Ingest uses 8 parallel image requests with paid OpenRouter models, reports progress per image cluster, documents client-specific timeouts and clearly explains HTTP 402
 
+## 0.12.0 — hardened for user tests
+
+- [x] Configuration only from the MCP client; broader credential redaction; hidden elements left out
+- [x] Figma, model-provider and input errors name the cause and the next step; fewer Figma requests for images
+- [x] Snapshots stay readable when servers share a cache or a file is damaged; bounded `diff_board` lists
+- [x] Search ignores accents and hyphens; reading paths offer cursors, Figma links and citation guidance
+- [x] Quick start for testers with a success check
+
 ## 1.0.0 — proven in real use
 
 - [x] Public demo board and a screen recording

@@ -10,7 +10,7 @@ export const INGEST_IMAGE_MAX_BYTES = 64 * 1024 * 1024;
 export const ORIGINAL_IMAGE_MAX_BYTES = 3.75 * 1024 * 1024;
 export interface DownloadBudget { usedBytes: number; maxBytes: number }
 export class FigmaApiError extends Error {
-  constructor(message: string, readonly status: number, readonly retryAfter?: number) { super(message); }
+  constructor(message: string, readonly status: number, readonly retryAfter?: number, readonly retryAt?: number) { super(message); }
 }
 export class FigmaDownloadBudgetError extends Error {
   constructor() { super("Figma download exceeds the configured byte budget"); this.name = "FigmaDownloadBudgetError"; }
@@ -73,7 +73,9 @@ async function figmaFetch(fileKey: string, apiPath: string, token: string, timeo
       throw redactError(error, [token]);
     }
     if (response.ok) return response;
-    const retryAfterMs = parseRetryAfter(response.headers.get("Retry-After"));
+    const now = Date.now();
+    const retryAfterMs = parseRetryAfter(response.headers.get("Retry-After"), now);
+    const retryAt = retryAfterMs === undefined ? undefined : now + retryAfterMs;
     const status = response.status;
     if (attempt === 0 && RETRIED_STATUSES.has(status)) {
       await response.body?.cancel();
@@ -88,7 +90,7 @@ async function figmaFetch(fileKey: string, apiPath: string, token: string, timeo
       message = `Figma file not found (404): ${fileKey}. Check the file key in the board URL. `
         + "Figma also answers 404 when the account of FIGMA_ACCESS_TOKEN cannot open the file, typically a company board with a personal token.";
     } else if (status === 429) {
-      message = `Figma API rate limit exceeded (429). ${retryAfterMs === undefined ? "Retry later." : `Retry after ${describeWaitUntil(Date.now() + retryAfterMs)}.`}`
+      message = `Figma API rate limit exceeded (429). ${retryAt === undefined ? "Retry later." : `Retry after ${describeWaitUntil(retryAt, now)}.`}`
         + " Figma limits requests by seat and plan; View and Collab seats have the lowest limits.";
     } else if (status >= 500) {
       message = RETRIED_STATUSES.has(status)
@@ -99,7 +101,7 @@ async function figmaFetch(fileKey: string, apiPath: string, token: string, timeo
       message = `Figma rejected the request (HTTP ${status})${text ? `: ${text}` : "."}`;
     }
     await response.body?.cancel().catch(() => undefined);
-    throw new FigmaApiError(redactMessage(message, [token]), status, retryAfterMs === undefined ? undefined : Math.ceil(retryAfterMs / 1000));
+    throw new FigmaApiError(redactMessage(message, [token]), status, retryAfterMs === undefined ? undefined : Math.ceil(retryAfterMs / 1000), retryAt);
   }
 }
 /** Enforces the limit while streaming, including servers that omit Content-Length. */
