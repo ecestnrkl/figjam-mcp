@@ -1171,6 +1171,27 @@ describe("ingestBoard", () => {
     });
   });
 
+  it.each([401, 403, 404])("treats HTTP %i when downloading a rendered image as render_failed of that cluster only", async status => {
+    const tree = rawTree();
+    tree.document.children[0]!.children = [
+      { id: "drawing:0", name: "Drawing", type: "SHAPE_WITH_TEXT", absoluteBoundingBox: { x: 0, y: 0, width: 100, height: 100 } },
+      { id: "image:0", name: "Image", type: "SHAPE_WITH_TEXT", absoluteBoundingBox: { x: 5000, y: 0, width: 100, height: 100 },
+        fills: [{ type: "IMAGE", imageRef: "image-0" }] },
+    ] as typeof tree.document.children[0]["children"];
+    fetchFileTreeMock.mockResolvedValueOnce(tree);
+    // The real download runs; the render links answer with the status, the original of the image works.
+    const { downloadRenders } = await vi.importActual<typeof import("../src/lib/figmaApi.js")>("../src/lib/figmaApi.js");
+    downloadRendersMock.mockImplementation(downloadRenders);
+    downloadFetchMock.mockImplementation(async (url: string) => url.startsWith("https://cdn.example/") ? new Response("", { status }) : imageResponse(jpeg(url)));
+    const output = await ingestBoard({ figmaFileUrl: "https://www.figma.com/board/AbC123/Test", docStructureHint: "freeform", ingestMode: "balanced" });
+    expect(output.qualityReport).toMatchObject({ visionClusters: 1, fallbackCount: 1, fallbackReasons: { render_failed: 1 } });
+    expect(refineClusterWithVisionMock).toHaveBeenCalledTimes(1);
+    expect((refineClusterWithVisionMock.mock.calls[0]![0] as Cluster).nodeIds).toEqual(["image:0"]);
+    expect(output.summary).toContain("incomplete for 1 cluster: Figma could not provide the images.");
+    expect(output.summary).not.toContain("FIGMA_ACCESS_TOKEN");
+    expect(output.summary).not.toContain("After that");
+  });
+
   it("names the 64 MiB download budget instead of large images", async () => {
     fetchFileTreeMock.mockResolvedValueOnce(drawingClusterTree(2));
     downloadRendersMock.mockRejectedValueOnce(new FigmaDownloadBudgetError());

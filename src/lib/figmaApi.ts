@@ -277,6 +277,8 @@ export async function downloadRenders(nodeIds: string[], renderUrls: RenderUrls,
         if (!response.ok) {
           const retryAfter = Number(response.headers.get("Retry-After"));
           await response.body?.cancel();
+          // These URLs are loaded without the token, so only a rate limit says anything about the Figma API; any other status means this image is unavailable.
+          if (response.status !== 429) throw new Error(`Screenshot download failed (${response.status})`);
           throw new FigmaApiError(`Screenshot download failed (${response.status})`, response.status,
             Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter : undefined);
         }
