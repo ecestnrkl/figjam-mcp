@@ -110,6 +110,7 @@ export interface RefinedCluster extends Cluster {
   incomplete?: boolean;
   fallbackReason?: string;
   retryAfter?: number;
+  retryAt?: number;
 }
 
 export interface IngestQualityReport {

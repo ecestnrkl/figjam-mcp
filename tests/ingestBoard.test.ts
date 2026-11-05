@@ -1079,7 +1079,7 @@ describe("ingestBoard", () => {
         text: "the model provider denied access (LLM_API_KEY)", next: "Check LLM_API_KEY and the key's access to the configured models; diagnose_llm_config can test the configured model provider.",
         absent: ["FIGMA_ACCESS_TOKEN", "file_content:read"] },
       { name: "provider 429", tree: () => drawingClusterTree(1), count: 1, reason: "rate_limit",
-        setup: () => refineClusterWithVisionMock.mockRejectedValueOnce(new LlmRequestError("private provider body", 429, 7200)),
+        setup: () => refineClusterWithVisionMock.mockRejectedValueOnce(new LlmRequestError("private provider body", 429, 7200, Date.parse("2026-11-05T14:00:00Z"))),
         text: "the model provider's rate limit was reached", next: "Retry after 2026-11-05 14:00 UTC (in about 2 hours) for the pending provider cooldown.",
         absent: ["Figma's", "seat and plan", "FIGMA_ACCESS_TOKEN"] },
     ])("$name is $reason with its own text and next step", async ({ tree, count, reason, setup, text, next, absent }) => {
@@ -1092,6 +1092,7 @@ describe("ingestBoard", () => {
       expect(output.summary).toContain(next);
       for (const fragment of absent) expect(output.summary).not.toContain(fragment);
       expect(output.summary).not.toContain("private provider body");
+      if (reason === "rate_limit") expect(output.qualityReport?.nextRetryAt).toBe(Date.parse("2026-11-05T14:00:00Z"));
     });
 
     it.each([

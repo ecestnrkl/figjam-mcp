@@ -225,7 +225,7 @@ async function performIngest(input: IngestBoardInput, options: OperationOptions)
   visionQueue.sort((left, right) => focusRanks[left]! - focusRanks[right]!
     || retryPriorities[left]! - retryPriorities[right]!
     || compareVisionPriority(priorities[left]!, priorities[right]!));
-  let sharedFailure: { reason: VisionFallbackReason; retryAfter?: number } | undefined;
+  let sharedFailure: { reason: VisionFallbackReason; retryAfter?: number; retryAt?: number } | undefined;
   if (visionQueue.length) {
     try { validateLlmConfiguration(); }
     catch (error) { sharedFailure = { reason: classifyVisionFailure(error, "model") }; }
@@ -355,10 +355,10 @@ async function performIngest(input: IngestBoardInput, options: OperationOptions)
   };
   const currentSharedFailure = (): typeof sharedFailure => sharedFailure;
   if (imageNodes.size && !sharedFailure && hasVisionBudget(deadline, minVisionSlotMs)) void imageFills();
-  const fallback = (index: number, reason: VisionFallbackReason, retryAfter?: number) => {
+  const fallback = (index: number, reason: VisionFallbackReason, retryAfter?: number, retryAt?: number) => {
     const members = clusterNodesByIndex[index]!;
     refined[index] = { ...refineClusterFromText(clusters[index]!, members), contentHash: contentHashes.get(clusters[index]!.id),
-      incomplete: true, fallbackReason: reason, retryAfter };
+      incomplete: true, fallbackReason: reason, retryAfter, retryAt };
   };
   /**
    * Bounded originals of an image cluster's nodes; single nodes whose original is unusable are rendered instead.
@@ -394,7 +394,7 @@ async function performIngest(input: IngestBoardInput, options: OperationOptions)
       const index = visionQueue[queueCursor++]!;
       const cluster = clusters[index]!;
       const members = clusterNodesByIndex[index]!;
-      if (sharedFailure) { fallback(index, sharedFailure.reason, sharedFailure.retryAfter); continue; }
+      if (sharedFailure) { fallback(index, sharedFailure.reason, sharedFailure.retryAfter, sharedFailure.retryAt); continue; }
       if (!hasVisionBudget(deadline, requiredSlotMs(clusterDurations, minVisionSlotMs))) { fallback(index, "time_budget"); continue; }
       const clusterStartedAt = Date.now();
       let stage: VisionStage = "render";
@@ -410,7 +410,9 @@ async function performIngest(input: IngestBoardInput, options: OperationOptions)
           return withinRequestLimit(await prepareRenders(await downloadRenders(rendered, renderUrls, requestSignal, imageBudget), requestSignal));
         }, deadline, visionBudgetMs, signal);
         const failureAfterRendering = currentSharedFailure();
-        if (failureAfterRendering) { fallback(index, failureAfterRendering.reason, failureAfterRendering.retryAfter); continue; }
+        if (failureAfterRendering) {
+          fallback(index, failureAfterRendering.reason, failureAfterRendering.retryAfter, failureAfterRendering.retryAt); continue;
+        }
         if (!hasVisionBudget(deadline, requiredSlotMs(modelDurations, minVisionSlotMs))) { fallback(index, "time_budget"); continue; }
         const internalEdges = internalEdgesByCluster.get(cluster.id) ?? [];
         stage = "model";
@@ -425,10 +427,11 @@ async function performIngest(input: IngestBoardInput, options: OperationOptions)
         signal?.throwIfAborted();
         const reason = classifyVisionFailure(error, stage);
         const retryDelay = reason !== "payment" && (error instanceof FigmaApiError || error instanceof LlmRequestError) ? error.retryAfter : undefined;
-        const retryAfter = retryDelay && Number.isFinite(retryDelay) && retryDelay > 0
-          ? Date.now() + retryDelay * 1000 : reason === "rate_limit" || reason === "figma_rate_limit" ? Date.now() + 60_000 : undefined;
-        if (STOPPING_REASONS.has(reason)) sharedFailure = { reason, retryAfter };
-        fallback(index, reason, retryAfter);
+        const retryAt = reason !== "payment" && (error instanceof FigmaApiError || error instanceof LlmRequestError) ? error.retryAt : undefined;
+        const retryAfter = retryAt ?? (retryDelay && Number.isFinite(retryDelay) && retryDelay > 0
+          ? Date.now() + retryDelay * 1000 : reason === "rate_limit" || reason === "figma_rate_limit" ? Date.now() + 60_000 : undefined);
+        if (STOPPING_REASONS.has(reason)) sharedFailure = { reason, retryAfter, retryAt };
+        fallback(index, reason, retryAfter, retryAt);
         console.error(`Vision refinement incomplete (${reason}); original sources are retained.`);
       } finally {
         if (options.onProgress) await reportCluster();
@@ -837,6 +840,7 @@ function reuseCluster(
     incomplete: previous.incomplete,
     fallbackReason: previous.fallbackReason,
     retryAfter: previous.retryAfter,
+    retryAt: previous.retryAt,
     contentHash,
   };
 }

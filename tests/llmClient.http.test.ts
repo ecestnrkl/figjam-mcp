@@ -532,7 +532,7 @@ describe("LLM requests through real local HTTP and the OpenAI SDK", () => {
     });
 
     describe("HTTP 429", () => {
-      const midnight = () => { const now = new Date(); return Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1); };
+      const midnight = Date.parse("2026-11-06T00:00:00Z");
       const limited = (response: ServerResponse, headers: Record<string, string> = {}, body: unknown = { error: { code: 429, message: "Rate limit exceeded" } }) => {
         response.writeHead(429, { "content-type": "application/json", ...headers });
         response.end(JSON.stringify(body));
@@ -564,33 +564,37 @@ describe("LLM requests through real local HTTP and the OpenAI SDK", () => {
       });
 
       it.each([
-        ["response headers", true],
-        ["error.metadata.headers", false],
-      ])("reads the daily limit from X-RateLimit-Reset in %s and names midnight UTC", async (_case, inHeaders) => {
+        ["response headers", "response"],
+        ["error.metadata.headers", "metadata"],
+        ["a 200 response body", "body"],
+      ])("reads the daily limit from X-RateLimit-Reset in %s and names midnight UTC", async (_case, location) => {
         vi.stubEnv("LLM_RATE_LIMIT_RETRIES", "1");
-        const reset = midnight();
-        const headers = { "X-RateLimit-Remaining": "0", "X-RateLimit-Reset": String(reset) };
-        const { chatJson } = await localClient((_request, response) => inHeaders ? limited(response, headers)
-          : limited(response, {}, { error: { code: 429, message: "Rate limit exceeded", metadata: { headers } } }));
-        const failure = await chatJson("limited/model", messages, schemaOptions).catch((error: unknown) => error) as Error & { retryAfter: number };
+        let clock = Date.parse("2026-11-05T23:59:00Z");
+        vi.spyOn(Date, "now").mockImplementation(() => clock++);
+        const { chatJson } = await localClient((_request, response) => {
+          const headers = { "X-RateLimit-Remaining": "0", "X-RateLimit-Reset": String(midnight) };
+          if (location === "response") limited(response, headers);
+          else if (location === "metadata") limited(response, {}, { error: { code: 429, message: "Rate limit exceeded", metadata: { headers } } });
+          else json(response, 200, { error: { code: 429, message: "Rate limit exceeded", metadata: { headers } } });
+        });
+        const failure = await chatJson("limited/model", messages, schemaOptions).catch((error: unknown) => error) as Error & { retryAfter: number; retryAt: number };
         expect(requests).toHaveLength(1);
-        expect(Math.abs(failure.retryAfter - (reset - Date.now()) / 1000)).toBeLessThanOrEqual(2);
-        const day = new Date(reset).toISOString().slice(0, 10);
-        expect(failure.message).toContain(`it accepts requests again at about ${day} 00:00 UTC`);
+        expect(failure.retryAt).toBe(midnight);
+        expect(failure.message).toContain("it accepts requests again at about 2026-11-06 00:00 UTC");
       });
 
       it("ignores X-RateLimit-Reset while requests remain and keeps the usual backoff", async () => {
         vi.stubEnv("LLM_RATE_LIMIT_RETRIES", "1");
         vi.stubEnv("LLM_RATE_LIMIT_MAX_BACKOFF_MS", "0");
         const { chatJson } = await localClient((_request, response) => requests.length === 1
-          ? limited(response, { "x-ratelimit-remaining": "3", "x-ratelimit-reset": String(midnight()) }) : success(response));
+          ? limited(response, { "x-ratelimit-remaining": "3", "x-ratelimit-reset": String(midnight) }) : success(response));
         await expect(chatJson("limited/model", messages, schemaOptions)).resolves.toEqual({ ok: true });
         expect(requests).toHaveLength(2);
       });
 
       it("reads the wait of a 429 inside a 200 body and fails at once when it is too long", async () => {
         vi.stubEnv("LLM_RATE_LIMIT_RETRIES", "1");
-        const reset = midnight();
+        const reset = midnight;
         const { chatJson } = await localClient((_request, response) => json(response, 200, { error: { code: 429, message: "Rate limit exceeded",
           metadata: { headers: { "X-RateLimit-Remaining": "0", "X-RateLimit-Reset": String(reset) } } } }));
         const failure = await chatJson("limited/model", messages, schemaOptions).catch((error: unknown) => error) as Error & { status: number; retryAfter: number };
