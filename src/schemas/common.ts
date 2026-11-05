@@ -15,12 +15,18 @@ export const figmaFileKeySchema = z
   .max(FIGMA_FILE_KEY_MAX_LENGTH, "boardId is too long to be a Figma file key")
   .regex(FIGMA_FILE_KEY_PATTERN, "boardId must be an ASCII-alphanumeric Figma file key");
 
+/** A Figma file key and, when the URL names one, the raw value of its node-id parameter (e.g. "5-87"). */
+export interface FigmaUrlReference {
+  fileKey: string;
+  nodeId?: string;
+}
+
 /**
- * Returns the key only for canonical HTTPS Figma file URLs. URL parsing is
- * intentionally shared with ingest_board so schema validation and execution
- * cannot disagree about which host/path is trusted.
+ * Parses canonical HTTPS Figma file URLs only. URL parsing is intentionally
+ * shared with ingest_board so schema validation and execution cannot disagree
+ * about which host/path is trusted.
  */
-export function extractFigmaFileKeyFromUrl(value: string): string | undefined {
+export function parseFigmaUrl(value: string): FigmaUrlReference | undefined {
   let url: URL;
   try {
     url = new URL(value.trim());
@@ -47,7 +53,14 @@ export function extractFigmaFileKeyFromUrl(value: string): string | undefined {
   }
 
   const parsedKey = figmaFileKeySchema.safeParse(key);
-  return parsedKey.success ? parsedKey.data : undefined;
+  if (!parsedKey.success) return undefined;
+  const nodeId = url.searchParams.get("node-id")?.trim();
+  return { fileKey: parsedKey.data, ...(nodeId ? { nodeId } : {}) };
+}
+
+/** Returns the key only for canonical HTTPS Figma file URLs. */
+export function extractFigmaFileKeyFromUrl(value: string): string | undefined {
+  return parseFigmaUrl(value)?.fileKey;
 }
 
 /** An example instead of a pattern: new users copy the URL from the browser. */
@@ -72,3 +85,31 @@ export const topicSchema = z
   .trim()
   .min(1, "topic must not be empty")
   .max(200, "topic must be at most 200 characters");
+
+export const BOARD_ID_MAX_LENGTH = 2048;
+const BOARD_ID_HINT =
+  "boardId must be an ASCII-alphanumeric Figma file key (the <key> in figma.com/board/<key>/…) or a Figma URL. " +
+  FIGMA_URL_HINT;
+
+/**
+ * The boardId of get_board_context, answer_from_board and diff_board: the file
+ * key, or the board URL as copied from the browser.
+ */
+export function parseBoardId(value: string): FigmaUrlReference | undefined {
+  const trimmed = value.trim();
+  const key = figmaFileKeySchema.safeParse(trimmed);
+  return key.success ? { fileKey: key.data } : parseFigmaUrl(trimmed);
+}
+
+export const boardIdInputSchema = z
+  .string()
+  .trim()
+  .min(FIGMA_FILE_KEY_MIN_LENGTH, { error: "boardId is too short to be a Figma file key", abort: true })
+  .max(BOARD_ID_MAX_LENGTH, { error: "boardId is too long", abort: true })
+  .refine((value) => parseBoardId(value) !== undefined, BOARD_ID_HINT);
+
+/** Output field of all tools: the unknown input keys that were dropped (never their values). */
+export const ignoredArgumentsShape = {
+  ignoredArguments: z.array(z.string()).optional()
+    .describe("Unknown input keys that were ignored; their values are not echoed. Absent when none"),
+};

@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { figmaFileKeySchema, figmaFileUrlSchema } from "./common.js";
+import { figmaFileKeySchema, figmaFileUrlSchema, ignoredArgumentsShape } from "./common.js";
 
 /**
  * ingest_board — reads a FigJam/Figma file, clusters its nodes, and caches
@@ -117,6 +117,7 @@ export const ingestBoardOutputShape = {
         .describe("Only with focusNodeIds: the IDs found on the board and the clusters in focus this ingestMode interprets, of them interpreted and pending"),
     })
     .optional(),
+  ...ignoredArgumentsShape,
 };
 
 export const ingestBoardOutputSchema = z.object(ingestBoardOutputShape);

@@ -1424,4 +1424,151 @@ describe("getBoardContext tables", () => {
       cursor: (await getBoardContext({ boardId: data.boardId, topic: "budget", limit: 2 })).structuredContent.nextCursor });
     expect(second.text).toMatch(/\] row 0: Item \| Owner\n\[ev_[a-f0-9]+\] row 3: Budget approval \| Linus/);
   });
+
+  function sectionBoard(boardId: string) {
+    const data = evidenceBoard(boardId, [
+      { ...textNode("5:87", "Pain point: onboarding takes too long."), sectionIds: ["5:8"] },
+      { ...textNode("5:90", "Pain point: reports are slow."), sectionIds: ["5:8"] },
+      { ...textNode("6:1", "Idea: a checklist."), sectionIds: ["6:0"] },
+    ]);
+    data.nodes.push({ ...textNode("5:8", ""), name: "Pain points", type: "SECTION", sectionIds: [] },
+      { ...textNode("6:0", ""), name: "Ideas", type: "SECTION", sectionIds: [] });
+    setBoard(data.boardId, data);
+    return data;
+  }
+
+  describe("notices of the server", () => {
+    it("puts extra notices into the text and into contextText within maxChars", async () => {
+      const data = sectionBoard("Extra123");
+      const sentence = "Ignored unknown argument foo; get_board_context takes boardId, topic.";
+      const result = await getBoardContext({ boardId: data.boardId, maxChars: 2000 }, { notices: [sentence] });
+      expect(result.text).toContain(sentence);
+      expect(result.structuredContent.contextText).toContain(sentence);
+      expect(result.text.length).toBeLessThanOrEqual(2000);
+      expect(JSON.stringify(result.structuredContent).length).toBeLessThanOrEqual(2000);
+    });
+  });
+
+  const link = (key: string, query: string) => `https://www.figma.com/board/${key}/Example?${query}`;
+  const texts = (result: Awaited<ReturnType<typeof getBoardContext>>) => result.structuredContent.evidence.map((item) => item.text);
+
+  describe("node IDs in link form", () => {
+    it.each([
+      ["5-87", "Read 5-87 as 5:87."], ["5%3A87", "Read 5%3A87 as 5:87."],
+      [link("Links123", "node-id=5-87"), "Read 5-87 as 5:87."], [link("Links123", "node-id=5-87&t=AbCdEf-0"), "Read 5-87 as 5:87."],
+      // The URL parser has decoded %3A already: the link names 5:87 itself.
+      [link("Links123", "t=AbCdEf-0&node-id=5%3A87"), undefined],
+    ])("reads the node ID %s", async (value, notice) => {
+      const data = sectionBoard("Links123");
+      const result = await getBoardContext({ boardId: data.boardId, nodeIds: [value], detail: "full" });
+      expect(texts(result)).toEqual(["Pain point: onboarding takes too long."]);
+      expect(result.structuredContent.unknownNodeIds).toBeUndefined();
+      if (notice) expect(result.text).toContain(notice);
+      else expect(result.text).not.toContain("Read ");
+    });
+
+    it("names the conversion once, in the text and in contextText, within maxChars", async () => {
+      const data = sectionBoard("Notice123");
+      const result = await getBoardContext({ boardId: data.boardId, nodeIds: ["5-8", "6:1"], detail: "full", maxChars: 2000 });
+      expect(result.text.match(/Read 5-8 as 5:8\./g)).toHaveLength(1);
+      expect(result.structuredContent.contextText).toContain("Read 5-8 as 5:8.");
+      expect(result.text.length).toBeLessThanOrEqual(2000);
+      expect(JSON.stringify(result.structuredContent).length).toBeLessThanOrEqual(2000);
+      expect(texts(result)).toContain("Idea: a checklist.");
+      expect(texts(result)).toContain("Pain point: reports are slow.");
+    });
+
+    it("reads the link form of a section and of several IDs in one call", async () => {
+      const data = sectionBoard("Several123");
+      const result = await getBoardContext({ boardId: data.boardId, nodeIds: ["5-8", "6-1"], detail: "full" });
+      expect(texts(result).sort()).toEqual(["Idea: a checklist.", "Pain point: onboarding takes too long.", "Pain point: reports are slow."]);
+      expect(result.text).toContain("Read 5-8 as 5:8, 6-1 as 6:1.");
+    });
+
+    it("keeps an ID that exists in the snapshot as it is, even with a dash", async () => {
+      const data = evidenceBoard("Dash123", [textNode("5-87", "Dashed ID."), textNode("5:87", "Colon ID.")]);
+      setBoard(data.boardId, data);
+      const result = await getBoardContext({ boardId: data.boardId, nodeIds: ["5-87"], detail: "full" });
+      expect(texts(result)).toEqual(["Dashed ID."]);
+      expect(result.text).not.toContain("Read 5-87");
+    });
+
+    it("reads the I…;… form of an instance child", async () => {
+      const data = evidenceBoard("Instance123", [textNode("I5:87;1:2", "Inside an instance.")]);
+      setBoard(data.boardId, data);
+      const result = await getBoardContext({ boardId: data.boardId, nodeIds: ["I5-87%3B1-2"], detail: "full" });
+      expect(texts(result)).toEqual(["Inside an instance."]);
+      expect(result.text).toContain("Read I5-87%3B1-2 as I5:87;1:2.");
+    });
+
+    it("still reports an ID that is unknown in either form", async () => {
+      const data = sectionBoard("Unknown123");
+      const result = await getBoardContext({ boardId: data.boardId, nodeIds: ["5-87", "9-9"], detail: "full" });
+      expect(result.structuredContent.unknownNodeIds).toEqual(["9:9"]);
+      await expect(getBoardContext({ boardId: data.boardId, nodeIds: ["9-9"] })).rejects.toThrow("No node with ID 9:9 in snapshot");
+    });
+
+    it("rejects a link of another board with both file keys, before reading any board", async () => {
+      sectionBoard("Mine123");
+      await expect(getBoardContext({ boardId: "Mine123", nodeIds: [link("Other456", "node-id=5-87")] }))
+        .rejects.toThrow("A Figma link in nodeIds belongs to board Other456, but boardId is board Mine123.");
+      await expect(getBoardContext({ boardId: "Missing789", nodeIds: [link("Other456", "node-id=5-87")] }))
+        .rejects.toThrow("belongs to board Other456, but boardId is board Missing789");
+    });
+  });
+
+  describe("board URL as boardId", () => {
+    it("takes the board URL as boardId and names the file key", async () => {
+      const data = sectionBoard("UrlBoard123");
+      const result = await getBoardContext({ boardId: link(data.boardId, "t=abc") });
+      expect(result.text).toContain("FigJam board UrlBoard123 — snapshot");
+      expect(JSON.stringify(result.structuredContent)).not.toContain("figma.com/board/UrlBoard123/Example");
+      expect(result.structuredContent.totalMatched).toBe(3);
+    });
+
+    it.each([
+      ["5-87", ["Pain point: onboarding takes too long."], "Read 5-87 as 5:87."],
+      ["5%3A87", ["Pain point: onboarding takes too long."], undefined],
+      ["5:87", ["Pain point: onboarding takes too long."], undefined],
+    ])("reads the node-id %s of a board URL without nodeIds, topic and outsideSections", async (nodeId, expected, notice) => {
+      const data = sectionBoard("UrlNode123");
+      const result = await getBoardContext({ boardId: link(data.boardId, `node-id=${nodeId}&t=abc`), detail: "full" });
+      expect(texts(result)).toEqual(expected);
+      if (notice) expect(result.text).toContain(notice);
+      else expect(result.text).not.toContain("Read ");
+    });
+
+    it("reads the section of a board URL like nodeIds with that ID", async () => {
+      const data = sectionBoard("UrlSection123");
+      const byUrl = await getBoardContext({ boardId: link(data.boardId, "node-id=5-8"), detail: "full" });
+      const byIds = await getBoardContext({ boardId: data.boardId, nodeIds: ["5:8"], detail: "full" });
+      expect(texts(byUrl)).toEqual(texts(byIds));
+      expect(texts(byUrl)).toHaveLength(2);
+    });
+
+    it.each([
+      [{ topic: "checklist" }, ["Idea: a checklist."]],
+      [{ nodeIds: ["6:1"] }, ["Idea: a checklist."]],
+    ])("ignores the node-id of a board URL when %j is given", async (extra, expected) => {
+      const data = sectionBoard("UrlIgnored123");
+      const result = await getBoardContext({ boardId: link(data.boardId, "node-id=5-87"), detail: "full", ...extra });
+      expect(texts(result)).toEqual(expected);
+    });
+
+    it("ignores the node-id of a board URL with outsideSections", async () => {
+      const data = evidenceBoard("UrlOutside123", [{ ...textNode("5:87", "Inside."), sectionIds: ["5:8"] }, { ...textNode("7:1", "Outside."), sectionIds: [] }]);
+      data.nodes.push({ ...textNode("5:8", ""), name: "Pain points", type: "SECTION", sectionIds: [] });
+      setBoard(data.boardId, data);
+      const result = await getBoardContext({ boardId: link(data.boardId, "node-id=5-87"), outsideSections: true, detail: "full" });
+      expect(texts(result)).toEqual(["Outside."]);
+    });
+
+    it("pages through a board URL with the same URL and cursor", async () => {
+      const data = sectionBoard("UrlPages123");
+      const url = link(data.boardId, "node-id=5-8");
+      const first = await getBoardContext({ boardId: url, detail: "full", limit: 1 });
+      const second = await getBoardContext({ boardId: url, detail: "full", limit: 1, cursor: first.structuredContent.nextCursor });
+      expect([...texts(first), ...texts(second)].sort()).toEqual(["Pain point: onboarding takes too long.", "Pain point: reports are slow."]);
+    });
+  });
 });

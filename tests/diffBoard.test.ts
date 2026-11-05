@@ -125,6 +125,22 @@ describe("diffBoard", () => {
     expect(output.stats.modifiedClusters).toBe(1);
   });
 
+  it.each([
+    "https://www.figma.com/board/AbC123/Example",
+    "https://www.figma.com/design/AbC123/Example?node-id=5-87&t=abc",
+  ])("takes the board URL %s as boardId and reports the file key", async (url) => {
+    readBoardHistoryMock.mockResolvedValue([
+      { cacheKey: "k1", nodeHash: "h1", createdAt: 1000 },
+      { cacheKey: "k2", nodeHash: "h2", createdAt: 2000 },
+    ]);
+    readCachedBoardMock.mockImplementation(async (key: string) => key === "k1" ? snapshot(1000, "Before") : snapshot(2000, "After"));
+    const output = await diffBoard({ boardId: url, compareTo: 1 });
+    expect(readBoardHistoryMock).toHaveBeenCalledWith("AbC123");
+    expect(output.boardId).toBe("AbC123");
+    expect(output.stats.editedNodes).toBe(1);
+    expect(JSON.stringify(output)).not.toContain("/Example");
+  });
+
   it("fails without ingest history", async () => {
     await expect(diffBoard({ boardId: "AbC123", compareTo: 1 })).rejects.toThrow(
       /No ingest history/,

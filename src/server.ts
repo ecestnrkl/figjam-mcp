@@ -23,6 +23,7 @@ import { getBoardContext } from "./tools/getBoardContext.js";
 import { answerFromBoard, answerText } from "./tools/answerFromBoard.js";
 import { diagnoseLlmConfig } from "./tools/diagnoseLlmConfig.js";
 import { diffBoard } from "./tools/diffBoard.js";
+import { guardToolInput, ignoredArgumentsOf, type IgnoredArguments } from "./lib/toolInput.js";
 import { redactError, redactOutputSecrets, withSecretScope } from "./lib/secrets.js";
 
 interface PackageMetadata {
@@ -87,7 +88,7 @@ export function createServer(): McpServer {
       description:
         "Read a FigJam/Figma URL with the configured Figma token and persist a local snapshot for get_board_context, answer_from_board and diff_board; the summary names the largest sections to read next and how many excerpts lie outside sections. Leaves the Figma file unchanged. Every call downloads the board from Figma (one Tier 1 request); get_board_context and answer_from_board read the saved snapshot without a new request. Balanced/quality modes may send board text and images to the configured LLM provider and incur charges; max_speed skips vision. Re-ingest to refresh stale content and continue pending image interpretation; focusNodeIds with section IDs from the summary or the first page of get_board_context interprets their images first. Local history is bounded. Supports framework phases or customPhases.",
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
-      inputSchema: ingestBoardInputSchema,
+      inputSchema: guardToolInput("ingest_board", ingestBoardInputSchema),
       outputSchema: z.object(ingestBoardOutputShape),
     },
     async (input, ctx) => safeTool(async () => {
@@ -101,10 +102,7 @@ export function createServer(): McpServer {
           });
         },
       });
-      return {
-        content: [{ type: "text" as const, text: output.summary }],
-        structuredContent: output,
-      };
+      return toolResult(output.summary, output, ignoredArgumentsOf(input));
     }, [input.figmaAccessToken ?? ""]),
   );
 
@@ -115,15 +113,13 @@ export function createServer(): McpServer {
       description:
         "Read source-cited context from an ingested board snapshot. Start overviews, summaries and documentation with a call without topic, nodeIds, limit and maxChars: its first page names the largest sections and lists sections with IDs. Then pass section, page, frame or group IDs as nodeIds; several IDs share each page in request order. For a whole-board summary, pass all top-level section IDs (at most 50 per call) with maxChars 24000, follow nextCursor, then read outsideSections: true. Default detail: \"auto\" switches reads of multiple distinct IDs or one page, section, frame or group to a compact overview only when the first full page would leave unread excerpts. Overview lines contain node IDs and deterministically shortened text (50–120 characters); structuredContent puts the excerpts once in overview.text, with empty evidence and clusters. limit applies only to the full view and is ignored in an overview, even when explicit. Read the complete source and Figma link with the same boardId and snapshotId, nodeIds: [\"<ID>\"] and detail: \"full\"; table IDs read every row. Without overview, excerpts are in evidence. Read outsideSections: true, search with topic, or continue with cursor. Cite the node ID or Figma link behind each statement. Synthesize the answer yourself. No network or LLM calls; use ingest_board to refresh Figma content.",
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-      inputSchema: getBoardContextInputSchema,
+      inputSchema: guardToolInput("get_board_context", getBoardContextInputSchema),
       outputSchema: z.object(getBoardContextOutputShape),
     },
     async (input) => safeTool(async () => {
-      const { text, structuredContent } = await getBoardContext(input);
-      return {
-        content: [{ type: "text" as const, text }],
-        structuredContent,
-      };
+      const ignored = ignoredArgumentsOf(input);
+      const { text, structuredContent } = await (ignored ? getBoardContext(input, { notices: [ignored.sentence] }) : getBoardContext(input));
+      return toolResult(text, structuredContent, ignored, false);
     }),
   );
 
@@ -134,15 +130,12 @@ export function createServer(): McpServer {
       description:
         "Answer one specific question, such as a number, a status or a decision, from the most relevant excerpts of an ingested board, with validated source citations or an insufficient-evidence result. It finds excerpts by the question's words (whole words, ignoring case and accents (words of five or more letters also match compounds that begin with them); no other word forms, synonyms or translations), so ask with the board's words and language. Keep its citations (node ID and Figma link) with the statements they support. It reads only a handful of excerpts: not for summaries, lists, risks or next steps across several sections; read those with get_board_context. Sends the question and the selected excerpts to the configured LLM provider; calls may incur charges.",
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: false, openWorldHint: true },
-      inputSchema: answerFromBoardInputSchema,
+      inputSchema: guardToolInput("answer_from_board", answerFromBoardInputSchema),
       outputSchema: z.object(answerFromBoardOutputShape),
     },
     async (input, ctx) => safeTool(async () => {
       const output = await answerFromBoard(input, { signal: ctx.mcpReq.signal });
-      return {
-        content: [{ type: "text" as const, text: answerText(output) }],
-        structuredContent: output,
-      };
+      return toolResult(answerText(output), output, ignoredArgumentsOf(input));
     }),
   );
 
@@ -153,15 +146,12 @@ export function createServer(): McpServer {
       description:
         "Compare retained local snapshots of the same board, reporting cluster, node and connector changes. Names each changed node with its section and its old and new text, and each changed table cell with its row and column. Needs two ingests; when the board did not change in between, it reports no changes since the first. compareTo=1 selects the previous snapshot, 2 selects two states back. No network or LLM calls; ingest_board must capture the current Figma state first.",
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-      inputSchema: diffBoardInputSchema,
+      inputSchema: guardToolInput("diff_board", diffBoardInputSchema),
       outputSchema: z.object(diffBoardOutputShape),
     },
     async (input) => safeTool(async () => {
       const output = await diffBoard(input);
-      return {
-        content: [{ type: "text" as const, text: output.summaryText }],
-        structuredContent: output,
-      };
+      return toolResult(output.summaryText, output, ignoredArgumentsOf(input));
     }),
   );
 
@@ -172,19 +162,28 @@ export function createServer(): McpServer {
       description:
         "Test the configured text and vision models with three small synthetic JSON challenges. Sends synthetic text and an image to the configured provider, may incur charges, and reports semantic/schema failures. Does not read board contents. Use after changing model/provider settings.",
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: false, openWorldHint: true },
-      inputSchema: diagnoseLlmConfigInputSchema,
+      inputSchema: guardToolInput("diagnose_llm_config", diagnoseLlmConfigInputSchema),
       outputSchema: z.object(diagnoseLlmConfigOutputShape),
     },
-    async (_input, ctx) => safeTool(async () => {
+    async (input, ctx) => safeTool(async () => {
       const output = await diagnoseLlmConfig({ signal: ctx.mcpReq.signal });
-      return {
-        content: [{ type: "text" as const, text: output.summary }],
-        structuredContent: output,
-      };
+      return toolResult(output.summary, output, ignoredArgumentsOf(input));
     }),
   );
 
   return server;
+}
+
+/**
+ * Text content and structuredContent of a result. Unknown input keys that were dropped are named
+ * in both, because some hosts read only one of them. get_board_context puts the sentence into its
+ * own text, within maxChars, so it passes appendToText = false.
+ */
+function toolResult<T extends object>(text: string, output: T, ignored: IgnoredArguments | undefined, appendToText = true) {
+  return {
+    content: [{ type: "text" as const, text: ignored && appendToText ? `${text}\n\n${ignored.sentence}` : text }],
+    structuredContent: ignored ? { ...output, ignoredArguments: ignored.keys } : output,
+  };
 }
 
 async function safeTool<T>(run: () => Promise<T>, additionalSecrets: string[] = []): Promise<T> {

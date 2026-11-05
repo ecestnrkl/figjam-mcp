@@ -174,6 +174,22 @@ export async function hasLegacyBoard(fileKey: string): Promise<boolean> {
   key.parse(fileKey);
   try { await stat(path.join(legacyRoot(), `latest-${fileKey}.json`)); return true; } catch { return false; }
 }
+/** File keys with a board manifest, in the case they were stored; names only, so a lookup stays cheap. */
+export async function listStoredFileKeys(): Promise<string[]> {
+  let names: string[];
+  try { names = await readdir(cacheDirectory()); } catch { return []; }
+  return names.flatMap(name => /^board-([A-Za-z0-9_-]{1,128})\.json$/.exec(name)?.[1] ?? []);
+}
+export interface StoredBoard { fileKey: string; lastIngestAt: number }
+/** The boards in the cache, most recently ingested first; only file keys and times. */
+export async function listStoredBoards(): Promise<StoredBoard[]> {
+  const boards: StoredBoard[] = [];
+  for (const fileKey of await listStoredFileKeys()) {
+    const last = (await readManifest(fileKey))?.history.at(-1);
+    if (last) boards.push({ fileKey, lastIngestAt: last.createdAt });
+  }
+  return boards.sort((a, b) => b.lastIngestAt - a.lastIngestAt || compareCodeUnits(a.fileKey, b.fileKey));
+}
 export async function readBoardHistory(fileKey: string): Promise<BoardHistoryEntry[]> {
   return (await readManifest(fileKey))?.history ?? [];
 }

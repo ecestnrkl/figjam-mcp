@@ -227,3 +227,133 @@ describe("MCP wire contract", () => {
     await rejected;
   });
 });
+
+const BOARD_URL = "https://www.figma.com/board/Board123/Example";
+const contextOutput = { contextText: "Context.", clusters: [], snapshotId: "snapshot1", evidence: [], connections: [], totalMatched: 0, truncated: false,
+  truncation: { remainingEvidence: 0, omittedConnections: 0, omittedRelations: 0, omittedTextConnections: 0, omittedTextRelations: 0 } };
+const diffOutput = { boardId: "Board123", baselineCreatedAt: "2026-01-01T00:00:00.000Z", currentCreatedAt: "2026-01-02T00:00:00.000Z",
+  summaryText: "No changes.", newClusters: [], removedClusters: [], modifiedClusters: [], addedConnections: [], removedConnections: [],
+  stats: { addedNodes: 0, removedNodes: 0, editedNodes: 0, newClusters: 0, removedClusters: 0, modifiedClusters: 0, unchangedClusters: 0, addedConnections: 0, removedConnections: 0 } };
+const diagnoseOutput = { ok: true, preset: "synthetic", visionModels: [], textModels: [], fastTextModels: [], providerRequireParameters: false, checks: [], summary: "All checks passed." };
+
+/** Every tool with arguments that are valid and a handler result the output schema accepts. */
+const toolCases = [
+  { name: "ingest_board", handler: () => handlers.ingest, args: { figmaFileUrl: BOARD_URL },
+    result: { boardId: "Board123", clusterCount: 0, summary: "Ingested." }, text: "Ingested.",
+    params: "figmaFileUrl, figmaAccessToken, docStructureHint, customPhases, ingestMode, forceFullIngest, focusNodeIds" },
+  { name: "get_board_context", handler: () => handlers.context, args: { boardId: "Board123" },
+    result: { text: "Context.", structuredContent: contextOutput }, text: "Context.",
+    params: "boardId, topic, nodeIds, outsideSections, snapshotId, detail, limit, cursor, maxChars" },
+  { name: "answer_from_board", handler: () => handlers.answer, args: { boardId: "Board123", question: "What changed?" },
+    result: { answer: "Nothing.", citedClusters: [], snapshotId: "snapshot1", citations: [] }, text: "Nothing.\n\nSnapshot snapshot1.",
+    params: "boardId, question, snapshotId" },
+  { name: "diff_board", handler: () => handlers.diff, args: { boardId: "Board123" },
+    result: diffOutput, text: "No changes.", params: "boardId, compareTo" },
+  { name: "diagnose_llm_config", handler: () => handlers.diagnose, args: {},
+    result: diagnoseOutput, text: "All checks passed.", params: "" },
+] as const;
+
+describe("input keys hosts send", () => {
+  it.each([
+    ["ingest_board", { figmaFileUrl: BOARD_URL, ingest_mode: "max_speed" }, "ingest_mode — did you mean ingestMode?"],
+    ["ingest_board", { figmaFileUrl: BOARD_URL, force_full_ingest: true }, "force_full_ingest — did you mean forceFullIngest?"],
+    ["ingest_board", { figma_file_url: BOARD_URL }, "figma_file_url — did you mean figmaFileUrl?"],
+    ["get_board_context", { boardId: "Board123", node_ids: ["5:8"] }, "node_ids — did you mean nodeIds?"],
+    ["get_board_context", { boardId: "Board123", NodeIds: ["5:8"] }, "NodeIds — did you mean nodeIds?"],
+    ["get_board_context", { boardId: "Board123", max_chars: 4000 }, "max_chars — did you mean maxChars?"],
+    ["get_board_context", { board_id: "Board123" }, "board_id — did you mean boardId?"],
+    ["answer_from_board", { boardId: "Board123", question: "Why?", snapshot_id: "abc" }, "snapshot_id — did you mean snapshotId?"],
+    ["diff_board", { boardId: "Board123", "compare-to": 2 }, "compare-to — did you mean compareTo?"],
+  ] as const)("ends %s with a suggestion for %j before any work", async (name, args, suggestion) => {
+    const result = await client.callTool({ name, arguments: args });
+    expect(result.isError).toBe(true);
+    expect(JSON.stringify(result.content)).toContain(`Unknown argument ${suggestion}`);
+    expect(JSON.stringify(result.content)).toContain("Nothing was done.");
+    expect(toolCases.every(tool => tool.handler().mock.calls.length === 0)).toBe(true);
+  });
+
+  it("names several misspelled keys in one message", async () => {
+    const result = await client.callTool({ name: "get_board_context", arguments: { boardId: "Board123", node_ids: ["5:8"], max_chars: 4000, foo: 1 } });
+    expect(result.isError).toBe(true);
+    expect(result.content).toEqual([{ type: "text", text:
+      "Unknown argument node_ids — did you mean nodeIds? Unknown argument max_chars — did you mean maxChars? Nothing was done." }]);
+  });
+
+  it.each(toolCases)("runs $name with an unknown key and names it without its value", async ({ name, handler, args, result: output, text, params }) => {
+    handler().mockResolvedValue(output);
+    const secret = "unknown-value-secret-7431";
+    const result = await client.callTool({ name, arguments: { ...args, foo: secret, nodeID: [secret] } });
+    expect(result.isError).not.toBe(true);
+    const expected = `Ignored unknown arguments foo, nodeID; ${name} takes ${params || "no arguments"}.`;
+    expect(result.structuredContent).toMatchObject({ ignoredArguments: ["foo", "nodeID"] });
+    expect(JSON.stringify(result)).not.toContain(secret);
+    expect(handler()).toHaveBeenCalledTimes(1);
+    expect(handler().mock.calls[0]![0]).not.toHaveProperty("foo");
+    const textContent = (result.content as Array<{ text: string }>)[0]!.text;
+    if (name === "get_board_context") {
+      // The sentence travels into the handler, which counts it against maxChars.
+      expect(handler().mock.calls[0]![1]).toEqual({ notices: [expected] });
+    } else {
+      expect(textContent).toBe(`${text}\n\n${expected}`);
+    }
+  });
+
+  it.each(toolCases)("adds neither text nor ignoredArguments to $name without unknown keys", async ({ name, handler, args, result: output, text }) => {
+    handler().mockResolvedValue(output);
+    const result = await client.callTool({ name, arguments: args });
+    expect(result.isError).not.toBe(true);
+    expect(result.structuredContent).not.toHaveProperty("ignoredArguments");
+    expect(JSON.stringify(result.content)).not.toContain("Ignored unknown");
+    if (name === "get_board_context") expect(handler()).toHaveBeenCalledWith(expect.objectContaining(args));
+    else expect((result.content as Array<{ text: string }>)[0]!.text).toBe(text);
+  });
+
+  it("takes a single unknown key in the singular", async () => {
+    handlers.diagnose.mockResolvedValue(diagnoseOutput);
+    const result = await client.callTool({ name: "diagnose_llm_config", arguments: { verbose: true } });
+    expect((result.content as Array<{ text: string }>)[0]!.text).toBe("All checks passed.\n\nIgnored unknown argument verbose; diagnose_llm_config takes no arguments.");
+  });
+
+  it("advertises ignoredArguments on every output and leaves the inputs open", async () => {
+    const { tools } = await client.listTools();
+    for (const tool of tools) expect((tool.outputSchema?.properties as Record<string, unknown>).ignoredArguments).toMatchObject({ type: "array" });
+    for (const tool of tools) expect(tool.inputSchema).not.toHaveProperty("additionalProperties", false);
+  });
+});
+
+describe("boardId as a key or a URL", () => {
+  it("advertises boardId as a key or URL without a pattern", async () => {
+    const { tools } = await client.listTools();
+    for (const name of ["get_board_context", "answer_from_board", "diff_board"]) {
+      const boardId = (tools.find(tool => tool.name === name)!.inputSchema.properties as Record<string, Record<string, unknown>>).boardId!;
+      expect(boardId).not.toHaveProperty("pattern");
+      expect(boardId).toMatchObject({ type: "string", minLength: 6, maxLength: 2048 });
+      expect(boardId.description).toMatch(/key.*URL/);
+    }
+  });
+
+  it.each([
+    ["get_board_context", { boardId: BOARD_URL }],
+    ["answer_from_board", { boardId: "https://www.figma.com/design/Board123/Example?node-id=5-87", question: "What changed?" }],
+    ["diff_board", { boardId: BOARD_URL }],
+  ] as const)("hands the board URL of %s to the tool", async (name, args) => {
+    const tool = toolCases.find(candidate => candidate.name === name)!;
+    tool.handler().mockResolvedValue(tool.result);
+    const result = await client.callTool({ name, arguments: args });
+    expect(result.isError).not.toBe(true);
+    expect(tool.handler().mock.calls[0]![0].boardId).toBe(args.boardId);
+  });
+
+  it.each([
+    ["not-a-board!", "ASCII-alphanumeric Figma file key"],
+    ["https://example.com/board/Board123/Example", "Expected a Figma URL like https://www.figma.com/board/<file_key>/<name>"],
+    ["https://www.figma.com/files/recent", "ASCII-alphanumeric Figma file key"],
+    ["abc", "boardId is too short to be a Figma file key"],
+  ])("rejects the boardId %j", async (boardId, message) => {
+    const result = await client.callTool({ name: "get_board_context", arguments: { boardId } });
+    expect(result.isError).toBe(true);
+    expect(JSON.stringify(result.content)).toContain(message);
+    expect(handlers.context).not.toHaveBeenCalled();
+  });
+});
+

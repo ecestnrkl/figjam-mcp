@@ -189,7 +189,9 @@ support](https://forum.cursor.com/t/agent-acp-mcp-tools-call-times-out-at-60s-wi
 
 Then ask your assistant to ingest a board URL, for example *"Ingest
 https://www.figma.com/board/FILE_KEY/Name and list the open questions."*
-The `boardId` of every later call is the file key from that URL. To summarize
+The `boardId` of every later call is the file key from that URL, or the URL
+itself; a URL with a `node-id` and without `nodeIds`, `topic` and
+`outsideSections` makes `get_board_context` read that node. To summarize
 a board, the assistant calls `ingest_board`, then `get_board_context` without
 parameters, whose first page names the largest sections and includes a section
 overview with IDs within the page's size limit, and then reads the largest sections
@@ -201,6 +203,18 @@ its Figma link with the same `boardId` and `snapshotId`, the line's ID in
 `nodeIds`, and `detail: "full"`. For a table row, use its table ID.
 Everything that lies in no section, such as loose notes and tables, comes with
 `outsideSections: true`.
+
+Inputs are read as hosts and users send them. A node ID in link form (`5-87`,
+`5%3A87`, `I5-87%3B1-2`) or a Figma link of the same board with a `node-id` is
+read as the ID it stands for (`5:87`) in `nodeIds` and `focusNodeIds`, and the
+text says so once; an ID that exists in the snapshot is never changed, and a
+link of another board is an error. A key that differs from a parameter only in
+case, `_` or `-` (`ingest_mode`, `node_ids`) ends the call with
+"did you mean …" before anything is done; any other unknown key is ignored and
+named, without its value, in the text and in `ignoredArguments` of
+`structuredContent`. File keys are case-sensitive: an unknown `boardId` lists
+the stored boards (at most 10, most recent first) and names a key that differs
+only in case.
 
 All settings: [configuration](https://github.com/ecestnrkl/figjam-mcp/blob/main/docs/configuration.md).
 Problems: [troubleshooting](https://github.com/ecestnrkl/figjam-mcp/blob/main/docs/troubleshooting.md).

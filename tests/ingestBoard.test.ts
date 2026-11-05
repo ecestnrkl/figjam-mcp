@@ -62,6 +62,7 @@ vi.mock("../src/lib/persistentCache.js", () => ({
   buildSnapshotId: () => "snapshot-id",
   readLatestBoard: readLatestBoardMock,
   readBoardHead: async () => ({ damaged: false }),
+  listStoredFileKeys: async () => [],
 }));
 
 const { flattenNodeTree } = await import("../src/lib/nodeTree.js");
@@ -1349,6 +1350,42 @@ describe("ingestBoard", () => {
       expect(output.qualityReport?.focus).toEqual({ requestedIds: ["9:99", "5:1", "8:88"], foundIds: ["5:1"], imageClusters: 3, interpreted: 3, pending: 0 });
       expect(output.summary).toContain("Focus: 3 of 3 image clusters interpreted, 0 pending. 2 of 3 focusNodeIds not found on the board: 9:99, 8:88.");
       expect(refineClusterWithVisionMock).toHaveBeenCalledTimes(6);
+    });
+
+    it.each([
+      ["5-1", "Read 5-1 as 5:1."],
+      ["5%3A1", "Read 5%3A1 as 5:1."],
+      ["https://www.figma.com/board/AbC123/Test?node-id=5-1&t=AbCdEf-0", "Read 5-1 as 5:1."],
+      ["https://www.figma.com/design/AbC123/Test?t=AbCdEf-0&node-id=5%3A1", undefined],
+    ])("reads the focus ID %s as 5:1", async (value, notice) => {
+      fetchFileTreeMock.mockResolvedValue(focusTree());
+      const output = await ingestBoard({ ...balanced, focusNodeIds: [value, "5:1"] });
+      expect(output.qualityReport?.focus).toEqual({ requestedIds: ["5:1"], foundIds: ["5:1"], imageClusters: 3, interpreted: 3, pending: 0 });
+      expect(output.summary).not.toContain("not found on the board");
+      if (notice) expect(output.summary).toContain(notice);
+      else expect(output.summary).not.toContain("Read ");
+    });
+
+    it("keeps a focus ID that exists on the board unchanged, even with a dash", async () => {
+      fetchFileTreeMock.mockResolvedValue(JSON.parse(JSON.stringify(focusTree()).replaceAll('"a:2"', '"a-2"')));
+      const output = await ingestBoard({ ...balanced, focusNodeIds: ["a-2"] });
+      expect(output.qualityReport?.focus).toMatchObject({ requestedIds: ["a-2"], foundIds: ["a-2"] });
+      expect(output.summary).not.toContain("Read ");
+    });
+
+    it("reads the link form of a focus ID on a board loaded from cache", async () => {
+      readCachedBoardMock.mockResolvedValueOnce(cachedBoard());
+      const output = await ingestBoard({ ...balanced, focusNodeIds: ["1-2"] });
+      expect(output.qualityReport?.focus).toMatchObject({ requestedIds: ["1:2"], foundIds: ["1:2"] });
+      expect(output.summary).toContain("Read 1-2 as 1:2.");
+    });
+
+    it("rejects a link of another board before any Figma request", async () => {
+      await expect(ingestBoard({ ...balanced, focusNodeIds: ["5:1", "https://www.figma.com/board/Other456/Test?node-id=5-1"] }))
+        .rejects.toThrow("A Figma link in focusNodeIds belongs to board Other456, but figmaFileUrl is board AbC123.");
+      await expect(ingestBoard({ ...balanced, focusNodeIds: ["https://www.figma.com/board/AbC123/Test"] }))
+        .rejects.toThrow("A Figma link in focusNodeIds must carry a node-id");
+      expect(fetchFileTreeMock).not.toHaveBeenCalled();
     });
 
     it("has no effect in max_speed", async () => {

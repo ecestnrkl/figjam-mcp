@@ -31,6 +31,33 @@ describe("shared input validation", () => {
     expect(diffBoardInputSchema.safeParse({ boardId: "AbC123" }).success).toBe(true);
   });
 
+  it.each([
+    ["answer_from_board", (boardId: string) => answerFromBoardInputSchema.safeParse({ boardId, question: "What?" })],
+    ["diff_board", (boardId: string) => diffBoardInputSchema.safeParse({ boardId })],
+    ["get_board_context", (boardId: string) => getBoardContextInputSchema.safeParse({ boardId })],
+  ])("takes a Figma board URL as the boardId of %s, unchanged", (_tool, parse) => {
+    for (const boardId of [FIGMA_URL, `${FIGMA_URL}?node-id=5-87&t=abc`, `https://www.figma.com/design/${FILE_KEY}/Example`]) {
+      const result = parse(boardId);
+      expect(result.success).toBe(true);
+      expect(result.data?.boardId).toBe(boardId);
+    }
+  });
+
+  it.each([
+    ["abc-def", "ASCII-alphanumeric Figma file key"],
+    ["https://example.com/board/AbC123/Example", "Expected a Figma URL like https://www.figma.com/board/<file_key>/<name>"],
+    ["https://www.figma.com/files/recent", "ASCII-alphanumeric Figma file key"],
+    ["http://www.figma.com/board/AbC123/Example", "or a Figma URL"],
+    ["a".repeat(129), "ASCII-alphanumeric Figma file key"],
+    ["abc", "boardId is too short to be a Figma file key"],
+    [`https://www.figma.com/board/${FILE_KEY}/${"x".repeat(2100)}`, "boardId is too long"],
+  ])("rejects the boardId %j with a message that names key and URL form", (boardId, message) => {
+    const result = diffBoardInputSchema.safeParse({ boardId });
+    expect(result.success).toBe(false);
+    expect(result.error?.issues.map((issue) => issue.message).join("\n")).toContain(message);
+    expect(result.error?.issues).toHaveLength(1);
+  });
+
   it("rejects empty and overlong questions or topics", () => {
     expect(
       answerFromBoardInputSchema.safeParse({ boardId: FILE_KEY, question: "   " }).success,
