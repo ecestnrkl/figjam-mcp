@@ -7,6 +7,7 @@ import {
 } from "../schemas/getBoardContext.js";
 import { parseBoardId } from "../schemas/common.js";
 import { getBoardOrRestore, getBoardReadWarning } from "../lib/cache.js";
+import { assertBoardKeyCase, unknownBoardMessage } from "../lib/boardLookup.js";
 import { assertLinksOfBoard, conversionNotice, resolveNodeIds } from "../lib/nodeIds.js";
 import { readBoardHistory } from "../lib/persistentCache.js";
 import { redactBoard } from "../lib/redact.js";
@@ -95,6 +96,7 @@ export async function getBoardContext(input: GetBoardContextInput, extra: { noti
   const requested = { ...parsed, boardId };
   if (requested.nodeIds) assertLinksOfBoard(requested.nodeIds, boardId, "nodeIds", "boardId");
   const cursor = requested.cursor ? decodeCursor(requested.cursor) : undefined;
+  await assertBoardKeyCase(`Board "${boardId}" not found.`, boardId);
   const query = querySignature(requested);
   const cursorQuery = cursor?.version === 2 ? query : legacyQuerySignature(requested);
   if (cursor && ((cursor.query !== undefined && cursor.query !== cursorQuery) ||
@@ -103,7 +105,7 @@ export async function getBoardContext(input: GetBoardContextInput, extra: { noti
   }
   const stored = cursor && !requested.snapshotId ? await cursorBoard(boardId, cursor)
     : await getBoardOrRestore(boardId, requested.snapshotId);
-  if (!stored) throw new Error(`Board "${boardId}" not found — run ingest_board first.`);
+  if (!stored) throw new Error(await unknownBoardMessage(`Board "${boardId}" not found.`, boardId));
   // Snapshots cached before redaction existed are redacted here too.
   const board = redactBoard(stored);
   // IDs in link form are read as the IDs they stand for; a link of the board names its node.

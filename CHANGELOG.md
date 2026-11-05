@@ -5,6 +5,7 @@
 - A key that equals a parameter except for case, `_` or `-` (`ingest_mode`, `node_ids`, `figma_file_url`) ends the call with "did you mean …" before any work; other unknown keys are ignored as before, named without their values in the text and in the new `ignoredArguments` of `structuredContent`.
 - `nodeIds` and `focusNodeIds` read IDs in link form (`5-87`, `5%3A87`, `I5-87%3B1-2`) and Figma links of the board with a `node-id`, name the conversion once, and reject links of another board with both file keys.
 - `boardId` of `get_board_context`, `answer_from_board` and `diff_board` accepts the board URL too (its schema loses the `pattern` and allows 2048 characters); `get_board_context` reads the URL's `node-id` when `nodeIds`, `topic` and `outsideSections` are absent.
+- An unknown `boardId` lists the stored boards (file keys and last ingest, at most 10) and, for a key that differs only in case, starts with "Did you mean <key>?"; this also holds on case-insensitive file systems.
 - Named enclosing frames and groups become searchable excerpt provenance; generic names and image filenames are omitted, and nonempty frames and groups no longer produce name excerpts.
 - Model-generated cluster labels are marked in context and answer prompts, and answer source locations use sections or frames.
 - Full context quotes each excerpt text line, and names are flattened to one line in readable output and answer prompts.

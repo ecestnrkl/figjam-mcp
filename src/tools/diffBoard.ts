@@ -1,5 +1,6 @@
 import type { DiffBoardInput, DiffBoardOutput } from "../schemas/diffBoard.js";
 import { parseBoardId } from "../schemas/common.js";
+import { assertBoardKeyCase, unknownBoardMessage } from "../lib/boardLookup.js";
 import { diffBoards } from "../lib/boardDiff.js";
 import { readBoardHistory, readCachedBoardState, readCachedBoard } from "../lib/persistentCache.js";
 import { redactBoard } from "../lib/redact.js";
@@ -16,11 +17,10 @@ import { redactBoard } from "../lib/redact.js";
 export async function diffBoard(rawInput: DiffBoardInput): Promise<DiffBoardOutput> {
   // boardId is the file key or the board URL.
   const input = { ...rawInput, boardId: parseBoardId(rawInput.boardId)?.fileKey ?? rawInput.boardId };
+  await assertBoardKeyCase(`No ingest history for board "${input.boardId}".`, input.boardId);
   const history = await readBoardHistory(input.boardId);
   if (history.length === 0) {
-    throw new Error(
-      `No ingest history for board "${input.boardId}" — run ingest_board first (the boardId is the Figma file key).`,
-    );
+    throw new Error(await unknownBoardMessage(`No ingest history for board "${input.boardId}".`, input.boardId));
   }
 
   const stepsBack = input.compareTo ?? 1;

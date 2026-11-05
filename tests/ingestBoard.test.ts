@@ -62,6 +62,7 @@ vi.mock("../src/lib/persistentCache.js", () => ({
   buildSnapshotId: () => "snapshot-id",
   readLatestBoard: readLatestBoardMock,
   readBoardHead: async () => ({ damaged: false }),
+  listStoredFileKeys: async () => [],
 }));
 
 const { flattenNodeTree } = await import("../src/lib/nodeTree.js");

@@ -1,6 +1,7 @@
 import type { AnswerFromBoardInput, AnswerFromBoardOutput } from "../schemas/answerFromBoard.js";
 import { parseBoardId } from "../schemas/common.js";
 import { getBoardOrRestore, getBoardReadWarning } from "../lib/cache.js";
+import { assertBoardKeyCase, unknownBoardMessage } from "../lib/boardLookup.js";
 import { redactBoard } from "../lib/redact.js";
 import {
   chatJson, getAnswerReasoningEffort, getTextModels, LlmUnusableReplyError, type ChatJsonOptions, type UnusableReplyReason,
@@ -82,8 +83,9 @@ export async function answerFromBoard(
   options.signal?.throwIfAborted();
   const answerTopK = Math.min(readIntEnv("LLM_ANSWER_TOP_K", 15, 1), 30);
   const answerPromptMaxChars = Math.min(readIntEnv("LLM_ANSWER_PROMPT_MAX_CHARS", 40000, 4096), 60000);
+  await assertBoardKeyCase(`Board "${input.boardId}" not found.`, input.boardId);
   const stored = await getBoardOrRestore(input.boardId, input.snapshotId);
-  if (!stored) throw new Error(`Board "${input.boardId}" not found — run ingest_board first.`);
+  if (!stored) throw new Error(await unknownBoardMessage(`Board "${input.boardId}" not found.`, input.boardId));
   // Snapshots cached before redaction existed must not reach the provider unredacted.
   const board = redactBoard(stored);
   const warning = getBoardReadWarning(stored);
