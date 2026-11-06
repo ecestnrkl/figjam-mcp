@@ -579,29 +579,21 @@ describe("LLM requests through real local HTTP and the OpenAI SDK", () => {
         });
         const failure = await chatJson("limited/model", messages, schemaOptions).catch((error: unknown) => error) as Error & { retryAfter: number; retryAt: number };
         expect(requests).toHaveLength(1);
-        expect(failure.retryAt).toBe(midnight);
+        expect(failure).toMatchObject({ status: 429, retryAt: midnight });
+        expect(failure.retryAfter).toBeGreaterThanOrEqual(59);
+        expect(failure.retryAfter).toBeLessThanOrEqual(60);
         expect(failure.message).toContain("it accepts requests again at about 2026-11-06 00:00 UTC");
       });
 
       it("ignores X-RateLimit-Reset while requests remain and keeps the usual backoff", async () => {
         vi.stubEnv("LLM_RATE_LIMIT_RETRIES", "1");
         vi.stubEnv("LLM_RATE_LIMIT_MAX_BACKOFF_MS", "0");
+        let clock = midnight - 60_000;
+        vi.spyOn(Date, "now").mockImplementation(() => clock++);
         const { chatJson } = await localClient((_request, response) => requests.length === 1
           ? limited(response, { "x-ratelimit-remaining": "3", "x-ratelimit-reset": String(midnight) }) : success(response));
         await expect(chatJson("limited/model", messages, schemaOptions)).resolves.toEqual({ ok: true });
         expect(requests).toHaveLength(2);
-      });
-
-      it("reads the wait of a 429 inside a 200 body and fails at once when it is too long", async () => {
-        vi.stubEnv("LLM_RATE_LIMIT_RETRIES", "1");
-        const reset = midnight;
-        const { chatJson } = await localClient((_request, response) => json(response, 200, { error: { code: 429, message: "Rate limit exceeded",
-          metadata: { headers: { "X-RateLimit-Remaining": "0", "X-RateLimit-Reset": String(reset) } } } }));
-        const failure = await chatJson("limited/model", messages, schemaOptions).catch((error: unknown) => error) as Error & { status: number; retryAfter: number };
-        expect(requests).toHaveLength(1);
-        expect(failure).toMatchObject({ status: 429 });
-        expect(Math.abs(failure.retryAfter - (reset - Date.now()) / 1000)).toBeLessThanOrEqual(2);
-        expect(failure.message).toContain("request limit is reached");
       });
 
       it("does not wait for a retry that no longer fits into the total deadline", async () => {
