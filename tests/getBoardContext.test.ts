@@ -664,8 +664,8 @@ describe("getBoardContext response size", () => {
     const { structuredContent: first } = await getBoardContext({ boardId: "Large300" });
     expect(first.contextText).toContain("## Board overview");
     expect(first.contextText).toContain("300 clusters, 3030 excerpts.");
-    expect(first.contextText).toMatch(/- 1:0 Theme 1 — \d+ excerpts\n- 1:1 Theme 2 — \d+ excerpts/);
-    expect(first.contextText).toContain('Read a section with nodeIds: ["<ID>"]; use topic for word search.');
+    expect(first.contextText).toMatch(/- Page 0:1 Workshop — \d+ excerpts\n  - 1:0 Theme 1 — \d+ excerpts\n  - 1:1 Theme 2 — \d+ excerpts/);
+    expect(first.contextText).toContain('"nodeIds":["0:1"],"detail":"auto","maxChars":24000');
     expect(first.contextText).toContain("With more than 5 pages left, read sections by ID instead");
     const second = await getBoardContext({ boardId: "Large300", cursor: first.nextCursor });
     const topic = await getBoardContext({ boardId: "Large300", topic: "onboarding mobile" });
@@ -1014,15 +1014,13 @@ describe("getBoardContext by section", () => {
 
   it("shows every section as a tree with IDs, unnamed sections and the excerpts outside sections", async () => {
     const { structuredContent: output } = await getBoardContext({ boardId: "Sections123" });
-    expect(output.contextText).toContain([
-      "Pages and sections in reading order (ID, name, excerpts including nested sections):",
-      "- Page 0:1 Board A — 6 excerpts",
-      "  - 1:1 Research — 3 excerpts",
-      "    - 1:2 (unnamed section) — 1 excerpt",
-      "- Page 0:2 Board B — 1 excerpt",
-      "4 excerpts outside sections; read them with outsideSections: true.",
-      'Read a section with nodeIds: ["<ID>"]; use topic for word search.',
-    ].join("\n"));
+    expect(output.contextText).toContain("Pages and sections in reading order (ID, name, excerpts including nested sections):");
+    expect(output.contextText).toContain("- Page 0:1 Board A — 6 excerpts");
+    expect(output.contextText).toContain("  - 1:1 Research — 3 excerpts");
+    expect(output.contextText).toContain("    - 1:2 (unnamed section) — 1 excerpt");
+    expect(output.contextText).toContain("- Page 0:2 Board B — 1 excerpt");
+    expect(output.contextText).toContain("4 excerpts lie outside sections; read them separately with outsideSections: true when needed.");
+    expect(output.contextText).toContain('Read this page completely with get_board_context {"boardId":"Sections123"');
   });
 
   it("counts images not yet interpreted and summarizes what exceeds a third of maxChars, deeper levels first", async () => {
@@ -1035,9 +1033,9 @@ describe("getBoardContext by section", () => {
 
     const { structuredContent: shallow } = await getBoardContext({ boardId: data.boardId, maxChars: 4000 });
     expect(JSON.stringify(shallow).length).toBeLessThanOrEqual(4000);
-    expect(shallow.contextText).toContain("- 1:7 Theme 8 — ");
+    expect(shallow.contextText).toContain("  - 1:0 Theme 1 — ");
     expect(shallow.contextText).not.toContain("2:0 Theme 1.1");
-    expect(shallow.contextText).toContain("28 more sections not listed; read a listed page or section by ID");
+    expect(shallow.contextText).toContain("more sections not listed; use the page or parent IDs above to continue");
 
     const many = largeBoard("Outline40", 120, 2, 40, { imageClusters: 40 });
     setBoard(many.boardId, many);
@@ -1059,13 +1057,13 @@ describe("getBoardContext by section", () => {
     expect(largest[0]).toMatchObject({ id: "1:11", name: "Theme 12" });
     expect(largest.map(({ count }) => count)).toEqual(largest.map(({ count }) => count).sort((a, b) => b - a));
     for (const { id, name, count } of largest) expect(contextText).toContain(`- ${id} ${name} — ${count} excerpts`);
-    expect(contextText.indexOf(line)).toBeLessThan(contextText.indexOf("Sections in reading order"));
+    expect(contextText.indexOf(line)).toBeLessThan(contextText.indexOf("Pages and sections in reading order"));
 
     const many = largeBoard("Largest40", 120, 2, 40);
     setBoard(many.boardId, many);
     const cut = (await getBoardContext({ boardId: many.boardId, maxChars: 3000 })).structuredContent.contextText;
     expect(cut).toMatch(/\d+ more sections not listed/);
-    expect(cut).toMatch(/\nLargest sections, 10 of 40 \(ID, name, excerpts\): \d+:\d+ Theme \d+ — \d+; .*\.\nSections in reading order/);
+    expect(cut).toMatch(/\nLargest sections, 10 of 40 \(ID, name, excerpts\): \d+:\d+ Theme \d+ — \d+; .*\.\nPages and sections in reading order/);
     expect(cut.match(/ — \d+[;.]/g)).toHaveLength(10);
     // Topic, nodeIds and later pages have no board overview.
     for (const request of [{ topic: "onboarding" }, { nodeIds: ["1:0"] }]) {
@@ -1244,7 +1242,7 @@ describe("getBoardContext outside sections", () => {
     }
     expect(sectionGuide(data, 8).outsideSections).toBe(outside.length);
     expect((await getBoardContext({ boardId: data.boardId, maxChars: 24000 })).structuredContent.contextText)
-      .toContain(`${outside.length} excerpts outside sections; read them with outsideSections: true.`);
+      .toContain(`${outside.length} excerpts lie outside sections; read them separately with outsideSections: true when needed.`);
   });
 });
 
