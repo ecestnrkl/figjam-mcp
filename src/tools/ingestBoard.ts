@@ -15,7 +15,7 @@ import { prepareRenders, prepareVisionImage } from "../lib/visionImages.js";
 import { mapClustersToPhases } from "../lib/docStructureMapper.js";
 import { buildClusterRelations, extractConnectorEdges } from "../lib/connectorGraph.js";
 import { setBoard } from "../lib/cache.js";
-import { redactBoard } from "../lib/redact.js";
+import { deterministicRedactedCluster, hasProtectedTableValue, redactBoard, redactNodes } from "../lib/redact.js";
 import { readIntEnv } from "../lib/env.js";
 import { missingEnvironmentHint } from "../lib/envFile.js";
 import { redactMessage, validateHeaderSecret, withSecretScope } from "../lib/secrets.js";
@@ -144,7 +144,7 @@ async function performIngest(input: IngestBoardInput, options: OperationOptions)
   // autosave or after a content read, minutes later, so it cannot confirm freshness.
   const rawTree = await fetchFileTree(fileKey, token, signal);
   signal?.throwIfAborted();
-  const nodes = flattenNodeTree(rawTree);
+  const nodes = redactNodes(flattenNodeTree(rawTree));
   // IDs in link form (5-87, 5%3A87, a Figma link) are read as the IDs they stand for.
   const knownIds = new Set(nodes.map(node => node.id));
   const focusIds = input.focusNodeIds
@@ -172,7 +172,9 @@ async function performIngest(input: IngestBoardInput, options: OperationOptions)
     await progress("interpret", 3);
     const clusterNodes = clusterMembers(cached.clusters, nodes);
     // Phases follow the recomputed labels, as on a full ingest.
-    const clusters = mapClustersToPhases(labelDeterministicClusters(cached.clusters, clusterNodes, nodes),
+    const secured = cached.clusters.map((cluster, index) =>
+      hasProtectedTableValue(clusterNodes[index] ?? []) ? deterministicRedactedCluster(cluster, clusterNodes[index] ?? []) : cluster);
+    const clusters = mapClustersToPhases(labelDeterministicClusters(secured, clusterNodes, nodes),
       input.docStructureHint, input.customPhases).map(cluster => ({ ...cluster, cacheHit: true }));
     const focus = resolveFocus(focusIds?.ids, clusterNodes, nodes);
     // Cached labels and summaries may predate redaction being switched on.
@@ -209,7 +211,12 @@ async function performIngest(input: IngestBoardInput, options: OperationOptions)
     const contentHash = contentHashes.get(cluster.id)!;
     const previous = reuseIndex.get(contentHash);
     // forceFullIngest re-reads the board only; interpretations of unchanged clusters are kept in every mode.
-    if (previous && canReusePrevious(previous, members, ingestMode, input.forceFullIngest)) {
+    if (hasProtectedTableValue(members)) {
+      refined[index] = {
+        ...deterministicRedactedCluster(refineClusterFromText(cluster, members), members),
+        contentHash,
+      };
+    } else if (previous && canReusePrevious(previous, members, ingestMode, input.forceFullIngest)) {
       refined[index] = { ...reuseCluster(cluster, previous, contentHash), cacheHit: true };
       reusedCount++;
     } else if (shouldUseVision(members, ingestMode)) visionQueue.push(index);

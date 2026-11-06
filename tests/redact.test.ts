@@ -218,22 +218,22 @@ describe("credential table context", () => {
     id: `cell-${rowIndex}-${column}`, row: rowIndex, column, text,
   })));
 
-  it.each(tableLabels)("redacts values under an exact %s header, including mixed case", (label) => {
+  it.each(tableLabels)("redacts the full protected column under an exact %s header, including mixed case", (label) => {
     const cells = makeCells([["Portal", "User", label.toUpperCase()], ["Admin-Portal", "lea", "Sommer2026!"], ["Test", "max", "Winter2027?"]]);
     const output = redactTableCells(cells);
-    expect(output.map((cell) => cell.text)).toEqual(["Portal", "User", label.toUpperCase(), "Admin-Portal", "lea", "[redacted]", "Test", "max", "[redacted]"]);
+    expect(output.map((cell) => cell.text)).toEqual(["Portal", "User", "[redacted]", "Admin-Portal", "lea", "[redacted]", "Test", "max", "[redacted]"]);
   });
 
-  it.each(tableLabels)("redacts remaining cells when a row starts with %s", (label) => {
+  it.each(tableLabels)("redacts the full protected row when it starts with %s", (label) => {
     const cells = makeCells([["Feature", "Value", "Owner"], [label, "Winter2027?", "another secret"]]);
-    expect(redactTableCells(cells).map((cell) => cell.text)).toEqual(["Feature", "Value", "Owner", label, "[redacted]", "[redacted]"]);
+    expect(redactTableCells(cells).map((cell) => cell.text)).toEqual(["Feature", "Value", "Owner", "[redacted]", "[redacted]", "[redacted]"]);
   });
 
-  it.each([false, true])("preserves key/value labels when a credential row comes first (encoded IDs=%s)", (encoded) => {
+  it.each([false, true])("redacts ambiguous key/value labels conservatively (encoded IDs=%s)", (encoded) => {
     const tableId = "key-value";
     const indexed = makeCells([["Passwort", "Winter2027?"], ["Benutzer", "lea"], ["URL", "https://x.example"]]);
     const cells = encoded ? indexed.map(({ row, column, text }) => ({ id: `T${tableId};r${row};c${column}`, text })) : indexed;
-    const expected = ["Passwort", "[redacted]", "Benutzer", "lea", "URL", "https://x.example"];
+    const expected = ["[redacted]", "[redacted]", "[redacted]", "lea", "[redacted]", "https://x.example"];
     expect(redactTableCells(cells, tableId).map((cell) => cell.text)).toEqual(expected);
     const table = flattenNodeTree({ document: { id: "root", name: "Document", type: "DOCUMENT", children: [{
       id: tableId, name: "Table", type: "TABLE", children: cells.map((cell, index) => ({
@@ -279,14 +279,14 @@ describe("credential table context", () => {
     const prefix = "Plan a workshop";
     const legacy = evidenceBoard("ShortLegacyTable", [{ ...textNode("table", `${prefix}\n${cells.map((cell) => cell.text).join("\n")}`), type: "TABLE", table: { cells } }]);
     const redacted = redactBoard(legacy).nodes[0]!;
-    expect(redacted.table?.cells.map((cell) => cell.text)).toEqual(["Portal", "Passwort", "Data", "[redacted]"]);
-    expect(redacted.text).toBe(`${prefix}\nPortal\nPasswort\nData\n[redacted]`);
+    expect(redacted.table?.cells.map((cell) => cell.text)).toEqual(["Portal", "[redacted]", "Data", "[redacted]"]);
+    expect(redacted.text).toBe(`${prefix}\nPortal\n[redacted]\nData\n[redacted]`);
   });
 
   it("uses encoded complete-rectangle IDs for extraction and legacy table redaction", () => {
     const rows = [["Portal", "User", "Passwort"], ["Admin-Portal", "lea", "Sommer2026!"], ["Passwort:", "Winter2027?", "another-secret"]];
     const cells = rows.flatMap((row, r) => row.map((text, c) => ({ id: `T5:119;row-${r};col-${c}`, text })));
-    const expected = ["Portal", "User", "Passwort", "Admin-Portal", "lea", "[redacted]", "Passwort:", "[redacted]", "[redacted]"];
+    const expected = ["Portal", "User", "[redacted]", "Admin-Portal", "lea", "[redacted]", "[redacted]", "[redacted]", "[redacted]"];
     expect(redactTableCells(cells, "5:119").map((cell) => cell.text)).toEqual(expected);
     const table = flattenNodeTree({ document: { id: "root", name: "Document", type: "DOCUMENT", children: [{
       id: "5:119", name: "Table", type: "TABLE", children: cells.map((cell) => ({ ...cell, name: cell.text, type: "TABLE_CELL", characters: cell.text })),

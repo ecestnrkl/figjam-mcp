@@ -1,6 +1,6 @@
 import { readBoolEnv } from "./env.js";
 import { tableCellPositions } from "./tableCells.js";
-import type { BoardData, NormalizedNode, TableCell } from "../types.js";
+import type { BoardData, NormalizedNode, RefinedCluster, TableCell } from "../types.js";
 
 export const REDACTED = "[redacted]";
 
@@ -69,15 +69,57 @@ export function redactMessageCredentials(text: string): string {
 /** Table context identifies credentials even when a value has no inline label. */
 export function redactTableCells(cells: TableCell[], tableId?: string): TableCell[] {
   if (!isCredentialRedactionEnabled()) return cells;
-  const positioned = tableId === undefined ? cells : tableCellPositions({ id: tableId, table: { cells } });
-  const secretColumns = new Set(positioned.filter((cell) => cell.row === 0 && cell.column !== undefined && cell.column >= 1 && TABLE_LABEL.test(cell.text.trim())).map((cell) => cell.column));
+  const positioned = protectedTablePositions(cells, tableId);
+  const secretColumns = new Set(positioned.filter((cell) => cell.row === 0 && cell.column !== undefined && TABLE_LABEL.test(cell.text.trim())).map((cell) => cell.column));
   const secretRows = new Set(positioned.filter((cell) => cell.column === 0 && TABLE_LABEL.test(cell.text.trim())).map((cell) => cell.row));
   return cells.map((original, index) => {
     const cell = positioned[index]!;
-    const secret = (cell.row !== undefined && cell.row > 0 && cell.column !== undefined && secretColumns.has(cell.column)) ||
-      (cell.column !== undefined && cell.column > 0 && cell.row !== undefined && secretRows.has(cell.row));
+    const secret = (cell.row !== undefined && cell.column !== undefined && secretColumns.has(cell.column)) ||
+      (cell.column !== undefined && cell.row !== undefined && secretRows.has(cell.row));
     return { ...original, text: secret && !cell.text.startsWith(REDACTED) ? REDACTED : redactCredentials(cell.text) };
   });
+}
+
+function protectedTablePositions(cells: TableCell[], tableId?: string): TableCell[] {
+  return tableId === undefined ? cells : tableCellPositions({ id: tableId, table: { cells } });
+}
+
+/** Whether a cluster contains a non-empty table cell covered by the credential rules. */
+export function hasProtectedTableValue(nodes: NormalizedNode[]): boolean {
+  if (!isCredentialRedactionEnabled()) return false;
+  return nodes.some((node) => {
+    if (!node.table) return false;
+    const positioned = protectedTablePositions(node.table.cells, node.id);
+    const columns = new Set(positioned.filter((cell) => cell.row === 0 && cell.column !== undefined && TABLE_LABEL.test(cell.text.trim())).map((cell) => cell.column));
+    const rows = new Set(positioned.filter((cell) => cell.column === 0 && TABLE_LABEL.test(cell.text.trim())).map((cell) => cell.row));
+    return positioned.some((cell) =>
+      cell.text.trim() && cell.row !== undefined && cell.column !== undefined &&
+      (columns.has(cell.column) || rows.has(cell.row)));
+  });
+}
+
+/** Rebuilds a protected cluster without carrying forward provider-derived text or state. */
+export function deterministicRedactedCluster(cluster: RefinedCluster, nodes: NormalizedNode[]): RefinedCluster {
+  const texts = nodes.map((node) => node.text?.trim()).filter((text): text is string => Boolean(text));
+  const label = texts[0]?.replace(/\s+/g, " ").slice(0, 60) || `Cluster ${cluster.id.replace(/^cluster_/, "")}`;
+  const highlights = texts.slice(0, 5).map((text) => `"${text.replace(/\s+/g, " ").slice(0, 120)}"`);
+  const summary = [
+    `Cluster contains ${nodes.length} board element${nodes.length === 1 ? "" : "s"} with ${texts.length} extracted text item${texts.length === 1 ? "" : "s"}.`,
+    highlights.length ? `Extracted text highlights: ${highlights.join("; ")}.` : "No readable text was extracted from this cluster.",
+    "The source node IDs are retained for follow-up context.",
+  ].join(" ");
+  return {
+    ...cluster,
+    label,
+    summary,
+    confirmedNodeIds: [...cluster.nodeIds],
+    summarySource: "deterministic",
+    modelId: undefined,
+    incomplete: undefined,
+    fallbackReason: undefined,
+    retryAfter: undefined,
+    retryAt: undefined,
+  };
 }
 
 /** Applies extraction redaction to node names, text and table cells of stored nodes. */
@@ -112,12 +154,17 @@ export function redactBoard(board: BoardData): BoardData {
   if (!isCredentialRedactionEnabled()) return board;
   const existing = redactedBoards.get(board);
   if (existing) return existing;
+  const nodes = redactNodes(board.nodes);
+  const nodesById = new Map(nodes.map((node) => [node.id, node]));
   const redacted: BoardData = {
     ...board,
-    nodes: redactNodes(board.nodes),
-    clusters: board.clusters.map((cluster) => ({
-      ...cluster, label: redactCredentials(cluster.label), summary: redactCredentials(cluster.summary),
-    })),
+    nodes,
+    clusters: board.clusters.map((cluster) => {
+      const members = cluster.nodeIds.map((id) => nodesById.get(id)).filter((node): node is NormalizedNode => Boolean(node));
+      return hasProtectedTableValue(members)
+        ? deterministicRedactedCluster(cluster, members)
+        : { ...cluster, label: redactCredentials(cluster.label), summary: redactCredentials(cluster.summary) };
+    }),
     connectorEdges: board.connectorEdges?.map((edge) => ({
       ...edge, ...(edge.label === undefined ? {} : { label: redactCredentials(edge.label) }),
     })),
