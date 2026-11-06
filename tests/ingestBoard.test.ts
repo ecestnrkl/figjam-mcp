@@ -1670,7 +1670,7 @@ describe("ingestBoard", () => {
     const largest = Array.from({ length: 8 }, (_, index) => `5:${9 - index} Topic ${9 - index} — ${9 - index}`).join("; ");
     expect(output.summary).toContain("Ingested board Sections123 (snapshot snapshot-id):");
     expect(output.summary).toContain(`Largest sections, 8 of 9 (ID, name, excerpts): ${largest}. Together they hold 44 of the board's 46 excerpts.`);
-    expect(output.summary).toContain("get_board_context without parameters gives bounded page and section guidance with IDs; it is not a complete section directory. Read each page with its page ID and follow the cursor; answer_from_board is for one specific question." +
+    expect(output.summary).toContain("get_board_context without parameters gives bounded page and section guidance with IDs; it is not a complete section directory. Use each page ID with get_board_context and follow the cursor; answer_from_board is for one specific question." +
       " 1 excerpt lies outside sections; read it with get_board_context and outsideSections: true.");
     expect(output.summary).not.toContain("Topic 1 —");
     expect(output.summary).not.toContain('"Note');
