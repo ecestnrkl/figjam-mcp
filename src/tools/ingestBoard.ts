@@ -219,7 +219,7 @@ async function performIngest(input: IngestBoardInput, options: OperationOptions)
     } else if (previous && canReusePrevious(previous, members, ingestMode, input.forceFullIngest)) {
       refined[index] = { ...reuseCluster(cluster, previous, contentHash), cacheHit: true };
       reusedCount++;
-    } else if (shouldUseVision(members, ingestMode)) visionQueue.push(index);
+    } else if (visionEligible(members, ingestMode)) visionQueue.push(index);
     else refined[index] = { ...refineClusterFromText(cluster, members), contentHash };
   });
   const priorities = clusters.map((cluster, index) => buildVisionPriority(cluster, clusterNodesByIndex[index]!));
@@ -558,10 +558,14 @@ function resolveFocus(focusNodeIds: string[] | undefined, clusterNodes: Normaliz
 
 function focusReport(focus: Focus, clusters: RefinedCluster[], clusterNodes: NormalizedNode[][], ingestMode: IngestMode): IngestFocusReport {
   const inFocus = clusters.filter((_cluster, index) => focus.ranks[index]! < focus.requestedIds.length
-    && shouldUseVision(clusterNodes[index]!, ingestMode));
+    && visionEligible(clusterNodes[index]!, ingestMode));
   const interpreted = inFocus.filter(cluster => cluster.summarySource === "vision_llm" && !cluster.incomplete).length;
   return { requestedIds: focus.requestedIds, foundIds: focus.foundIds, imageClusters: inFocus.length, interpreted,
     pending: inFocus.length - interpreted };
+}
+
+function visionEligible(clusterNodes: NormalizedNode[], ingestMode: IngestMode): boolean {
+  return !hasProtectedTableValue(clusterNodes) && shouldUseVision(clusterNodes, ingestMode);
 }
 
 function retryPriority(previous?: RefinedCluster): number {

@@ -69,13 +69,10 @@ export function redactMessageCredentials(text: string): string {
 /** Table context identifies credentials even when a value has no inline label. */
 export function redactTableCells(cells: TableCell[], tableId?: string): TableCell[] {
   if (!isCredentialRedactionEnabled()) return cells;
-  const positioned = protectedTablePositions(cells, tableId);
-  const secretColumns = new Set(positioned.filter((cell) => cell.row === 0 && cell.column !== undefined && TABLE_LABEL.test(cell.text.trim())).map((cell) => cell.column));
-  const secretRows = new Set(positioned.filter((cell) => cell.column === 0 && TABLE_LABEL.test(cell.text.trim())).map((cell) => cell.row));
+  const mask = tableProtectionMask(cells, tableId);
   return cells.map((original, index) => {
-    const cell = positioned[index]!;
-    const secret = (cell.row !== undefined && cell.column !== undefined && secretColumns.has(cell.column)) ||
-      (cell.column !== undefined && cell.row !== undefined && secretRows.has(cell.row));
+    const cell = mask.positioned[index]!;
+    const secret = mask.protected.has(index);
     return { ...original, text: secret && !cell.text.startsWith(REDACTED) ? REDACTED : redactCredentials(cell.text) };
   });
 }
@@ -89,13 +86,30 @@ export function hasProtectedTableValue(nodes: NormalizedNode[]): boolean {
   if (!isCredentialRedactionEnabled()) return false;
   return nodes.some((node) => {
     if (!node.table) return false;
-    const positioned = protectedTablePositions(node.table.cells, node.id);
-    const columns = new Set(positioned.filter((cell) => cell.row === 0 && cell.column !== undefined && TABLE_LABEL.test(cell.text.trim())).map((cell) => cell.column));
-    const rows = new Set(positioned.filter((cell) => cell.column === 0 && TABLE_LABEL.test(cell.text.trim())).map((cell) => cell.row));
-    return positioned.some((cell) =>
-      cell.text.trim() && cell.row !== undefined && cell.column !== undefined &&
-      (columns.has(cell.column) || rows.has(cell.row)));
+    const mask = tableProtectionMask(node.table.cells, node.id);
+    return [...mask.protected].some((index) => Boolean(mask.positioned[index]!.text.trim()));
   });
+}
+
+function tableProtectionMask(cells: TableCell[], tableId?: string): {
+  positioned: TableCell[];
+  protected: Set<number>;
+} {
+  const positioned = protectedTablePositions(cells, tableId);
+  const secretColumns = new Set(positioned
+    .filter((cell) => cell.row === 0 && cell.column !== undefined && TABLE_LABEL.test(cell.text.trim()))
+    .map((cell) => cell.column));
+  const secretRows = new Set(positioned
+    .filter((cell) => cell.column === 0 && TABLE_LABEL.test(cell.text.trim()))
+    .map((cell) => cell.row));
+  const protectedCells = new Set<number>();
+  positioned.forEach((cell, index) => {
+    const trigger = (cell.row === 0 && cell.column !== undefined && TABLE_LABEL.test(cell.text.trim())) ||
+      (cell.column === 0 && cell.row !== undefined && TABLE_LABEL.test(cell.text.trim()));
+    if (!trigger && cell.row !== undefined && cell.column !== undefined &&
+      (secretColumns.has(cell.column) || secretRows.has(cell.row))) protectedCells.add(index);
+  });
+  return { positioned, protected: protectedCells };
 }
 
 /** Rebuilds a protected cluster without carrying forward provider-derived text or state. */
