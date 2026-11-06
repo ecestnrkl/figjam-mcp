@@ -1020,7 +1020,7 @@ describe("getBoardContext by section", () => {
     expect(output.contextText).toContain("    - 1:2 (unnamed section) — 1 excerpt");
     expect(output.contextText).toContain("- Page 0:2 Board B — 1 excerpt");
     expect(output.contextText).toContain("4 excerpts lie outside sections; read them separately with outsideSections: true when needed.");
-    expect(output.contextText).toContain('Read this page completely with get_board_context {"boardId":"Sections123"');
+    expect(output.contextText).toContain('Page 0:1: get_board_context {"boardId":"Sections123"');
   });
 
   it("counts images not yet interpreted and summarizes what exceeds a third of maxChars, deeper levels first", async () => {

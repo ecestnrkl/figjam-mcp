@@ -1678,8 +1678,8 @@ describe("ingestBoard", () => {
     expect(hasEvidenceIndex(redactBoard(getBoard("Sections123")!))).toBe(true);
     const { contextText } = (await getBoardContext({ boardId: "Sections123" })).structuredContent;
     expect(contextText).toContain(`Sections (ID, name, excerpts): ${largest}; 5:1 Topic 1 — 1. Together they hold 45 of the board's 46 excerpts.`);
-    expect(contextText).toContain("1 excerpt lie outside sections; read them separately with outsideSections: true when needed.");
-    expect(contextText).toContain('Read this page completely with get_board_context {"boardId":"Sections123"');
+    expect(contextText).toContain("1 excerpt lies outside sections; read it separately with outsideSections: true when needed.");
+    expect(contextText).toContain('Page 0:1: get_board_context {"boardId":"Sections123"');
     expect(sectionGuide(getBoard("Sections123")!, 8).largestLine).toContain("Largest sections, 8 of 9 (ID, name, excerpts):");
     expect(sectionGuide(getBoard("Sections123")!, 9).largestLine).toContain("Sections (ID, name, excerpts):");
   });

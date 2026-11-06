@@ -83,9 +83,9 @@ export class SectionIndex {
     const footer = [
       "This compact overview is bounded by the response budget, is not a complete section directory, and may omit empty sections.",
       ...(pages.length
-        ? pages.map((page) => `Read this page completely with ${this.readCall([page.id])}; start without a cursor and follow each returned nextCursor with the same arguments.`)
-        : [`Read a section with ${this.readCall(["<ID>"])}; start without a cursor and follow each returned nextCursor with the same arguments.`]),
-      ...(this.outsideSections ? [`${this.outsideSections} excerpt${plural(this.outsideSections)} lie outside sections; read them separately with outsideSections: true when needed.`] : []),
+        ? pages.map((page) => `Page ${page.id}: ${this.readCall([page.id])}; repeat unchanged with nextCursor.`)
+        : [`Read a section with ${this.readCall(["<ID>"])}; repeat unchanged with nextCursor.`]),
+      ...(this.outsideSections ? [`${this.outsideSections} excerpt${plural(this.outsideSections)} ${this.outsideSections === 1 ? "lies" : "lie"} outside sections; read ${this.outsideSections === 1 ? "it" : "them"} separately with outsideSections: true when needed.`] : []),
     ];
     // The largest sections belong to the header, so a small budget shortens the tree first.
     const largest = this.largestLine(LARGEST_SECTIONS_IN_OVERVIEW);
@@ -151,7 +151,7 @@ export class SectionIndex {
     }
     if (!lines.length) return "";
     return fitOutline(["## Sections inside (ID, name, excerpts)"], lines,
-      containerIds.map((id) => `Read the sections inside this parent with ${this.readCall([id])}; start without a cursor and follow each returned nextCursor with the same arguments.`),
+      containerIds.map((id) => `Parent ${id}: ${this.readCall([id])}; repeat unchanged with nextCursor.`),
       budget, 1);
   }
 
@@ -162,7 +162,7 @@ export class SectionIndex {
       nodeIds,
       detail: "auto",
       maxChars: 24000,
-    })}`;
+    }).replaceAll(",\"", ",\"")}`;
   }
 
   /** First page of a request whose IDs share every page: each requested ID with its excerpts on all pages. */
