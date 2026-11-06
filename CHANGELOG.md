@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.12.1 — Unreleased
+
+- Credential tables are redacted conservatively in both directions, including ambiguous headers, and affected historical model interpretations are rebuilt deterministically from redacted sources.
+- Compact board overviews identify page and parent-container follow-up reads without claiming a complete section directory; each page read includes its outside-section content.
+
 ## 0.12.0 — 2026-11-05
 
 - Breaking: the server no longer loads a `.env` from its working directory. Put the variables into the `env` block of the MCP client configuration, or set `FIGJAM_MCP_ENV_FILE` to the file's absolute path; in VS Code's Local harness, `envFile` works too.

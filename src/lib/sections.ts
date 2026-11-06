@@ -55,7 +55,7 @@ export class SectionIndex {
     }
   }
 
-  /** First page of an unfocused request: every section as a tree in reading order, with IDs. */
+  /** First page of an unfocused request: a bounded page/section guide with IDs. */
   boardOverview(budget: number): string {
     const { board, evidence } = this;
     const size = `${board.clusters.length} cluster${plural(board.clusters.length)}, ${evidence.length} excerpt${plural(evidence.length)}.`;
@@ -72,7 +72,7 @@ export class SectionIndex {
         addSections(section.id, depth + 1);
       }
     };
-    if (pages.length > 1) {
+    if (pages.length) {
       for (const page of pages) {
         lines.push({ depth: 0, section: false, text: `- Page ${page.id} ${this.name(page)} — ${this.excerptCount(page.id)}` });
         addSections(page.id, 1);
@@ -81,16 +81,17 @@ export class SectionIndex {
       addSections(pages[0]?.id ?? "", 0);
     }
     const footer = [
-      ...(this.sections.length ? [`${this.outsideSections} excerpt${plural(this.outsideSections)} outside sections` +
-        `${this.outsideSections ? `; read ${this.outsideSections === 1 ? "it" : "them"} with outsideSections: true` : ""}.`] : []),
-      `Read a ${this.sections.length ? "section" : "page"} with nodeIds: ["<ID>"]; use topic for word search.`,
-      ...(this.sections.length ? ["For a summary of the whole board, pass all top-level section IDs from this list as nodeIds (at most 50 per call) with maxChars 24000, follow the cursor, then read outsideSections: true."] : []),
+      "This compact overview is bounded by the response budget, is not a complete section directory, and may omit empty sections.",
+      ...(pages.length
+        ? pages.map((page) => `Page ${page.id}: ${this.readCall([page.id])}; repeat unchanged with nextCursor.`)
+        : [`Read a section with ${this.readCall(["<ID>"])}; repeat unchanged with nextCursor.`]),
+      ...(this.outsideSections ? [`${this.outsideSections} excerpt${plural(this.outsideSections)} ${this.outsideSections === 1 ? "lies" : "lie"} outside sections; read ${this.outsideSections === 1 ? "it" : "them"} separately with outsideSections: true when needed.`] : []),
     ];
     // The largest sections belong to the header, so a small budget shortens the tree first.
     const largest = this.largestLine(LARGEST_SECTIONS_IN_OVERVIEW);
     return fitOutline(["## Board overview", size, ...(largest ? [largest] : []),
-      `${pages.length > 1 ? "Pages and sections" : "Sections"} in reading order (ID, name, excerpts including nested sections):`],
-    lines, footer, budget, pages.length > 1 ? 1 : 0);
+      `${pages.length ? "Pages and sections" : "Sections"} in reading order (ID, name, excerpts including nested sections):`],
+    lines, footer, budget, pages.length ? 1 : 0);
   }
 
   /**
@@ -150,7 +151,18 @@ export class SectionIndex {
     }
     if (!lines.length) return "";
     return fitOutline(["## Sections inside (ID, name, excerpts)"], lines,
-      ["Read one with nodeIds: [\"<ID>\"]."], budget, 1);
+      containerIds.map((id) => `Parent ${id}: ${this.readCall([id])}; repeat unchanged with nextCursor.`),
+      budget, 1);
+  }
+
+  private readCall(nodeIds: string[]): string {
+    return `get_board_context ${JSON.stringify({
+      boardId: this.board.fileKey,
+      snapshotId: this.board.snapshotId,
+      nodeIds,
+      detail: "auto",
+      maxChars: 24000,
+    }).replaceAll(",\"", ",\"")}`;
   }
 
   /** First page of a request whose IDs share every page: each requested ID with its excerpts on all pages. */
@@ -196,7 +208,7 @@ function fitOutline(header: string[], lines: OutlineLine[], footer: string[], bu
   const render = (shown: OutlineLine[]) => {
     const omitted = sectionCount - shown.filter((line) => line.section).length;
     const summary = omitted > 0
-      ? [`${omitted} more section${plural(omitted)} not listed; read a listed page or section by ID to see the sections inside it.`] : [];
+      ? [`${omitted} more section${plural(omitted)} not listed; use the page or parent IDs above to continue. Empty sections may be absent.`] : [];
     return [...header, ...shown.map((line) => line.text), ...summary, ...footer].join("\n");
   };
   const fits = (text: string) => JSON.stringify(text).length - 2 <= budget;

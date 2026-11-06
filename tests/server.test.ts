@@ -77,7 +77,7 @@ describe("MCP wire contract", () => {
     }
     const context = tools.find(tool => tool.name === "get_board_context");
     expect(context?.description).toContain("overview.text");
-    expect(context?.description).toContain("For a whole-board summary, pass all top-level section IDs (at most 50 per call) with maxChars 24000, follow nextCursor, then read outsideSections: true.");
+    expect(context?.description).toContain("For multiple pages, read each page separately with detail: \"auto\", maxChars: 24000 and follow nextCursor with unchanged arguments; page reads include content outside sections");
     expect(context?.description).toContain("Cite the node ID or Figma link behind each statement.");
     expect(tools.find(tool => tool.name === "answer_from_board")?.description).toContain("Keep its citations (node ID and Figma link) with the statements they support.");
     expect(context?.inputSchema).toHaveProperty("properties.detail");
@@ -356,4 +356,3 @@ describe("boardId as a key or a URL", () => {
     expect(handlers.context).not.toHaveBeenCalled();
   });
 });
-

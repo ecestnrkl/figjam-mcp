@@ -218,22 +218,22 @@ describe("credential table context", () => {
     id: `cell-${rowIndex}-${column}`, row: rowIndex, column, text,
   })));
 
-  it.each(tableLabels)("redacts values under an exact %s header, including mixed case", (label) => {
+  it.each(tableLabels)("redacts the full protected column under an exact %s header, including mixed case", (label) => {
     const cells = makeCells([["Portal", "User", label.toUpperCase()], ["Admin-Portal", "lea", "Sommer2026!"], ["Test", "max", "Winter2027?"]]);
     const output = redactTableCells(cells);
     expect(output.map((cell) => cell.text)).toEqual(["Portal", "User", label.toUpperCase(), "Admin-Portal", "lea", "[redacted]", "Test", "max", "[redacted]"]);
   });
 
-  it.each(tableLabels)("redacts remaining cells when a row starts with %s", (label) => {
+  it.each(tableLabels)("redacts the full protected row when it starts with %s", (label) => {
     const cells = makeCells([["Feature", "Value", "Owner"], [label, "Winter2027?", "another secret"]]);
     expect(redactTableCells(cells).map((cell) => cell.text)).toEqual(["Feature", "Value", "Owner", label, "[redacted]", "[redacted]"]);
   });
 
-  it.each([false, true])("preserves key/value labels when a credential row comes first (encoded IDs=%s)", (encoded) => {
+  it.each([false, true])("redacts ambiguous key/value labels conservatively (encoded IDs=%s)", (encoded) => {
     const tableId = "key-value";
     const indexed = makeCells([["Passwort", "Winter2027?"], ["Benutzer", "lea"], ["URL", "https://x.example"]]);
     const cells = encoded ? indexed.map(({ row, column, text }) => ({ id: `T${tableId};r${row};c${column}`, text })) : indexed;
-    const expected = ["Passwort", "[redacted]", "Benutzer", "lea", "URL", "https://x.example"];
+    const expected = ["Passwort", "[redacted]", "[redacted]", "lea", "[redacted]", "https://x.example"];
     expect(redactTableCells(cells, tableId).map((cell) => cell.text)).toEqual(expected);
     const table = flattenNodeTree({ document: { id: "root", name: "Document", type: "DOCUMENT", children: [{
       id: tableId, name: "Table", type: "TABLE", children: cells.map((cell, index) => ({
