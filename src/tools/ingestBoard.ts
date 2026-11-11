@@ -1007,7 +1007,7 @@ function buildSummary(board: BoardData, qualityReport: IngestQualityReport, cont
   const overview = !clusters.length && !retrieveEvidence(redactBoard(board)).evidence.length ? "The board contains no readable content."
     : largestSections
     ? `${clusters.length} cluster${clusters.length === 1 ? "" : "s"} ${settings}. ${largestSections} ` +
-      "get_board_context without parameters gives bounded page and section guidance with IDs; it is not a complete section directory. Use each page ID with get_board_context and follow the cursor; answer_from_board is for one specific question." +
+      "get_board_context without parameters gives bounded page and section guidance with IDs and one reusable page-read call; it is not a complete section directory. Use that call for each listed page and repeat unchanged with nextCursor; page reads include content outside sections. answer_from_board is for one specific question." +
       (outsideSections ? ` ${outsideSections} excerpt${outsideSections === 1 ? " lies" : "s lie"} outside sections; read ` +
         `${outsideSections === 1 ? "it" : "them"} with get_board_context and outsideSections: true.` : "")
     : `${clusters.length} cluster${clusters.length === 1 ? "" : "s"} - ${shownLabels} ${settings}.`;

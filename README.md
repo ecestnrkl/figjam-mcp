@@ -294,7 +294,8 @@ itself; a URL with a `node-id` and without `nodeIds`, `topic` and
 a board, the assistant calls `ingest_board`, then `get_board_context` without
 parameters, whose first page names the largest sections and includes a bounded
 page/section overview with IDs within the page's size limit. This is not a
-guaranteed complete section directory; empty sections may be omitted. Read each
+guaranteed complete section directory; empty sections may be omitted and unlisted
+pages are counted. The footer gives one reusable read call for the listed page IDs. Read each
 page separately with `nodeIds: [pageId]`, `detail: "auto"` and `maxChars: 24000`,
 following `nextCursor` with unchanged arguments. Page reads already include
 content outside sections, so `outsideSections: true` is only needed for a

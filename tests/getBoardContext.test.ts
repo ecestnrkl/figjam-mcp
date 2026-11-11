@@ -1019,8 +1019,8 @@ describe("getBoardContext by section", () => {
     expect(output.contextText).toContain("  - 1:1 Research — 3 excerpts");
     expect(output.contextText).toContain("    - 1:2 (unnamed section) — 1 excerpt");
     expect(output.contextText).toContain("- Page 0:2 Board B — 1 excerpt");
-    expect(output.contextText).toContain("4 excerpts lie outside sections; read them separately with outsideSections: true when needed.");
-    expect(output.contextText).toContain('Page 0:1: get_board_context {"boardId":"Sections123"');
+    expect(output.contextText).toContain("4 excerpts outside sections; page reads include them.");
+    expect(output.contextText).toContain('Read a page with get_board_context {"boardId":"Sections123"');
   });
 
   it("counts images not yet interpreted and summarizes what exceeds a third of maxChars, deeper levels first", async () => {
@@ -1242,7 +1242,7 @@ describe("getBoardContext outside sections", () => {
     }
     expect(sectionGuide(data, 8).outsideSections).toBe(outside.length);
     expect((await getBoardContext({ boardId: data.boardId, maxChars: 24000 })).structuredContent.contextText)
-      .toContain(`${outside.length} excerpts lie outside sections; read them separately with outsideSections: true when needed.`);
+      .toContain(`${outside.length} excerpts outside sections; page reads include them.`);
   });
 });
 
@@ -1568,5 +1568,185 @@ describe("getBoardContext tables", () => {
       const second = await getBoardContext({ boardId: url, detail: "full", limit: 1, cursor: first.structuredContent.nextCursor });
       expect([...texts(first), ...texts(second)].sort()).toEqual(["Pain point: onboarding takes too long.", "Pain point: reports are slow."]);
     });
+  });
+});
+
+
+/** Small synthetic navigation fixtures, independent of provider and Figma access. */
+function navigationBoard(boardId: string, pages: unknown[]): BoardData {
+  const nodes = flattenNodeTree({ document: { id: "0:0", name: "Document", type: "DOCUMENT", children: pages } } as never);
+  return { boardId, fileKey: boardId, docStructureHint: "freeform", createdAt: 1, snapshotId: "d".repeat(64), nodes,
+    clusters: partitionedBoardClusters(nodes).map((cluster) => ({ ...cluster, label: `Area ${cluster.nodeIds[0]}`,
+      summary: "Deterministic summary.", confirmedNodeIds: cluster.nodeIds, summarySource: "deterministic" as const })) };
+}
+const navigationBox = (x: number, y: number, width = 100, height = 100) => ({ absoluteBoundingBox: { x, y, width, height } });
+const navigationNote = (id: string, text: string, x: number, y: number) =>
+  ({ id, name: text, type: "STICKY", characters: text, ...navigationBox(x, y) });
+function navigationPages(n: number): BoardData {
+  return navigationBoard(`NavigationPages${n}`, Array.from({ length: n }, (_, p) => ({
+    id: `0:${p + 1}`, name: `Page ${p + 1}`, type: "CANVAS", children: [
+      { id: `1:${p + 1}`, name: `Topic ${p + 1}`, type: "SECTION", ...navigationBox(0, 0, 1000, 1000),
+        children: [navigationNote(`2:${p + 1}`, `Note in section ${p + 1}`, 0, 0)] },
+      navigationNote(`3:${p + 1}`, `Outside note ${p + 1}`, 5000, 0),
+    ],
+  })));
+}
+function navigationParents(n: number, children: number, notes: number): BoardData {
+  return navigationBoard(`NavigationParents${n}x${children}x${notes}`, [{ id: "0:1", name: "Workshop", type: "CANVAS",
+    children: Array.from({ length: n }, (_, p) => ({ id: `1:${p}`, name: `Parent ${p}`, type: "SECTION",
+      ...navigationBox(p * 20000, 0, 15000, 15000), children: Array.from({ length: children }, (_, k) => ({
+        id: `4:${p}x${k}`, name: `Child ${p}.${k}`, type: "SECTION", ...navigationBox(p * 20000 + k * 1200, 0, 1000, 1000),
+        children: Array.from({ length: notes }, (_, m) => navigationNote(`5:${p}x${k}x${m}`,
+          `Child note ${p}.${k}.${m} with some workshop detail`, p * 20000 + k * 1200, m * 150)),
+      })),
+    })),
+  }]);
+}
+function navigationCalls(text: string): GetBoardContextInput[] {
+  return [...text.matchAll(/get_board_context (\{[^\n]*?\})(?=;|\n|$)/g)]
+    .map((match) => getBoardContextInputSchema.parse(JSON.parse(match[1]!)));
+}
+function navigationPageIds(text: string): string[] {
+  return [...text.matchAll(/^- Page (\S+) /gm)].map((match) => match[1]!);
+}
+function expectNavigationBudget(result: Awaited<ReturnType<typeof getBoardContext>>, maxChars: number): void {
+  expect(result.text.length).toBeLessThanOrEqual(maxChars);
+  expect(JSON.stringify(result.structuredContent).length).toBeLessThanOrEqual(maxChars);
+}
+async function followNavigation(call: GetBoardContextInput): Promise<{ ids: Set<string>; calls: number }> {
+  const ids = new Set<string>();
+  let cursor: string | undefined;
+  let calls = 0;
+  do {
+    const result = await getBoardContext({ ...call, cursor });
+    expectNavigationBudget(result, call.maxChars ?? 12000);
+    result.structuredContent.evidence.forEach((item) => ids.add(item.nodeId));
+    for (const match of (result.structuredContent.overview?.text ?? "").matchAll(/^(\S+?)(?: \[.*?\])?: /gm)) ids.add(match[1]!);
+    cursor = result.structuredContent.nextCursor;
+    expect(++calls).toBeLessThan(100);
+  } while (cursor);
+  return { ids, calls };
+}
+
+describe("bounded navigation follow-up reads", () => {
+  it.each([
+    ...[1, 2, 12, 14, 25, 40, 60, 80].flatMap((n) => [12000, 24000].map((maxChars) => ({ n, maxChars }))),
+    ...[1, 2].map((n) => ({ n, maxChars: 2000 })),
+  ])("keeps the board overview and page IDs for $n pages within $maxChars characters", async ({ n, maxChars }) => {
+    const data = navigationPages(n);
+    setBoard(data.boardId, data);
+    const result = await getBoardContext({ boardId: data.boardId, maxChars });
+    expectNavigationBudget(result, maxChars);
+    const text = result.structuredContent.contextText;
+    expect(text).toContain("## Board overview");
+    const ids = navigationPageIds(text);
+    // 2fa2fe6 lists all pages through 40; its 12k guide lists 49 of 60/80.
+    const baseline = maxChars === 12000 ? Math.min(n, 49) : n;
+    expect(ids.length).toBeGreaterThanOrEqual(Math.max(1, baseline - 5));
+    if (ids.length < n) expect(text).toContain(`${n - ids.length} more pages not listed`);
+    if (maxChars >= 12000) {
+      expect(navigationCalls(text)).toHaveLength(1);
+      expect(navigationCalls(text)[0]).toMatchObject({ boardId: data.boardId, snapshotId: data.snapshotId,
+        nodeIds: [ids[0]], detail: "auto", maxChars: 24000 });
+      expect(text).toContain("repeat unchanged with nextCursor");
+      if (n > 1) expect(text).toContain("Use the same call for each listed page ID.");
+    }
+  });
+
+  it("executes the single follow-up call for every listed page, including notes outside sections", async () => {
+    const data = navigationPages(14);
+    setBoard(data.boardId, data);
+    const result = await getBoardContext({ boardId: data.boardId });
+    const text = result.structuredContent.contextText;
+    const calls = navigationCalls(text);
+    expect(calls).toHaveLength(1);
+    const pages = navigationPageIds(text);
+    expect(pages).toHaveLength(14);
+    for (const pageId of pages) {
+      const followed = await followNavigation({ ...calls[0]!, nodeIds: [pageId] });
+      const pageNumber = pageId.slice(2);
+      expect([...followed.ids].sort()).toEqual([`2:${pageNumber}`, `3:${pageNumber}`]);
+    }
+  });
+
+  it("keeps at least 110 same-named section IDs and reaches all notes using only the returned page ID", async () => {
+    const data = navigationBoard("NavigationSameNames", [{ id: "0:1", name: "Workshop", type: "CANVAS", children: [
+      ...Array.from({ length: 189 }, (_, s) => ({ id: `1:${s}`, name: "Ideas", type: "SECTION",
+        ...navigationBox((s % 20) * 3000, Math.floor(s / 20) * 3000, 2000, 2000),
+        children: [navigationNote(`2:${s}`, `Idea ${s} about onboarding`, (s % 20) * 3000, Math.floor(s / 20) * 3000)] })),
+      ...Array.from({ length: 12 }, (_, s) => ({ id: `9:${s}`, name: "Parking lot", type: "SECTION",
+        ...navigationBox(s * 3000, 90000, 2000, 2000), children: [] })),
+    ] }]);
+    setBoard(data.boardId, data);
+    const result = await getBoardContext({ boardId: data.boardId });
+    expectNavigationBudget(result, 12000);
+    const text = result.structuredContent.contextText;
+    expect(new Set([...text.matchAll(/\b1:\d+ Ideas/g)].map((match) => match[0])).size).toBeGreaterThanOrEqual(110);
+    expect(text).toContain("not a complete section directory");
+    const pageIds = navigationPageIds(text);
+    expect(pageIds).toHaveLength(1);
+    const calls = navigationCalls(text);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.nodeIds).toEqual(pageIds);
+    const followed = await followNavigation(calls[0]!);
+    expect([...followed.ids].filter((id) => id.startsWith("2:"))).toHaveLength(189);
+  });
+
+  it.each([1, 6].flatMap((children) => [12000, 24000].map((maxChars) => ({ children, maxChars }))))(
+    "keeps all child IDs for 12 parents with $children children at $maxChars characters", async ({ children, maxChars }) => {
+      const data = navigationParents(12, children, 30);
+      setBoard(data.boardId, data);
+      const result = await getBoardContext({ boardId: data.boardId, nodeIds: Array.from({ length: 12 }, (_, p) => `1:${p}`),
+        detail: "full", maxChars });
+      expectNavigationBudget(result, maxChars);
+      const text = result.structuredContent.contextText;
+      expect(text).toContain("## Sections inside");
+      expect(new Set([...text.matchAll(/\b4:\d+x\d+ Child/g)].map((match) => match[0])).size).toBe(12 * children);
+      expect(text).toContain('Read one with nodeIds: ["<ID>"].');
+      expect(text).not.toContain("Incomplete child lists");
+      expect(navigationCalls(text)).toHaveLength(0);
+    });
+
+  it("names incomplete requested parents once and follows their bounded continuation call to the end", async () => {
+    const data = navigationParents(30, 30, 1);
+    // Only one parent needs long notes to exercise a real continuation cursor.
+    // Keep the other 29 parents small so this remains a fast navigation test.
+    for (const node of data.nodes) if (node.id.startsWith("5:1x")) node.text = `${node.text} `.repeat(300);
+    setBoard(data.boardId, data);
+    const nodeIds = Array.from({ length: 30 }, (_, p) => `1:${p}`);
+    const result = await getBoardContext({ boardId: data.boardId, nodeIds, detail: "full", maxChars: 12000 });
+    expectNavigationBudget(result, 12000);
+    const text = result.structuredContent.contextText;
+    const children = [...text.matchAll(/\b4:\d+x\d+ Child/g)];
+    expect(children.length).toBeLessThan(900);
+    expect(text.match(/Incomplete child lists/g)).toHaveLength(1);
+    expect(text).toMatch(/Incomplete child lists for requested parents 1:\d+(?:, 1:\d+)* and \d+ more:/);
+    const calls = navigationCalls(text);
+    expect(calls).toHaveLength(1);
+    expect(nodeIds).toContain(calls[0]!.nodeIds![0]);
+    const parentNumber = calls[0]!.nodeIds![0]!.slice(2);
+    const followed = await followNavigation(calls[0]!);
+    expect([...followed.ids].filter((id) => id.startsWith(`5:${parentNumber}x`))).toHaveLength(30);
+    expect(followed.calls).toBeGreaterThan(1);
+  });
+
+  it("provides a page read that reaches 300 loose notes in at most two calls", async () => {
+    const data = navigationBoard("NavigationLoose300", [{ id: "0:1", name: "Workshop", type: "CANVAS",
+      children: Array.from({ length: 300 }, (_, i) => navigationNote(`2:${i}`, `Loose idea ${i} about checkout and onboarding flows`,
+        (i % 20) * 400, Math.floor(i / 20) * 400)),
+    }]);
+    setBoard(data.boardId, data);
+    const result = await getBoardContext({ boardId: data.boardId });
+    expectNavigationBudget(result, 12000);
+    expect(result.structuredContent.nextCursor).toBeDefined();
+    const text = result.structuredContent.contextText;
+    const pageIds = navigationPageIds(text);
+    expect(pageIds).toHaveLength(1);
+    const calls = navigationCalls(text);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.nodeIds).toEqual(pageIds);
+    const followed = await followNavigation(calls[0]!);
+    expect(followed.ids.size).toBe(300);
+    expect(followed.calls).toBeLessThanOrEqual(2);
   });
 });

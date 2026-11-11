@@ -3,7 +3,7 @@
 ## 0.12.1 — Unreleased
 
 - Credential tables are redacted conservatively in both directions, including ambiguous headers, and affected historical model interpretations are rebuilt deterministically from redacted sources.
-- Compact board overviews identify page and parent-container follow-up reads without claiming a complete section directory; each page read includes its outside-section content.
+- Compact board overviews budget one reusable page read, preserve page IDs with explicit omission counts, and guide reads of pages without sections; subsection lists add a parent read only when shortened, and page reads include outside-section content.
 
 ## 0.12.0 — 2026-11-05
 
