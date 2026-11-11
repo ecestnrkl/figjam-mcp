@@ -1,4 +1,4 @@
-import { boundedText, enclosingIdsLookup, inSectionLookup, retrieveEvidence, type Evidence } from "./evidence.js";
+import { boundedText, enclosingIdsLookup, inSectionLookup, retrieveEvidence, snapshotIdForBoard, type Evidence } from "./evidence.js";
 import type { BoardData, NormalizedNode } from "../types.js";
 
 /** The first page names this many of the largest sections before the section tree. */
@@ -13,7 +13,7 @@ export function sectionGuide(board: BoardData, limit: number): { largestLine: st
   return { largestLine: index.largestLine(limit), outsideSections: index.outsideSections };
 }
 
-interface OutlineLine { depth: number; text: string; section: boolean }
+interface OutlineLine { depth: number; text: string; section: boolean; parentId?: string }
 
 /** Sections, their pages and excerpt counts for first-page orientation. */
 export class SectionIndex {
@@ -55,13 +55,13 @@ export class SectionIndex {
     }
   }
 
-  /** First page of an unfocused request: every section as a tree in reading order, with IDs. */
+  /** First page of an unfocused request: a bounded page/section guide with IDs. */
   boardOverview(budget: number): string {
     const { board, evidence } = this;
     const size = `${board.clusters.length} cluster${plural(board.clusters.length)}, ${evidence.length} excerpt${plural(evidence.length)}.`;
     const pages = this.pages.filter((page) => this.excerpts.has(page.id) || this.children.has(page.id));
-    if (!this.sections.length && pages.length < 2) {
-      return fitOutline(["## Board overview", size, "Pass topic or nodeIds for smaller, more precise answers."], [], [], budget, 0);
+    if (!this.sections.length && !pages.length) {
+      return fitOutline(["## Board overview", size, "Pass topic or nodeIds for smaller, more precise answers."], [], [[]], budget, {});
     }
     const lines: OutlineLine[] = [];
     const addSections = (parentId: string, depth: number) => {
@@ -72,7 +72,7 @@ export class SectionIndex {
         addSections(section.id, depth + 1);
       }
     };
-    if (pages.length > 1) {
+    if (pages.length) {
       for (const page of pages) {
         lines.push({ depth: 0, section: false, text: `- Page ${page.id} ${this.name(page)} — ${this.excerptCount(page.id)}` });
         addSections(page.id, 1);
@@ -80,17 +80,19 @@ export class SectionIndex {
     } else {
       addSections(pages[0]?.id ?? "", 0);
     }
+    const read = `Read a ${pages.length ? "page" : "section"} with ${this.readCall([pages[0]?.id ?? "<ID>"])}; repeat unchanged with nextCursor.`;
     const footer = [
-      ...(this.sections.length ? [`${this.outsideSections} excerpt${plural(this.outsideSections)} outside sections` +
-        `${this.outsideSections ? `; read ${this.outsideSections === 1 ? "it" : "them"} with outsideSections: true` : ""}.`] : []),
-      `Read a ${this.sections.length ? "section" : "page"} with nodeIds: ["<ID>"]; use topic for word search.`,
-      ...(this.sections.length ? ["For a summary of the whole board, pass all top-level section IDs from this list as nodeIds (at most 50 per call) with maxChars 24000, follow the cursor, then read outsideSections: true."] : []),
+      "Bounded overview; not a complete section directory. Empty sections may be omitted.",
+      ...(pages.length > 1 ? ["Use the same call for each listed page ID."] : []),
+      read,
+      ...(this.outsideSections && this.sections.length ? [`${this.outsideSections} excerpt${plural(this.outsideSections)} outside sections; page reads include them.`] : []),
     ];
-    // The largest sections belong to the header, so a small budget shortens the tree first.
+    // A small budget sheds optional footer guidance before the reusable read call.
     const largest = this.largestLine(LARGEST_SECTIONS_IN_OVERVIEW);
-    return fitOutline(["## Board overview", size, ...(largest ? [largest] : []),
-      `${pages.length > 1 ? "Pages and sections" : "Sections"} in reading order (ID, name, excerpts including nested sections):`],
-    lines, footer, budget, pages.length > 1 ? 1 : 0);
+    const header = ["## Board overview", size, ...(largest ? [largest] : []),
+      `${pages.length ? "Pages and sections" : "Sections"} in reading order (ID, name, excerpts including nested sections):`];
+    const footers = [footer, footer.slice(1), footer.filter((line) => line === read || line.includes("outside sections")), [read], []];
+    return fitOutline(header, lines, footers, budget, { pages: true });
   }
 
   /**
@@ -145,12 +147,32 @@ export class SectionIndex {
       const container = this.nodesById.get(containerId)!;
       lines.push({ depth: 0, section: false, text: `- In ${containerId} ${this.name(container)}:` });
       for (const section of direct) {
-        lines.push({ depth: 1, section: true, text: `  - ${section.id} ${this.name(section)} — ${this.excerptCount(section.id)}` });
+        lines.push({ depth: 1, section: true, parentId: containerId, text: `  - ${section.id} ${this.name(section)} — ${this.excerptCount(section.id)}` });
       }
     }
     if (!lines.length) return "";
     return fitOutline(["## Sections inside (ID, name, excerpts)"], lines,
-      ["Read one with nodeIds: [\"<ID>\"]."], budget, 1);
+      [["Read one with nodeIds: [\"<ID>\"]."]], budget, {
+        omittedFooter: (shown) => {
+          const kept = new Set(shown);
+          const incomplete = [...new Set(lines.filter((line) => line.section && !kept.has(line)).map((line) => line.parentId!))];
+          if (!incomplete.length) return [];
+          // Keep the parent list bounded even for requests with fifty containers.
+          const ids = incomplete.slice(0, 4).join(", ");
+          const more = incomplete.length - Math.min(4, incomplete.length);
+          return [`Incomplete child lists for requested parents ${ids}${more ? ` and ${more} more` : ""}: ${this.readCall([incomplete[0]!])}; repeat unchanged with nextCursor.`];
+        },
+      });
+  }
+
+  private readCall(nodeIds: string[]): string {
+    return `get_board_context ${JSON.stringify({
+      boardId: this.board.fileKey,
+      snapshotId: snapshotIdForBoard(this.board),
+      nodeIds,
+      detail: "auto",
+      maxChars: 24000,
+    })}`;
   }
 
   /** First page of a request whose IDs share every page: each requested ID with its excerpts on all pages. */
@@ -187,33 +209,42 @@ export class SectionIndex {
   }
 }
 
-/**
- * Lines that do not fit the budget are summarized in one line: deeper levels
- * go first, then the last lines down to minDepth. Returns "" if nothing fits.
- */
-function fitOutline(header: string[], lines: OutlineLine[], footer: string[], budget: number, minDepth: number): string {
+/** Keep page/parent lines first, then shallow sections, then deeper sections. */
+function fitOutline(
+  header: string[], lines: OutlineLine[], footers: string[][], budget: number,
+  options: { pages?: boolean; omittedFooter?: (shown: OutlineLine[]) => string[] },
+): string {
   const sectionCount = lines.filter((line) => line.section).length;
-  const render = (shown: OutlineLine[]) => {
+  const pageCount = options.pages ? lines.filter((line) => !line.section).length : 0;
+  const render = (shown: OutlineLine[], footer: string[]) => {
     const omitted = sectionCount - shown.filter((line) => line.section).length;
-    const summary = omitted > 0
-      ? [`${omitted} more section${plural(omitted)} not listed; read a listed page or section by ID to see the sections inside it.`] : [];
-    return [...header, ...shown.map((line) => line.text), ...summary, ...footer].join("\n");
+    const omittedPages = pageCount - shown.filter((line) => !line.section).length;
+    const summary = [
+      ...(omitted > 0 ? [`${omitted} more section${plural(omitted)} not listed; use the page or parent IDs above to continue. Empty sections may be absent.`] : []),
+      ...(omittedPages > 0 ? [`${omittedPages} more page${plural(omittedPages)} not listed in this bounded overview.`] : []),
+    ];
+    return [...header, ...shown.map((line) => line.text), ...summary, ...footer, ...(options.omittedFooter?.(shown) ?? [])].join("\n");
   };
   const fits = (text: string) => JSON.stringify(text).length - 2 <= budget;
-  const deepest = Math.max(minDepth, ...lines.map((line) => line.depth));
-  for (let depth = deepest; depth >= minDepth; depth--) {
-    const text = render(lines.filter((line) => line.depth <= depth));
-    if (fits(text)) return text;
+  const priority = lines.map((line, index) => ({ line, index })).sort((a, b) =>
+    Number(a.line.section) - Number(b.line.section) || a.line.depth - b.line.depth || a.index - b.index);
+  const shown = (count: number) => priority.slice(0, count).sort((a, b) => a.index - b.index).map(({ line }) => line);
+  // Reserve at least the first page or parent line where one exists. Footer
+  // variants drop the directory caveat, multi-page addition, then the read call.
+  let footer = footers.at(-1) ?? [];
+  for (const candidate of footers) {
+    if (fits(render(lines, candidate)) || fits(render(shown(Math.min(1, lines.length)), candidate))) { footer = candidate; break; }
   }
-  const shallow = lines.filter((line) => line.depth <= minDepth);
+  const complete = render(lines, footer);
+  if (fits(complete)) return complete;
   let low = 0;
-  let high = shallow.length - 1;
+  let high = lines.length;
   while (low < high) {
     const middle = (low + high + 1) >>> 1;
-    if (fits(render(shallow.slice(0, middle)))) low = middle;
+    if (fits(render(shown(middle), footer))) low = middle;
     else high = middle - 1;
   }
-  const text = render(shallow.slice(0, low));
+  const text = render(shown(low), footer);
   return fits(text) ? text : "";
 }
 

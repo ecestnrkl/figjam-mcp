@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.12.1 — Unreleased
+
+- Credential tables protect nonempty values in either direction, including ambiguous headers; empty cells stay empty, protected clusters skip vision, and historical model interpretations are rebuilt from shared deterministic fallbacks.
+- Compact board overviews budget one reusable page read, preserve page IDs with explicit omission counts, and guide reads of pages without sections; subsection lists add a parent read only when shortened, and page reads include outside-section content.
+
 ## 0.12.0 — 2026-11-05
 
 - Breaking: the server no longer loads a `.env` from its working directory. Put the variables into the `env` block of the MCP client configuration, or set `FIGJAM_MCP_ENV_FILE` to the file's absolute path; in VS Code's Local harness, `envFile` works too.

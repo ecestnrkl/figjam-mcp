@@ -1670,7 +1670,7 @@ describe("ingestBoard", () => {
     const largest = Array.from({ length: 8 }, (_, index) => `5:${9 - index} Topic ${9 - index} — ${9 - index}`).join("; ");
     expect(output.summary).toContain("Ingested board Sections123 (snapshot snapshot-id):");
     expect(output.summary).toContain(`Largest sections, 8 of 9 (ID, name, excerpts): ${largest}. Together they hold 44 of the board's 46 excerpts.`);
-    expect(output.summary).toContain("get_board_context without parameters lists all sections with IDs. For a summary of the whole board, pass all top-level section IDs from that list as nodeIds (at most 50 per call) with maxChars 24000, follow the cursor, then read outsideSections: true; answer_from_board is for one specific question." +
+    expect(output.summary).toContain("get_board_context without parameters gives bounded page and section guidance with IDs and one reusable page-read call; it is not a complete section directory. Use that call for each listed page and repeat unchanged with nextCursor; page reads include content outside sections. answer_from_board is for one specific question." +
       " 1 excerpt lies outside sections; read it with get_board_context and outsideSections: true.");
     expect(output.summary).not.toContain("Topic 1 —");
     expect(output.summary).not.toContain('"Note');
@@ -1678,8 +1678,8 @@ describe("ingestBoard", () => {
     expect(hasEvidenceIndex(redactBoard(getBoard("Sections123")!))).toBe(true);
     const { contextText } = (await getBoardContext({ boardId: "Sections123" })).structuredContent;
     expect(contextText).toContain(`Sections (ID, name, excerpts): ${largest}; 5:1 Topic 1 — 1. Together they hold 45 of the board's 46 excerpts.`);
-    expect(contextText).toContain("1 excerpt outside sections; read it with outsideSections: true.");
-    expect(contextText).toContain('Read a section with nodeIds: ["<ID>"]; use topic for word search.\nFor a summary of the whole board, pass all top-level section IDs from this list as nodeIds (at most 50 per call) with maxChars 24000, follow the cursor, then read outsideSections: true.');
+    expect(contextText).toContain("1 excerpt outside sections; page reads include them.");
+    expect(contextText).toContain('Read a page with get_board_context {"boardId":"Sections123"');
     expect(sectionGuide(getBoard("Sections123")!, 8).largestLine).toContain("Largest sections, 8 of 9 (ID, name, excerpts):");
     expect(sectionGuide(getBoard("Sections123")!, 9).largestLine).toContain("Sections (ID, name, excerpts):");
   });
@@ -1850,5 +1850,96 @@ describe("ingestBoard", () => {
     expect(output.clusterCount).toBe(2);
     const persisted = persistBoardMock.mock.calls[0]?.[0] as BoardData;
     expect(persisted.clusters.every((cluster) => cluster.phase !== undefined)).toBe(true);
+  });
+});
+
+describe("protected credential table ingestion", () => {
+  const secret = "synthetic-table-value";
+  const input = { figmaFileUrl: "https://www.figma.com/board/AbC123/Fixture", docStructureHint: "freeform", ingestMode: "max_quality" } as const;
+  function credentialTree(headerColumn = 0, value = secret, withImage = true) {
+    const rows = [[headerColumn === 0 ? "Password" : "Portal", headerColumn === 1 ? "Password" : "Account"],
+      [headerColumn === 0 ? value : "Lab", headerColumn === 1 ? value : "lea"]];
+    return { document: { id: "0:0", name: "Document", type: "DOCUMENT", children: [{
+      id: "0:1", name: "Page", type: "CANVAS", children: [
+        { id: "5:1", name: "Table", type: "TABLE", absoluteBoundingBox: { x: 0, y: 0, width: 400, height: 200 },
+          children: rows.flatMap((row, rowIndex) => row.map((text, columnIndex) => ({
+            id: `cell-${rowIndex}-${columnIndex}`, name: "Cell", type: "TABLE_CELL", characters: text, rowIndex, columnIndex,
+          }))) },
+        ...(withImage ? [{ id: "6:1", name: "Screenshot", type: "SHAPE_WITH_TEXT",
+          absoluteBoundingBox: { x: 5000, y: 0, width: 100, height: 100 }, fills: [{ type: "IMAGE", imageRef: "image-ref" }] }] : []),
+      ],
+    }] } };
+  }
+  function savedBoard(): BoardData { return persistBoardMock.mock.calls.at(-1)![0] as BoardData; }
+  function expectProtectedTable(board: BoardData) {
+    const cluster = board.clusters.find((candidate) => candidate.nodeIds.includes("5:1"))!;
+    expect(cluster).toMatchObject({ summarySource: "deterministic", confirmedNodeIds: ["5:1"] });
+    expect(cluster.modelId).toBeUndefined();
+    expect(cluster.cacheHit).toBeFalsy();
+    expect(JSON.stringify(board)).not.toContain(secret);
+  }
+
+  it.each([0, 1])("never renders or sends a protected column %i to the model on fresh and repeated ingests", async (column) => {
+    fetchFileTreeMock.mockResolvedValue(credentialTree(column));
+    const first = await ingestBoard(input);
+    const firstBoard = savedBoard();
+    expectProtectedTable(firstBoard);
+    expect(fetchRenderUrlsMock).not.toHaveBeenCalled();
+    expect(refineClusterWithVisionMock).toHaveBeenCalledTimes(1);
+    expect((refineClusterWithVisionMock.mock.calls[0]![0] as Cluster).nodeIds).toEqual(["6:1"]);
+    expect(first.qualityReport).toMatchObject({ deterministicClusters: 1, visionClusters: 1, reusedClusters: 0, figmaRequests: { renders: 0 } });
+    readLatestBoardMock.mockResolvedValue(firstBoard);
+    const second = await ingestBoard(input);
+    expectProtectedTable(savedBoard());
+    expect(second.qualityReport).toMatchObject({ deterministicClusters: 1, visionClusters: 1, reusedClusters: 1, figmaRequests: { renders: 0 } });
+    expect(fetchRenderUrlsMock).not.toHaveBeenCalled();
+    expect(refineClusterWithVisionMock).toHaveBeenCalledTimes(1);
+    const context = await getBoardContext({ boardId: "AbC123" });
+    for (const result of [first, second, context]) expect(JSON.stringify(result)).not.toContain(secret);
+  });
+
+  it.each(["complete cache hit", "snapshot reuse"])("replaces unsafe table interpretations during %s without counting them as reused", async (path) => {
+    fetchFileTreeMock.mockResolvedValue(credentialTree());
+    await ingestBoard(input);
+    const unsafe = savedBoard();
+    const table = unsafe.clusters.find((cluster) => cluster.nodeIds.includes("5:1"))!;
+    Object.assign(table, { label: `Login ${secret}`, summary: `The lab password is ${secret}.`, summarySource: "vision_llm", modelId: "unsafe-old-model" });
+    readLatestBoardMock.mockResolvedValue(unsafe);
+    if (path === "complete cache hit") readCachedBoardMock.mockResolvedValue(unsafe);
+    fetchRenderUrlsMock.mockClear();
+    refineClusterWithVisionMock.mockClear();
+    const output = await ingestBoard(input);
+    expectProtectedTable(savedBoard());
+    expect(output.qualityReport).toMatchObject({ deterministicClusters: 1, visionClusters: 1, cachedClusters: 1 });
+    expect(output.qualityReport?.reusedClusters ?? 0).toBe(path === "snapshot reuse" ? 1 : 0);
+    expect(refineClusterWithVisionMock).not.toHaveBeenCalled();
+    expect(fetchRenderUrlsMock).not.toHaveBeenCalled();
+    expect(JSON.stringify(output)).not.toContain(secret);
+    expect(JSON.stringify(await getBoardContext({ boardId: "AbC123" }))).not.toContain(secret);
+  });
+
+  it("reports no pending image work for a focused protected table", async () => {
+    fetchFileTreeMock.mockResolvedValue(credentialTree());
+    const output = await ingestBoard({ ...input, focusNodeIds: ["5:1"] });
+    expect(output.qualityReport?.focus).toEqual({ requestedIds: ["5:1"], foundIds: ["5:1"], imageClusters: 0, interpreted: 0, pending: 0 });
+    expect(output.summary).toContain("Focus: no image clusters to interpret.");
+    expect(output.summary).not.toContain("run ingest_board again");
+    expect(fetchRenderUrlsMock).not.toHaveBeenCalled();
+    expect(refineClusterWithVisionMock).toHaveBeenCalledTimes(1);
+    expect((refineClusterWithVisionMock.mock.calls[0]![0] as Cluster).nodeIds).toEqual(["6:1"]);
+  });
+
+  it("uses the ordinary vision path for a credential header over an empty value", async () => {
+    const tree = credentialTree(0, "", false);
+    tree.document.children[0]!.children[0]!.children = tree.document.children[0]!.children[0]!.children!.filter((cell) => cell.columnIndex === 0);
+    fetchFileTreeMock.mockResolvedValue(tree);
+    await ingestBoard(input);
+    const board = savedBoard();
+    expect(board.nodes.find((node) => node.id === "5:1")!.table!.cells.map((cell) => cell.text)).toEqual(["Password", ""]);
+    expect(fetchRenderUrlsMock).toHaveBeenCalledTimes(1);
+    expect(fetchRenderUrlsMock.mock.calls[0]![1]).toEqual(["5:1"]);
+    expect(refineClusterWithVisionMock).toHaveBeenCalledTimes(1);
+    expect((refineClusterWithVisionMock.mock.calls[0]![0] as Cluster).nodeIds).toEqual(["5:1"]);
+    expect(board.clusters[0]).toMatchObject({ summarySource: "vision_llm", modelId: "vision-model" });
   });
 });

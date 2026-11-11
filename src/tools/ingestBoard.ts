@@ -8,14 +8,15 @@ import {
   LLMConfigurationError, LlmBaseUrlError, LlmRequestError, LlmTimeoutError, LlmUnusableReplyError, llmBaseUrlProblem, missingLlmConfigurationMessage, validateLlmConfiguration,
   validateLlmRuntimeConfiguration,
 } from "../lib/llmClient.js";
-import { flattenNodeTree, isGenericNodeName } from "../lib/nodeTree.js";
+import { flattenNodeTree } from "../lib/nodeTree.js";
+import { compactLabel, fallbackLabel, inReadingOrder, refineClusterFromText, textSnippets, truncate } from "../lib/clusterText.js";
 import { partitionedBoardClusters } from "../lib/spatialCluster.js";
 import { refineClusterWithVision } from "../lib/visionInterpreter.js";
 import { prepareRenders, prepareVisionImage } from "../lib/visionImages.js";
 import { mapClustersToPhases } from "../lib/docStructureMapper.js";
 import { buildClusterRelations, extractConnectorEdges } from "../lib/connectorGraph.js";
 import { setBoard } from "../lib/cache.js";
-import { redactBoard } from "../lib/redact.js";
+import { deterministicRedactedCluster, hasProtectedTableValue, redactBoard, redactNodes } from "../lib/redact.js";
 import { readIntEnv } from "../lib/env.js";
 import { missingEnvironmentHint } from "../lib/envFile.js";
 import { redactMessage, validateHeaderSecret, withSecretScope } from "../lib/secrets.js";
@@ -144,7 +145,7 @@ async function performIngest(input: IngestBoardInput, options: OperationOptions)
   // autosave or after a content read, minutes later, so it cannot confirm freshness.
   const rawTree = await fetchFileTree(fileKey, token, signal);
   signal?.throwIfAborted();
-  const nodes = flattenNodeTree(rawTree);
+  const nodes = redactNodes(flattenNodeTree(rawTree));
   // IDs in link form (5-87, 5%3A87, a Figma link) are read as the IDs they stand for.
   const knownIds = new Set(nodes.map(node => node.id));
   const focusIds = input.focusNodeIds
@@ -172,13 +173,16 @@ async function performIngest(input: IngestBoardInput, options: OperationOptions)
     await progress("interpret", 3);
     const clusterNodes = clusterMembers(cached.clusters, nodes);
     // Phases follow the recomputed labels, as on a full ingest.
-    const clusters = mapClustersToPhases(labelDeterministicClusters(cached.clusters, clusterNodes, nodes),
-      input.docStructureHint, input.customPhases).map(cluster => ({ ...cluster, cacheHit: true }));
+    const protectedTables = clusterNodes.map(hasProtectedTableValue);
+    const secured = cached.clusters.map((cluster, index) =>
+      protectedTables[index] ? deterministicRedactedCluster(cluster, clusterNodes[index] ?? []) : cluster);
+    const clusters = mapClustersToPhases(labelDeterministicClusters(secured, clusterNodes, nodes),
+      input.docStructureHint, input.customPhases).map((cluster, index) => ({ ...cluster, cacheHit: !protectedTables[index] }));
     const focus = resolveFocus(focusIds?.ids, clusterNodes, nodes);
     // Cached labels and summaries may predate redaction being switched on.
     const board = redactBoard({ ...cached, clusters, freshnessCheckedAt, figmaVersion, figmaLastModified,
       createdAt: previousBoard?.snapshotId === snapshotId ? previousBoard.createdAt : Date.now(),
-      qualityReport: { ...buildQualityReport(clusters, clusters.length), figmaRequests: { imageFills: 0, renders: 0 },
+      qualityReport: { ...buildQualityReport(clusters, clusters.filter(cluster => cluster.cacheHit).length), figmaRequests: { imageFills: 0, renders: 0 },
         ...(focus ? { focus: focusReport(focus, clusters, clusterNodes, ingestMode) } : {}) } });
     await progress("persist", 4);
     const historyReset = await publishBoard(board, signal);
@@ -209,10 +213,15 @@ async function performIngest(input: IngestBoardInput, options: OperationOptions)
     const contentHash = contentHashes.get(cluster.id)!;
     const previous = reuseIndex.get(contentHash);
     // forceFullIngest re-reads the board only; interpretations of unchanged clusters are kept in every mode.
-    if (previous && canReusePrevious(previous, members, ingestMode, input.forceFullIngest)) {
+    if (hasProtectedTableValue(members)) {
+      refined[index] = {
+        ...deterministicRedactedCluster(refineClusterFromText(cluster, members), members),
+        contentHash,
+      };
+    } else if (previous && canReusePrevious(previous, members, ingestMode, input.forceFullIngest)) {
       refined[index] = { ...reuseCluster(cluster, previous, contentHash), cacheHit: true };
       reusedCount++;
-    } else if (shouldUseVision(members, ingestMode)) visionQueue.push(index);
+    } else if (visionEligible(members, ingestMode)) visionQueue.push(index);
     else refined[index] = { ...refineClusterFromText(cluster, members), contentHash };
   });
   const priorities = clusters.map((cluster, index) => buildVisionPriority(cluster, clusterNodesByIndex[index]!));
@@ -551,10 +560,14 @@ function resolveFocus(focusNodeIds: string[] | undefined, clusterNodes: Normaliz
 
 function focusReport(focus: Focus, clusters: RefinedCluster[], clusterNodes: NormalizedNode[][], ingestMode: IngestMode): IngestFocusReport {
   const inFocus = clusters.filter((_cluster, index) => focus.ranks[index]! < focus.requestedIds.length
-    && shouldUseVision(clusterNodes[index]!, ingestMode));
+    && visionEligible(clusterNodes[index]!, ingestMode));
   const interpreted = inFocus.filter(cluster => cluster.summarySource === "vision_llm" && !cluster.incomplete).length;
   return { requestedIds: focus.requestedIds, foundIds: focus.foundIds, imageClusters: inFocus.length, interpreted,
     pending: inFocus.length - interpreted };
+}
+
+function visionEligible(clusterNodes: NormalizedNode[], ingestMode: IngestMode): boolean {
+  return !hasProtectedTableValue(clusterNodes) && shouldUseVision(clusterNodes, ingestMode);
 }
 
 function retryPriority(previous?: RefinedCluster): number {
@@ -845,18 +858,6 @@ function reuseCluster(
   };
 }
 
-function refineClusterFromText(cluster: Cluster, clusterNodes: NormalizedNode[]): RefinedCluster {
-  const imageCount = clusterNodes.filter((node) => node.imageRef).length;
-
-  return {
-    ...cluster,
-    label: fallbackLabel(cluster.id, clusterNodes),
-    summary: fallbackSummary(clusterNodes.length, textSnippets(clusterNodes), imageCount),
-    confirmedNodeIds: [...cluster.nodeIds],
-    summarySource: "deterministic",
-  };
-}
-
 /**
  * Names deterministic clusters (no model label) on every ingest, including reused
  * and cached ones. A cluster with at least two text nodes in one named innermost
@@ -887,68 +888,6 @@ function innermostSection(members: NormalizedNode[], sectionNames: Map<string, s
   const ids = new Set(members.map((node) => node.sectionIds?.at(-1)));
   const [id] = ids;
   return ids.size === 1 && id && sectionNames.get(id) ? id : undefined;
-}
-
-/** Top to bottom, then left to right; member order breaks ties. */
-function inReadingOrder(nodes: NormalizedNode[]): NormalizedNode[] {
-  return nodes.map((node, position) => ({ node, position }))
-    .sort((a, b) => a.node.y - b.node.y || a.node.x - b.node.x || a.position - b.position)
-    .map(({ node }) => node);
-}
-
-function textSnippets(nodes: NormalizedNode[]): string[] {
-  return nodes.map((node) => node.text?.trim()).filter((text): text is string => Boolean(text));
-}
-
-/** The first text in reading order, else the first specific node name. */
-function fallbackLabel(clusterId: string, clusterNodes: NormalizedNode[]): string {
-  const ordered = inReadingOrder(clusterNodes);
-  const fromText = textSnippets(ordered)[0];
-  if (fromText) {
-    return compactLabel(fromText);
-  }
-
-  const fromName = ordered
-    .map((node) => node.name.trim())
-    .find((name) => name && !isGenericNodeName(name));
-  return fromName ? compactLabel(fromName) : `Cluster ${clusterId.replace(/^cluster_/, "")}`;
-}
-
-function fallbackSummary(
-  nodeCount: number,
-  textSnippets: string[],
-  imageCount: number,
-): string {
-  const textCount = textSnippets.length;
-  const parts = [
-    `Cluster contains ${nodeCount} board element${nodeCount === 1 ? "" : "s"} with ${textCount} extracted text item${textCount === 1 ? "" : "s"}.`,
-  ];
-
-  const highlights = textSnippets.slice(0, 5).map((text) => `"${truncate(text, 120)}"`);
-  if (highlights.length > 0) {
-    parts.push(`Extracted text highlights: ${highlights.join("; ")}.`);
-  } else {
-    parts.push("No readable text was extracted from this cluster.");
-  }
-
-  if (imageCount > 0) {
-    parts.push(
-      `It includes ${imageCount} image element${imageCount === 1 ? "" : "s"} that ${imageCount === 1 ? "has" : "have"} not been visually interpreted in this summary.`,
-    );
-  }
-
-  parts.push("The source node IDs are retained for follow-up context.");
-  return parts.join(" ");
-}
-
-function compactLabel(text: string): string {
-  const normalized = text.replace(/\s+/g, " ").replace(/^["']|["']$/g, "").trim();
-  const words = normalized.split(" ").filter(Boolean).slice(0, 6).join(" ");
-  return truncate(words || normalized, 60);
-}
-
-function truncate(text: string, maxLength: number): string {
-  return text.length <= maxLength ? text : `${text.slice(0, maxLength - 3)}...`;
 }
 
 function buildQualityReport(
@@ -996,7 +935,7 @@ function buildSummary(board: BoardData, qualityReport: IngestQualityReport, cont
   const overview = !clusters.length && !retrieveEvidence(redactBoard(board)).evidence.length ? "The board contains no readable content."
     : largestSections
     ? `${clusters.length} cluster${clusters.length === 1 ? "" : "s"} ${settings}. ${largestSections} ` +
-      "get_board_context without parameters lists all sections with IDs. For a summary of the whole board, pass all top-level section IDs from that list as nodeIds (at most 50 per call) with maxChars 24000, follow the cursor, then read outsideSections: true; answer_from_board is for one specific question." +
+      "get_board_context without parameters gives bounded page and section guidance with IDs and one reusable page-read call; it is not a complete section directory. Use that call for each listed page and repeat unchanged with nextCursor; page reads include content outside sections. answer_from_board is for one specific question." +
       (outsideSections ? ` ${outsideSections} excerpt${outsideSections === 1 ? " lies" : "s lie"} outside sections; read ` +
         `${outsideSections === 1 ? "it" : "them"} with get_board_context and outsideSections: true.` : "")
     : `${clusters.length} cluster${clusters.length === 1 ? "" : "s"} - ${shownLabels} ${settings}.`;

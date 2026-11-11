@@ -292,12 +292,15 @@ The `boardId` of every later call is the file key from that URL, or the URL
 itself; a URL with a `node-id` and without `nodeIds`, `topic` and
 `outsideSections` makes `get_board_context` read that node. To summarize
 a board, the assistant calls `ingest_board`, then `get_board_context` without
-parameters, whose first page names the largest sections and includes a section
-overview with IDs within the page's size limit, and then reads the largest sections
-by passing their IDs as `nodeIds`. Several IDs in one call take turns in request
-order, up to 50 per call. For a whole-board summary, pass all top-level section IDs
-with `maxChars: 24000`, follow the cursor in the text with the same arguments, then
-read `outsideSections: true`.
+parameters, whose first page names the largest sections and includes a bounded
+page/section overview with IDs within the page's size limit. This is not a
+guaranteed complete section directory; empty sections may be omitted and unlisted
+pages are counted. The footer gives one reusable read call for the listed page IDs. Read each
+page separately with `nodeIds: [pageId]`, `detail: "auto"` and `maxChars: 24000`,
+following `nextCursor` with unchanged arguments. Page reads already include
+content outside sections, so `outsideSections: true` is only needed for a
+separate targeted query. Several IDs in one call take turns in request order,
+up to 50 per call.
 Large `nodeIds` reads automatically use short source-ID lines, grouped by section,
 when the first full page would leave unread excerpts. `limit` applies only with
 the full view; an overview ignores it even when supplied. Read complete text and
