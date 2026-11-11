@@ -1,9 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { evidenceBoard, textNode } from "./fixtures/retrieval.js";
 import { flattenNodeTree } from "../src/lib/nodeTree.js";
-import { redactBoard, redactCredentials, redactTableCells } from "../src/lib/redact.js";
+import { hasProtectedTableValue, redactBoard, redactCredentials, redactTableCells } from "../src/lib/redact.js";
 
-const { chatJsonMock } = vi.hoisted(() => ({ chatJsonMock: vi.fn() }));
+const { chatJsonMock, readBoardHistoryMock, readCachedBoardMock } = vi.hoisted(() => ({
+  chatJsonMock: vi.fn(), readBoardHistoryMock: vi.fn(), readCachedBoardMock: vi.fn(),
+}));
+vi.mock("../src/lib/persistentCache.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../src/lib/persistentCache.js")>()),
+  readBoardHistory: readBoardHistoryMock, readCachedBoard: readCachedBoardMock,
+  readBoardHead: async () => ({ damaged: false }), listStoredFileKeys: async () => [],
+}));
 vi.mock("../src/lib/llmClient.js", () => ({
   chatJson: chatJsonMock, getAnswerReasoningEffort: () => undefined, getTextModels: () => ["test-model"],
   LlmInvalidJsonError: class extends Error {},
@@ -11,6 +18,7 @@ vi.mock("../src/lib/llmClient.js", () => ({
 const { setBoard } = await import("../src/lib/cache.js");
 const { answerFromBoard } = await import("../src/tools/answerFromBoard.js");
 const { getBoardContext } = await import("../src/tools/getBoardContext.js");
+const { diffBoard } = await import("../src/tools/diffBoard.js");
 
 // Synthetic values, assembled at runtime so secret scanners do not flag the test file.
 const githubToken = "ghp_" + "A1b2C3d4".repeat(4) + "e5F6";
@@ -218,6 +226,33 @@ describe("credential table context", () => {
     id: `cell-${rowIndex}-${column}`, row: rowIndex, column, text,
   })));
 
+  it.each([
+    { name: "label without a value row", rows: [["Password"]], protected: false },
+    { name: "label over an empty cell", rows: [["Password"], [""]], protected: false },
+    { name: "value in column zero", rows: [["Password"], ["synthetic-value"]], protected: true },
+    { name: "key/value row", rows: [["Feature", "Value"], ["Password", "synthetic-value"]], protected: true },
+    { name: "already masked value", rows: [["Password"], ["[redacted]"]], protected: true },
+    { name: "ordinary table", rows: [["Feature", "Value"], ["Login", "Improved"]], protected: false },
+  ])("detects protected table values: $name", ({ rows, protected: expected }) => {
+    const cells = makeCells(rows);
+    const node = { ...textNode("table", ""), type: "TABLE", table: { cells } };
+    expect(hasProtectedTableValue([node])).toBe(expected);
+    const masked = redactTableCells(cells);
+    expect(hasProtectedTableValue([{ ...node, table: { cells: masked } }])).toBe(expected);
+    expect(redactTableCells(masked)).toEqual(masked);
+    if (!expected) expect(masked).toEqual(cells);
+  });
+
+  it("leaves an empty credential cell empty through extraction", () => {
+    const table = flattenNodeTree({ document: { id: "root", name: "Document", type: "DOCUMENT", children: [{
+      id: "table", name: "Table", type: "TABLE", children: makeCells([["Password"], [""]]).map((cell) => ({
+        id: cell.id, name: "Cell", type: "TABLE_CELL", characters: cell.text, rowIndex: cell.row, columnIndex: cell.column,
+      })),
+    }] } }).find((node) => node.id === "table")!;
+    expect(table.table?.cells.map((cell) => cell.text)).toEqual(["Password", ""]);
+    expect(hasProtectedTableValue([table])).toBe(false);
+  });
+
   it.each(tableLabels)("redacts the full protected column under an exact %s header, including mixed case", (label) => {
     const cells = makeCells([["Portal", "User", label.toUpperCase()], ["Admin-Portal", "lea", "Sommer2026!"], ["Test", "max", "Winter2027?"]]);
     const output = redactTableCells(cells);
@@ -310,6 +345,7 @@ describe("credential table context", () => {
     vi.stubEnv("FIGJAM_MCP_REDACT_CREDENTIALS", "false");
     const cells = makeCells([["Passwort", "Other"], ["secret-value", "visible-value"]]);
     expect(redactTableCells(cells)).toBe(cells);
+    expect(hasProtectedTableValue([{ ...textNode("table", ""), type: "TABLE", table: { cells } }])).toBe(false);
   });
 });
 
@@ -347,5 +383,41 @@ describe("snapshots cached before redaction", () => {
       expect(prompt).not.toContain(secret);
       expect(JSON.stringify(output)).not.toContain(secret);
     }
+  });
+});
+
+
+describe("protected credential table snapshots", () => {
+  it.each(["raw", "already masked"])("discards unsafe model text for a %s value in every read path", async (kind) => {
+    const secret = "synthetic-legacy-value";
+    const value = kind === "raw" ? secret : "[redacted]";
+    const cells = [
+      { id: "head", text: "Password", row: 0, column: 0 },
+      { id: "value", text: value, row: 1, column: 0 },
+    ];
+    const boardId = kind === "raw" ? "RawTable123" : "MaskedTable123";
+    const board = evidenceBoard(boardId, [{ ...textNode("table", `Password\n${value}`), type: "TABLE", table: { cells } }]);
+    board.clusters[0] = { ...board.clusters[0]!, label: `Login ${secret}`, summary: `The lab password is ${secret}.`,
+      summarySource: "vision_llm", modelId: "unsafe-old-model", incomplete: true, fallbackReason: "timeout" };
+    const secured = redactBoard(board);
+    expect(secured.clusters[0]).toMatchObject({ summarySource: "deterministic", confirmedNodeIds: ["table"] });
+    expect(secured.clusters[0]!.modelId).toBeUndefined();
+    expect(secured.clusters[0]!.incomplete).toBeUndefined();
+    expect(redactBoard(secured)).toEqual(secured);
+    setBoard(boardId, board);
+    const context = await getBoardContext({ boardId });
+    const full = await getBoardContext({ boardId, nodeIds: ["table"], detail: "full" });
+    chatJsonMock.mockResolvedValueOnce({ kind: "unsupported", language: "en", answer: "", evidenceIds: [] });
+    const answer = await answerFromBoard({ boardId, question: "What does the login table say?" });
+    const prompt = chatJsonMock.mock.calls[0]?.[1];
+    expect(JSON.stringify(prompt)).toContain("[redacted]");
+    const baseline = { ...evidenceBoard(boardId, []), clusters: [] };
+    readBoardHistoryMock.mockResolvedValue([
+      { cacheKey: "before", nodeHash: "before", createdAt: 1 }, { cacheKey: "after", nodeHash: "after", createdAt: 2 },
+    ]);
+    readCachedBoardMock.mockImplementation(async (key: string) => key === "before" ? baseline : board);
+    const diff = await diffBoard({ boardId, compareTo: 1 });
+    expect(diff.newClusters).toHaveLength(1);
+    for (const result of [secured, context, full, prompt, answer, diff]) expect(JSON.stringify(result)).not.toContain(secret);
   });
 });
