@@ -1707,6 +1707,17 @@ describe("bounded navigation follow-up reads", () => {
       expect(navigationCalls(text)).toHaveLength(0);
     });
 
+  it.each([1, 6])("keeps an omitted-sections notice for 12 parents with %i children at 2000 characters", async (children) => {
+    const data = navigationParents(12, children, 30);
+    setBoard(data.boardId, data);
+    const result = await getBoardContext({ boardId: data.boardId, nodeIds: Array.from({ length: 12 }, (_, p) => `1:${p}`),
+      detail: "full", maxChars: 2000 });
+    expectNavigationBudget(result, 2000);
+    const text = result.structuredContent.contextText;
+    expect(text).toContain("## Sections inside");
+    expect(text).toMatch(/\d+ more sections? not listed/);
+  });
+
   it("names incomplete requested parents once and follows their bounded continuation call to the end", async () => {
     const data = navigationParents(30, 30, 1);
     // Only one parent needs long notes to exercise a real continuation cursor.
@@ -1728,6 +1739,21 @@ describe("bounded navigation follow-up reads", () => {
     const followed = await followNavigation(calls[0]!);
     expect([...followed.ids].filter((id) => id.startsWith(`5:${parentNumber}x`))).toHaveLength(30);
     expect(followed.calls).toBeGreaterThan(1);
+  });
+
+  it("keeps a short overview when the first response contains all loose notes", async () => {
+    const data = navigationBoard("NavigationLoose2", [{ id: "0:1", name: "Workshop", type: "CANVAS",
+      children: Array.from({ length: 2 }, (_, i) => navigationNote(`2:${i}`, `Loose idea ${i}`, i * 400, 0)),
+    }]);
+    setBoard(data.boardId, data);
+    const result = await getBoardContext({ boardId: data.boardId });
+    expectNavigationBudget(result, 12000);
+    expect(result.structuredContent.evidence).toHaveLength(2);
+    expect(result.structuredContent.nextCursor).toBeUndefined();
+    const text = result.structuredContent.contextText;
+    expect(text).toContain("Pass topic or nodeIds for smaller, more precise answers.");
+    expect(navigationPageIds(text)).toHaveLength(0);
+    expect(navigationCalls(text)).toHaveLength(0);
   });
 
   it("provides a page read that reaches 300 loose notes in at most two calls", async () => {

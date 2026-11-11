@@ -56,11 +56,11 @@ export class SectionIndex {
   }
 
   /** First page of an unfocused request: a bounded page/section guide with IDs. */
-  boardOverview(budget: number): string {
+  boardOverview(budget: number, includeSinglePage = true): string {
     const { board, evidence } = this;
     const size = `${board.clusters.length} cluster${plural(board.clusters.length)}, ${evidence.length} excerpt${plural(evidence.length)}.`;
     const pages = this.pages.filter((page) => this.excerpts.has(page.id) || this.children.has(page.id));
-    if (!this.sections.length && !pages.length) {
+    if (!this.sections.length && (!pages.length || (!includeSinglePage && pages.length === 1))) {
       return fitOutline(["## Board overview", size, "Pass topic or nodeIds for smaller, more precise answers."], [], [[]], budget, {});
     }
     const lines: OutlineLine[] = [];
@@ -153,14 +153,17 @@ export class SectionIndex {
     if (!lines.length) return "";
     return fitOutline(["## Sections inside (ID, name, excerpts)"], lines,
       [["Read one with nodeIds: [\"<ID>\"]."]], budget, {
-        omittedFooter: (shown) => {
+        omittedFooter: (shown, short) => {
           const kept = new Set(shown);
           const incomplete = [...new Set(lines.filter((line) => line.section && !kept.has(line)).map((line) => line.parentId!))];
           if (!incomplete.length) return [];
           // Keep the parent list bounded even for requests with fifty containers.
           const ids = incomplete.slice(0, 4).join(", ");
           const more = incomplete.length - Math.min(4, incomplete.length);
-          return [`Incomplete child lists for requested parents ${ids}${more ? ` and ${more} more` : ""}: ${this.readCall([incomplete[0]!])}; repeat unchanged with nextCursor.`];
+          const parents = `${ids}${more ? ` and ${more} more` : ""}`;
+          return [short
+            ? `Incomplete child lists for requested parents ${parents}; read one parent with detail "auto".`
+            : `Incomplete child lists for requested parents ${parents}: ${this.readCall([incomplete[0]!])}; repeat unchanged with nextCursor.`];
         },
       });
   }
@@ -212,18 +215,19 @@ export class SectionIndex {
 /** Keep page/parent lines first, then shallow sections, then deeper sections. */
 function fitOutline(
   header: string[], lines: OutlineLine[], footers: string[][], budget: number,
-  options: { pages?: boolean; omittedFooter?: (shown: OutlineLine[]) => string[] },
+  options: { pages?: boolean; omittedFooter?: (shown: OutlineLine[], short: boolean) => string[] },
 ): string {
   const sectionCount = lines.filter((line) => line.section).length;
   const pageCount = options.pages ? lines.filter((line) => !line.section).length : 0;
-  const render = (shown: OutlineLine[], footer: string[]) => {
+  const render = (shown: OutlineLine[], footer: string[], omittedStyle: "full" | "short" | "none") => {
     const omitted = sectionCount - shown.filter((line) => line.section).length;
     const omittedPages = pageCount - shown.filter((line) => !line.section).length;
     const summary = [
       ...(omitted > 0 ? [`${omitted} more section${plural(omitted)} not listed; use the page or parent IDs above to continue. Empty sections may be absent.`] : []),
       ...(omittedPages > 0 ? [`${omittedPages} more page${plural(omittedPages)} not listed in this bounded overview.`] : []),
     ];
-    return [...header, ...shown.map((line) => line.text), ...summary, ...footer, ...(options.omittedFooter?.(shown) ?? [])].join("\n");
+    return [...header, ...shown.map((line) => line.text), ...summary, ...footer,
+      ...(omittedStyle === "none" ? [] : options.omittedFooter?.(shown, omittedStyle === "short") ?? [])].join("\n");
   };
   const fits = (text: string) => JSON.stringify(text).length - 2 <= budget;
   const priority = lines.map((line, index) => ({ line, index })).sort((a, b) =>
@@ -231,21 +235,27 @@ function fitOutline(
   const shown = (count: number) => priority.slice(0, count).sort((a, b) => a.index - b.index).map(({ line }) => line);
   // Reserve at least the first page or parent line where one exists. Footer
   // variants drop the directory caveat, multi-page addition, then the read call.
-  let footer = footers.at(-1) ?? [];
-  for (const candidate of footers) {
-    if (fits(render(lines, candidate)) || fits(render(shown(Math.min(1, lines.length)), candidate))) { footer = candidate; break; }
+  const styles: Array<"full" | "short" | "none"> = options.omittedFooter ? ["full", "short", "none"] : ["none"];
+  for (const style of styles) {
+    let footer = footers.at(-1) ?? [];
+    for (const candidate of footers) {
+      if (fits(render(lines, candidate, style)) || fits(render(shown(Math.min(1, lines.length)), candidate, style))) { footer = candidate; break; }
+    }
+    const complete = render(lines, footer, style);
+    if (fits(complete)) return complete;
+    // Prefer a shorter omission hint over an outline with no parent at all.
+    if (lines.length && !fits(render(shown(1), footer, style)) && style !== "none") continue;
+    let low = 0;
+    let high = lines.length;
+    while (low < high) {
+      const middle = (low + high + 1) >>> 1;
+      if (fits(render(shown(middle), footer, style))) low = middle;
+      else high = middle - 1;
+    }
+    const text = render(shown(low), footer, style);
+    if (fits(text)) return text;
   }
-  const complete = render(lines, footer);
-  if (fits(complete)) return complete;
-  let low = 0;
-  let high = lines.length;
-  while (low < high) {
-    const middle = (low + high + 1) >>> 1;
-    if (fits(render(shown(middle), footer))) low = middle;
-    else high = middle - 1;
-  }
-  const text = render(shown(low), footer);
-  return fits(text) ? text : "";
+  return "";
 }
 
 function plural(count: number): string {
