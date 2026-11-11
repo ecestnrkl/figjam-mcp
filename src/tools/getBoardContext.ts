@@ -183,8 +183,10 @@ export async function getBoardContext(input: GetBoardContextInput, extra: { noti
   }
   // Orientation takes at most a third of the budget; excerpts keep the rest.
   const orientationBudget = Math.floor(options.maxChars / 3);
-  const overview = cursor || options.topic ? "" : options.outsideSections ? sections.outsideOverview(orientationBudget)
-    : options.nodeIds ? focusOutline() : sections.boardOverview(orientationBudget);
+  // A single page without sections needs its navigation call only when excerpts remain.
+  const shortSinglePage = !cursor && !options.topic && !options.outsideSections && !options.nodeIds && sections.count === 0;
+  let overview = cursor || options.topic ? "" : options.outsideSections ? sections.outsideOverview(orientationBudget)
+    : options.nodeIds ? focusOutline() : sections.boardOverview(orientationBudget, !shortSinglePage);
   const page = cursor?.page ?? 1;
   const fits = ({ text, structuredContent }: BoardContextResult, budget = options.maxChars) =>
     text.length <= budget && JSON.stringify(structuredContent).length <= budget &&
@@ -212,6 +214,13 @@ export async function getBoardContext(input: GetBoardContextInput, extra: { noti
     if (autoEligible && retrieved.evidence.length > 0 && error instanceof Error &&
       error.message.startsWith("The context budget cannot fit one source excerpt.")) return overviewResult();
     throw error;
+  }
+  if (shortSinglePage && selected.consumed < retrieved.evidence.length) {
+    const navigation = sections.boardOverview(orientationBudget);
+    if (navigation !== overview) {
+      overview = navigation;
+      selected = selectWithFallbacks(firstView);
+    }
   }
   // The remaining pages are estimated from probe pages built like follow-up pages. The estimate
   // changes the position line and with it what fits, so the page is selected again with it.
