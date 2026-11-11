@@ -8,7 +8,8 @@ import {
   LLMConfigurationError, LlmBaseUrlError, LlmRequestError, LlmTimeoutError, LlmUnusableReplyError, llmBaseUrlProblem, missingLlmConfigurationMessage, validateLlmConfiguration,
   validateLlmRuntimeConfiguration,
 } from "../lib/llmClient.js";
-import { flattenNodeTree, isGenericNodeName } from "../lib/nodeTree.js";
+import { flattenNodeTree } from "../lib/nodeTree.js";
+import { compactLabel, fallbackLabel, inReadingOrder, refineClusterFromText, textSnippets, truncate } from "../lib/clusterText.js";
 import { partitionedBoardClusters } from "../lib/spatialCluster.js";
 import { refineClusterWithVision } from "../lib/visionInterpreter.js";
 import { prepareRenders, prepareVisionImage } from "../lib/visionImages.js";
@@ -172,15 +173,16 @@ async function performIngest(input: IngestBoardInput, options: OperationOptions)
     await progress("interpret", 3);
     const clusterNodes = clusterMembers(cached.clusters, nodes);
     // Phases follow the recomputed labels, as on a full ingest.
+    const protectedTables = clusterNodes.map(hasProtectedTableValue);
     const secured = cached.clusters.map((cluster, index) =>
-      hasProtectedTableValue(clusterNodes[index] ?? []) ? deterministicRedactedCluster(cluster, clusterNodes[index] ?? []) : cluster);
+      protectedTables[index] ? deterministicRedactedCluster(cluster, clusterNodes[index] ?? []) : cluster);
     const clusters = mapClustersToPhases(labelDeterministicClusters(secured, clusterNodes, nodes),
-      input.docStructureHint, input.customPhases).map(cluster => ({ ...cluster, cacheHit: true }));
+      input.docStructureHint, input.customPhases).map((cluster, index) => ({ ...cluster, cacheHit: !protectedTables[index] }));
     const focus = resolveFocus(focusIds?.ids, clusterNodes, nodes);
     // Cached labels and summaries may predate redaction being switched on.
     const board = redactBoard({ ...cached, clusters, freshnessCheckedAt, figmaVersion, figmaLastModified,
       createdAt: previousBoard?.snapshotId === snapshotId ? previousBoard.createdAt : Date.now(),
-      qualityReport: { ...buildQualityReport(clusters, clusters.length), figmaRequests: { imageFills: 0, renders: 0 },
+      qualityReport: { ...buildQualityReport(clusters, clusters.filter(cluster => cluster.cacheHit).length), figmaRequests: { imageFills: 0, renders: 0 },
         ...(focus ? { focus: focusReport(focus, clusters, clusterNodes, ingestMode) } : {}) } });
     await progress("persist", 4);
     const historyReset = await publishBoard(board, signal);
@@ -856,18 +858,6 @@ function reuseCluster(
   };
 }
 
-function refineClusterFromText(cluster: Cluster, clusterNodes: NormalizedNode[]): RefinedCluster {
-  const imageCount = clusterNodes.filter((node) => node.imageRef).length;
-
-  return {
-    ...cluster,
-    label: fallbackLabel(cluster.id, clusterNodes),
-    summary: fallbackSummary(clusterNodes.length, textSnippets(clusterNodes), imageCount),
-    confirmedNodeIds: [...cluster.nodeIds],
-    summarySource: "deterministic",
-  };
-}
-
 /**
  * Names deterministic clusters (no model label) on every ingest, including reused
  * and cached ones. A cluster with at least two text nodes in one named innermost
@@ -898,68 +888,6 @@ function innermostSection(members: NormalizedNode[], sectionNames: Map<string, s
   const ids = new Set(members.map((node) => node.sectionIds?.at(-1)));
   const [id] = ids;
   return ids.size === 1 && id && sectionNames.get(id) ? id : undefined;
-}
-
-/** Top to bottom, then left to right; member order breaks ties. */
-function inReadingOrder(nodes: NormalizedNode[]): NormalizedNode[] {
-  return nodes.map((node, position) => ({ node, position }))
-    .sort((a, b) => a.node.y - b.node.y || a.node.x - b.node.x || a.position - b.position)
-    .map(({ node }) => node);
-}
-
-function textSnippets(nodes: NormalizedNode[]): string[] {
-  return nodes.map((node) => node.text?.trim()).filter((text): text is string => Boolean(text));
-}
-
-/** The first text in reading order, else the first specific node name. */
-function fallbackLabel(clusterId: string, clusterNodes: NormalizedNode[]): string {
-  const ordered = inReadingOrder(clusterNodes);
-  const fromText = textSnippets(ordered)[0];
-  if (fromText) {
-    return compactLabel(fromText);
-  }
-
-  const fromName = ordered
-    .map((node) => node.name.trim())
-    .find((name) => name && !isGenericNodeName(name));
-  return fromName ? compactLabel(fromName) : `Cluster ${clusterId.replace(/^cluster_/, "")}`;
-}
-
-function fallbackSummary(
-  nodeCount: number,
-  textSnippets: string[],
-  imageCount: number,
-): string {
-  const textCount = textSnippets.length;
-  const parts = [
-    `Cluster contains ${nodeCount} board element${nodeCount === 1 ? "" : "s"} with ${textCount} extracted text item${textCount === 1 ? "" : "s"}.`,
-  ];
-
-  const highlights = textSnippets.slice(0, 5).map((text) => `"${truncate(text, 120)}"`);
-  if (highlights.length > 0) {
-    parts.push(`Extracted text highlights: ${highlights.join("; ")}.`);
-  } else {
-    parts.push("No readable text was extracted from this cluster.");
-  }
-
-  if (imageCount > 0) {
-    parts.push(
-      `It includes ${imageCount} image element${imageCount === 1 ? "" : "s"} that ${imageCount === 1 ? "has" : "have"} not been visually interpreted in this summary.`,
-    );
-  }
-
-  parts.push("The source node IDs are retained for follow-up context.");
-  return parts.join(" ");
-}
-
-function compactLabel(text: string): string {
-  const normalized = text.replace(/\s+/g, " ").replace(/^["']|["']$/g, "").trim();
-  const words = normalized.split(" ").filter(Boolean).slice(0, 6).join(" ");
-  return truncate(words || normalized, 60);
-}
-
-function truncate(text: string, maxLength: number): string {
-  return text.length <= maxLength ? text : `${text.slice(0, maxLength - 3)}...`;
 }
 
 function buildQualityReport(

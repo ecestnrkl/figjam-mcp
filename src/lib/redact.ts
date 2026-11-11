@@ -1,3 +1,4 @@
+import { refineClusterFromText } from "./clusterText.js";
 import { readBoolEnv } from "./env.js";
 import { tableCellPositions } from "./tableCells.js";
 import type { BoardData, NormalizedNode, RefinedCluster, TableCell } from "../types.js";
@@ -72,7 +73,7 @@ export function redactTableCells(cells: TableCell[], tableId?: string): TableCel
   const mask = tableProtectionMask(cells, tableId);
   return cells.map((original, index) => {
     const cell = mask.positioned[index]!;
-    const secret = mask.protected.has(index);
+    const secret = mask.protected.has(index) && Boolean(cell.text.trim());
     return { ...original, text: secret && !cell.text.startsWith(REDACTED) ? REDACTED : redactCredentials(cell.text) };
   });
 }
@@ -114,18 +115,8 @@ function tableProtectionMask(cells: TableCell[], tableId?: string): {
 
 /** Rebuilds a protected cluster without carrying forward provider-derived text or state. */
 export function deterministicRedactedCluster(cluster: RefinedCluster, nodes: NormalizedNode[]): RefinedCluster {
-  const texts = nodes.map((node) => node.text?.trim()).filter((text): text is string => Boolean(text));
-  const label = texts[0]?.replace(/\s+/g, " ").slice(0, 60) || `Cluster ${cluster.id.replace(/^cluster_/, "")}`;
-  const highlights = texts.slice(0, 5).map((text) => `"${text.replace(/\s+/g, " ").slice(0, 120)}"`);
-  const summary = [
-    `Cluster contains ${nodes.length} board element${nodes.length === 1 ? "" : "s"} with ${texts.length} extracted text item${texts.length === 1 ? "" : "s"}.`,
-    highlights.length ? `Extracted text highlights: ${highlights.join("; ")}.` : "No readable text was extracted from this cluster.",
-    "The source node IDs are retained for follow-up context.",
-  ].join(" ");
   return {
-    ...cluster,
-    label,
-    summary,
+    ...refineClusterFromText(cluster, nodes),
     confirmedNodeIds: [...cluster.nodeIds],
     summarySource: "deterministic",
     modelId: undefined,
