@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.13.0 — Unreleased
+## 0.13.0 — 2026-11-13
 
 - Find common word forms and compounds without crowding out exact search matches, mark contextual excerpts, and suggest similar board words when search finds no matches.
 - Improve Figma connection and model errors, first-run configuration, and branch and design file handling.
