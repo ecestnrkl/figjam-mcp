@@ -63,7 +63,7 @@ invalid JSON or an unavailable model. Changing any model setting or
 | --- | --- | --- |
 | `INGEST_BOARD_VISION_BUDGET_MS` | `40000` | Time for the vision phase of one ingest. `0` starts no vision work; use `max_speed` for text-only ingests. |
 | `INGEST_BOARD_MIN_VISION_SLOT_MS` | `10000` | A cluster (rendering included) or its model step starts only if the budget left is at least this value and 1.25 × the median duration of that step among clusters finished in the same ingest. Concurrency × budget ÷ slot (12 with 3 parallel requests, 32 with 8) is how many clusters are planned for rendering. |
-| `FIGMA_FILE_REQUEST_TIMEOUT_MS` | `60000` | Download of the board's file tree. |
+| `FIGMA_FILE_REQUEST_TIMEOUT_MS` | `45000` | Download of the board's file tree, leaving time before a typical 60-second client timeout. |
 | `FIGMA_REQUEST_TIMEOUT_MS` | `15000` | Each other Figma request: image fills, image render, image download. |
 | `LLM_REQUEST_TIMEOUT_MS` | unset | When set, each LLM request whose role has no value of its own. |
 | `LLM_ANSWER_REQUEST_TIMEOUT_MS` | `40000` | Each answer request and the text checks of `diagnose_llm_config`. Without it, an explicit `LLM_REQUEST_TIMEOUT_MS` applies. `answer_from_board` stops after 50 s across all model candidates (or this value, if larger); a fallback candidate gets only the time left. |

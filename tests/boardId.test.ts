@@ -19,3 +19,12 @@ describe("boardId as key or URL", () => {
     expect(parseFigmaUrl(value)).toBeUndefined();
   });
 });
+
+it.each(["board", "design", "file"])("uses the branch key for a %s branch URL", (kind) => {
+  const url = `https://www.figma.com/${kind}/Parent123/branch/Branch456/Example?node-id=5-87`;
+  expect(parseBoardId(url)).toEqual({ fileKey: "Branch456", nodeId: "5-87" });
+  expect(parseFigmaUrl(url.replace("https://www.figma.com", "https://user:pass@www.figma.com"))).toBeUndefined();
+  expect(parseFigmaUrl(url.replace("https://www.figma.com", "https://@www.figma.com"))).toBeUndefined();
+  expect(parseFigmaUrl(url.replace("https:", "http:"))).toBeUndefined();
+  expect(parseFigmaUrl(url.replace("www.figma.com", "foreign.invalid"))).toBeUndefined();
+});

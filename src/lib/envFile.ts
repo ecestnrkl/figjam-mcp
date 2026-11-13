@@ -17,7 +17,7 @@ export function loadConfiguredEnvFile(): void {
   if (!configuredPath?.trim()) return;
   const filename = expandHomePath(configuredPath);
   try {
-    const values = parseEnv(readFileSync(filename, "utf8"));
+    const values = parseEnv(readFileSync(filename, "utf8").replace(/^\uFEFF/, ""));
     const loaded: string[] = [];
     for (const [name, value] of Object.entries(values)) {
       if (process.env[name] !== undefined) continue;

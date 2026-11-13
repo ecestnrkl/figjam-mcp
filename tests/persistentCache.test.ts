@@ -218,3 +218,22 @@ describe("v4 persistence", () => {
     expect((await stat(root)).mode & 0o777).toBe(0o750);
   });
 });
+
+it.each(["", "   "])("treats blank cache directory settings as unset (%j)", async (value) => {
+  const descriptor = Object.getOwnPropertyDescriptor(process, "platform")!;
+  Object.defineProperty(process, "platform", { value: "linux", configurable: true });
+  vi.doMock("node:os", async (original) => ({ ...await original<typeof import("node:os")>(), homedir: () => root }));
+  try {
+    process.env.FIGJAM_MCP_CACHE_DIR = value;
+    process.env.XDG_CACHE_HOME = value;
+    const c = await import("../src/lib/persistentCache.js");
+    await c.persistBoard(board());
+    expect(await readdir(path.join(root, ".cache", "figjam-context-mcp", "v4"))).toContain("board-AbC123.json");
+    process.env.XDG_CACHE_HOME = path.join(root, "xdg");
+    await c.persistBoard(board());
+    expect(await readdir(path.join(root, "xdg", "figjam-context-mcp", "v4"))).toContain("board-AbC123.json");
+  } finally {
+    Object.defineProperty(process, "platform", descriptor);
+    vi.doUnmock("node:os");
+  }
+});

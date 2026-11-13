@@ -286,3 +286,47 @@ describe("bounded Figma requests", () => {
     expect(canceled).toBe(true); expect(fetchMock.mock.calls[0]?.[0]).not.toContain("version=");
   });
 });
+
+it.each([
+  ["ENOTFOUND", "host not found"],
+  ["ECONNREFUSED", "connection refused"],
+  ["ETIMEDOUT", "connection timed out"],
+  ["CERT_HAS_EXPIRED", "certificate"],
+])("explains Figma network failure %s without exposing tokens or proxy credentials", async (code, cause) => {
+  vi.stubEnv("HTTPS_PROXY", "http://proxy-user:proxy-password@proxy.invalid:8080");
+  vi.stubEnv("NODE_USE_ENV_PROXY", undefined);
+  const failureCause = Object.assign(new Error("private network detail proxy-password"), { code });
+  vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new TypeError("fetch failed", { cause: failureCause })));
+  const { fetchFileTree } = await import("../src/lib/figmaApi.js");
+  const error = await failure(fetchFileTree("AbC123", "synthetic-token"));
+  expect(error.message).toContain("api.figma.com");
+  expect(error.message).toContain(cause);
+  expect(error.message).toContain("Check");
+  expect(error.message).toContain("NODE_USE_ENV_PROXY=1");
+  if (code.startsWith("CERT")) expect(error.message).toContain("NODE_USE_SYSTEM_CA=1");
+  expect(error.message).not.toMatch(/proxy-password|proxy-user|synthetic-token|private network detail/);
+  vi.unstubAllEnvs();
+});
+
+it("allows the server's default file timeout to finish before a 60-second client timeout", async () => {
+  vi.stubEnv("FIGMA_FILE_REQUEST_TIMEOUT_MS", undefined);
+  const timeout = vi.spyOn(AbortSignal, "timeout");
+  vi.stubGlobal("fetch", vi.fn().mockResolvedValue(json({ document: { id: "doc" } })));
+  const { fetchFileTree } = await import("../src/lib/figmaApi.js");
+  await fetchFileTree("AbC123", "synthetic-token");
+  expect(timeout).toHaveBeenCalledWith(45000);
+  vi.unstubAllEnvs();
+});
+
+it.each([false, true])("explains a Figma timeout with the proxy enabled=%s", async (enabled) => {
+  vi.stubEnv("HTTPS_PROXY", "http://user:synthetic-secret@proxy.invalid:8080");
+  vi.stubEnv("NODE_USE_ENV_PROXY", enabled ? "1" : undefined);
+  vi.stubEnv("FIGMA_FILE_REQUEST_TIMEOUT_MS", undefined);
+  vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new DOMException("expired", "TimeoutError")));
+  const { fetchFileTree } = await import("../src/lib/figmaApi.js");
+  const error = await failure(fetchFileTree("AbC123", "synthetic-token"));
+  expect(error.message).toMatch(/timed out after 45s at api\.figma\.com/);
+  expect(error.message.includes("Node ignores HTTPS_PROXY")).toBe(!enabled);
+  expect(error.message).not.toContain("synthetic-secret");
+  vi.unstubAllEnvs();
+});

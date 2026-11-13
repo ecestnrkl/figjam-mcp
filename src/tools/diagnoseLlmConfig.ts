@@ -178,12 +178,17 @@ async function runCheck(
     () => deadline.abort(new Error(`Check did not finish within ${CHECK_DEADLINE_MS / 1000} s.`)),
     CHECK_DEADLINE_MS,
   );
-  const failed = (error: string): CheckResult => ({ name, ok: false, modelUsed, error: describeAttempts(attempts) ?? error,
-    ...(attempts.length ? { attempts } : {}) });
+  const failed = (error: string): CheckResult => {
+    const details = describeAttempts(attempts);
+    return { name, ok: false, modelUsed,
+      error: details && error.startsWith("LLM request failed (HTTP 404): model ") ? `${details}; ${error}` : details ?? error,
+      ...(attempts.length ? { attempts } : {}) };
+  };
   try {
     const reply = await Promise.race([
       chatJson(models, messages, {
         signal: requestSignal,
+        modelRole: name === "vision_json" ? "vision" : name === "fast_text_json" ? "fastText" : "text",
         requestTimeoutMs: limits.requestTimeoutMs,
         timeoutSetting: limits.timeoutSetting,
         outputSetting: limits.outputSetting,

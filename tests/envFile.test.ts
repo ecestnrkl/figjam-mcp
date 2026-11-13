@@ -207,3 +207,10 @@ describe("explicit environment files", () => {
     expect(process.env.ENV_FILE_SYNTHETIC_VALUE).toBe("loaded");
   });
 });
+
+it("loads the first variable from an explicit UTF-8 BOM file", async () => {
+  const filename = path.join(directory, "bom.env");
+  await writeFile(filename, "\uFEFFLLM_API_KEY=bom-synthetic-key\n");
+  const result = await runServer({ FIGJAM_MCP_ENV_FILE: filename });
+  expect(result.data.key).toBe("bom-synthetic-key");
+});

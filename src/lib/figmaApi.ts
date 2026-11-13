@@ -1,3 +1,4 @@
+import { describeConnectionCause } from "./connectionErrors.js";
 import { readIntEnv } from "./env.js";
 import { redactError, redactMessage, validateHeaderSecret } from "./secrets.js";
 import { describeWaitUntil, parseRetryAfter } from "./waitTime.js";
@@ -60,6 +61,11 @@ async function readErrorText(response: Response): Promise<string> {
   } catch { return ""; }
   finally { void reader.cancel().catch(() => undefined); }
 }
+function figmaNetworkHints(certificate = false): string {
+  const proxy = (process.env.HTTPS_PROXY?.trim() || process.env.HTTP_PROXY?.trim()) && process.env.NODE_USE_ENV_PROXY?.trim() !== "1"
+    ? " Node ignores HTTPS_PROXY and HTTP_PROXY unless NODE_USE_ENV_PROXY=1." : "";
+  return proxy + (certificate ? " Try NODE_USE_SYSTEM_CA=1 to use system certificates." : "");
+}
 async function figmaFetch(fileKey: string, apiPath: string, token: string, timeoutMs: number, externalSignal?: AbortSignal): Promise<Response> {
   validateHeaderSecret(token, token.trim() === process.env.FIGMA_ACCESS_TOKEN?.trim() ? "FIGMA_ACCESS_TOKEN" : "figmaAccessToken");
   for (let attempt = 0; ; attempt++) {
@@ -70,7 +76,8 @@ async function figmaFetch(fileKey: string, apiPath: string, token: string, timeo
     } catch (error) {
       externalSignal?.throwIfAborted();
       if (isTimeout(error)) throw redactError(timeoutError("Figma API request", apiPath, timeoutMs), [token]);
-      throw redactError(error, [token]);
+      const cause = describeConnectionCause(error);
+      throw redactError(new Error(`Figma API request to api.figma.com failed: ${cause}. Check your network and DNS settings.${figmaNetworkHints(cause.startsWith("TLS error"))}`), [token]);
     }
     if (response.ok) return response;
     const now = Date.now();
@@ -164,7 +171,7 @@ async function readJson<T>(response: Response, apiPath: string, timeoutMs: numbe
   return parsed as T;
 }
 export async function fetchFileTree(fileKey: string, token: string, signal?: AbortSignal): Promise<unknown> {
-  const FIGMA_FILE_REQUEST_TIMEOUT_MS = readIntEnv("FIGMA_FILE_REQUEST_TIMEOUT_MS", 60000, 1000);
+  const FIGMA_FILE_REQUEST_TIMEOUT_MS = readIntEnv("FIGMA_FILE_REQUEST_TIMEOUT_MS", 45000, 1000);
   const apiPath = `/files/${fileKey}`;
   const tree = await readJson<{ document?: unknown }>(await figmaFetch(fileKey, apiPath, token, FIGMA_FILE_REQUEST_TIMEOUT_MS, signal), apiPath, FIGMA_FILE_REQUEST_TIMEOUT_MS, signal, token);
   if (!tree.document || typeof tree.document !== "object") throw unreadableResponse("it held no document");
@@ -299,5 +306,5 @@ export async function downloadRenders(nodeIds: string[], renderUrls: RenderUrls,
 function isTimeout(error: unknown): boolean { return error instanceof Error && ["TimeoutError", "AbortError"].includes(error.name); }
 function timeoutError(operation: string, apiPath: string, timeoutMs: number): FigmaTimeoutError {
   const setting = /^\/files\/[^/?]+$/.test(apiPath) ? "FIGMA_FILE_REQUEST_TIMEOUT_MS" : "FIGMA_REQUEST_TIMEOUT_MS";
-  return new FigmaTimeoutError(`${operation} timed out after ${Math.round(timeoutMs / 1000)}s: ${apiPath}. Check the connection or increase ${setting}.`);
+  return new FigmaTimeoutError(`${operation} timed out after ${Math.round(timeoutMs / 1000)}s at api.figma.com: ${apiPath}. Check the connection or increase ${setting}.${figmaNetworkHints()}`);
 }
