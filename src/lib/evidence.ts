@@ -137,7 +137,7 @@ const STOPWORDS = new Set([
   "a", "an", "and", "are", "as", "at", "be", "by", "can", "did", "do", "does", "for", "from",
   "has", "have", "how", "i", "in", "is", "it", "its", "me", "of", "on", "or", "our", "that",
   "the", "their", "there", "these", "this", "to", "was", "we", "were", "what", "when", "where",
-  "which", "who", "why", "with", "you", "your", "about", "please", "find",
+  "which", "who", "why", "with", "you", "your", "about", "please", "find", "board", "boards",
   "aber", "als", "am", "an", "auch", "auf", "aus", "bei", "das", "dem", "den", "der", "des",
   "die", "ein", "eine", "einen", "einer", "es", "für", "hat", "haben", "im", "ist", "mit",
   "nach", "nicht", "oder", "sich", "sie", "sind", "über", "um", "und", "vom", "von", "war",
@@ -228,6 +228,7 @@ export function nodeLink(board: BoardData, nodeId: string): string {
 /** Field-weighted BM25, scaled by squared query coverage in text, node and section. */
 export function retrieveEvidence(board: BoardData, options: EvidenceQuery = {}): EvidenceResult {
   const index = getIndex(board);
+  const query = options.query?.trim();
   let matches: IndexedEvidence[];
   let singleWordExactIds: Set<string> | undefined;
   let requestedCounts: EvidenceResult["requestedCounts"];
@@ -250,8 +251,8 @@ export function retrieveEvidence(board: BoardData, options: EvidenceQuery = {}):
   } else if (options.outsideSections) {
     const inSection = inSectionLookup(board);
     matches = contentFirst(readingOrder(board, index.entries.filter(({ evidence }) => !inSection(evidence))), (entry) => entry.evidence);
-  } else if (options.query?.trim()) {
-    const queryTerms = [...new Set(evidenceTokens(options.query))];
+  } else if (query) {
+    const queryTerms = [...new Set(evidenceTokens(query))];
     const alternatives = new Map(queryTerms.map((term) => [term, wordAlternatives(index, term)]));
     const exactEntries = new Map(queryTerms.map((term) => [term, new Set(
       (["text", "node", "section"] as const).flatMap((field) => (index.fields[field].postings.get(term) ?? []).map((posting) => posting.index)),
@@ -287,6 +288,7 @@ export function retrieveEvidence(board: BoardData, options: EvidenceQuery = {}):
     matches = contentFirst(interleaveClusters(index.entries), (entry) => entry.evidence);
   }
 
+  if (!query && !options.includeNeighbors) matches = derivedLastInCluster(matches);
   const totalMatched = matches.length;
   const distinct = (entries: IndexedEvidence[]) => {
     const seen = new Set<string>();
@@ -301,13 +303,15 @@ export function retrieveEvidence(board: BoardData, options: EvidenceQuery = {}):
     .map((entry) => entry.evidence);
   const selected = [...primary];
   if (options.includeNeighbors && selected.length > 0) {
-    if (options.query?.trim()) addTableNeighbors(index, selected, options.tableNeighborLimit ?? 6);
+    if (query) addTableNeighbors(index, selected, options.tableNeighborLimit ?? 6);
     addNeighbors(board, index, primary, selected, options.neighborLimit ?? 6);
   }
+  // Only results with added neighbors need to rank metadata again.
+  const evidence = options.includeNeighbors && !singleWordExactIds && !options.nodeIds
+    ? contentFirst(selected, (item) => item) : selected;
   return {
     snapshotId: index.snapshotId,
-    // The ranked tiers are already ordered; leave added table headings in front of their rows.
-    evidence: options.nodeIds || singleWordExactIds ? selected : contentFirst(selected, (item) => item),
+    evidence,
     primaryEvidenceIds: primary.map((item) => item.evidenceId),
     connections: connectionsForEvidence(board, selected),
     totalMatched,
@@ -514,7 +518,7 @@ export function scopeEvidenceRanks(board: BoardData, scopeIds: ReadonlySet<strin
   // change which items overlap in a row band or break ties in cluster order.
   return new Map([...groups].map(([id, group]) => {
     const ordered = containers.has(id) ? contentFirst(readInOrder(group), (entry) => entry.evidence) : group;
-    return [id, new Map(ordered.map(({ evidence }, index) => [evidence.evidenceId, index]))];
+    return [id, new Map(derivedLastInCluster(ordered).map(({ evidence }, index) => [evidence.evidenceId, index]))];
   }));
 }
 
@@ -550,6 +554,33 @@ function contentFirst<T>(items: T[], evidenceOf: (item: T) => Evidence, exactIds
   }
   const isMetadata = (item: T) => evidenceOf(item).sourceType === "board_metadata";
   return [...items.filter((item) => !isMetadata(item)), ...items.filter(isMetadata)];
+}
+
+/** Place derived excerpts after their cluster's last original content excerpt. */
+function derivedLastInCluster(entries: IndexedEvidence[]): IndexedEvidence[] {
+  if (!entries.some(({ evidence }) => evidence.modelDerived)) return entries;
+  const lastOriginal = new Map<string, IndexedEvidence>();
+  for (const entry of entries) {
+    const { evidence } = entry;
+    if (!evidence.modelDerived && evidence.sourceType !== "board_metadata" && evidence.clusterId !== undefined) {
+      lastOriginal.set(evidence.clusterId, entry);
+    }
+  }
+  const derivedByOriginal = new Map<IndexedEvidence, IndexedEvidence[]>();
+  const ordered = entries.filter((entry) => {
+    const { clusterId, modelDerived } = entry.evidence;
+    const end = modelDerived && clusterId !== undefined ? lastOriginal.get(clusterId) : undefined;
+    if (end === undefined) return true;
+    const derived = derivedByOriginal.get(end);
+    if (derived) derived.push(entry);
+    else derivedByOriginal.set(end, [entry]);
+    return false;
+  });
+  if (!derivedByOriginal.size) return entries;
+  return ordered.flatMap((entry) => {
+    const derived = derivedByOriginal.get(entry);
+    return derived ? [entry, ...derived] : [entry];
+  });
 }
 
 /** One excerpt per cluster and round; consecutive rows of one table count as one excerpt. */
@@ -748,6 +779,10 @@ function getIndex(board: BoardData): EvidenceIndex {
   const entries: IndexedEvidence[] = [];
   const tokenizedWords = new Map<string, TokenizedWord>();
   for (const { evidence: item, cellIds } of sources) {
+    if (isGeneratedPlaceholder(item)) {
+      entries.push({ evidence: item, lengths: { text: 0, node: 0, section: 0, page: 0, cluster: 0 } });
+      continue;
+    }
     const node = nodesById.get(item.renderNodeId ?? item.nodeId);
     const firstRow = firstRows.get(item.nodeId)?.[0]?.row;
     const isLaterRow = item.sourceType === "table_row" && item.row !== firstRow;

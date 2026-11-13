@@ -1,12 +1,16 @@
 # Changelog
 
-## 0.13.0 — Unreleased
+## 0.13.0 — 2026-11-13
 
-- Find common word forms and compounds without crowding out exact search matches, mark contextual excerpts, and suggest similar board words when search finds no matches.
+- Find common word forms and compounds with exact matches ranked first, and suggest similar board words when search finds no matches. Generated placeholders remain visible in reads and are skipped by search.
+- `project`, `Projekt`, and `Thema` are now searchable.
+- Topic search counts only matches in `totalMatched` and marks contextual excerpts with `context: true`.
 - Improve Figma connection and model errors, first-run configuration, and branch and design file handling.
+- `FIGMA_FILE_REQUEST_TIMEOUT_MS` now defaults to 45000 ms, down from 60000 ms.
 - Hidden section contents are excluded from new snapshots and URL passwords are redacted; previously retained snapshots remain unchanged on disk, and the first ingest after this update reinterprets images (extraction version 8).
-- Read slightly offset rows from left to right in board context and diffs, including excerpts within clusters and sections in outlines.
-- `diff_board` names nodes that move between sections or pages, identifies resizes and regrouped clusters, and counts section moves separately from their contents.
+- Re-ingest after updating. Earlier snapshots can still return hidden section contents by `snapshotId` until they age out of history or you delete the cache.
+- Read slightly offset rows from left to right in board context and diffs, including excerpts within clusters and sections in outlines. Derived excerpts follow their cluster's original sources.
+- `diff_board` names nodes that move between sections or pages, identifies resizes and regrouped clusters, counts section moves separately from their contents, and reports section visibility changes between snapshots from extraction version 8 onward.
 - Guide MCP hosts through the tools during initialization, clarify tool inputs and results, and speed up page reads on boards with many sections.
 
 ## 0.12.1 — 2026-11-11

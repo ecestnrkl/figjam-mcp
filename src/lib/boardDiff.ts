@@ -129,6 +129,7 @@ const FULL_TEXT_CHARS = 160;
 const EDIT_CONTEXT_CHARS = 40;
 const EDIT_EXCERPT_CHARS = 300;
 const NAME_CHARS = 80;
+const SECTION_VISIBILITY_EXTRACTION_VERSION = 8;
 const READABLE_TYPES: Record<string, string> = {
   SHAPE_WITH_TEXT: "shape", LINK_UNFURL: "link", BOOLEAN_OPERATION: "shape", REGULAR_POLYGON: "polygon",
 };
@@ -141,6 +142,9 @@ export function diffBoards(baseline: BoardData, current: BoardData): BoardDiffRe
     if (!previous || Boolean(previous.hiddenDescendantIds) === Boolean(node.hiddenDescendantIds)) return [];
     return [{ id: node.id, name: sectionReference(node), hidden: Boolean(node.hiddenDescendantIds) }];
   });
+  // Keep hidden descendants out of the diff, even when an older snapshot cannot establish a visibility change.
+  const reportedVisibilityChanges = (baseline.extractionVersion ?? 4) >= SECTION_VISIBILITY_EXTRACTION_VERSION &&
+    (current.extractionVersion ?? 4) >= SECTION_VISIBILITY_EXTRACTION_VERSION ? visibilityChanges : [];
   if (visibilityChanges.length) {
     const changed = new Set(visibilityChanges.map((change) => change.id));
     const removed = new Set([baseline, current].flatMap((board) => board.nodes.flatMap((node) => {
@@ -206,8 +210,8 @@ export function diffBoards(baseline: BoardData, current: BoardData): BoardDiffRe
     modifiedClusters: clusterDiff.modifiedClusters.slice(0, CLUSTER_LIMIT),
     addedConnections: connectionDiff.added.slice(0, CONNECTION_LIMIT),
     removedConnections: connectionDiff.removed.slice(0, CONNECTION_LIMIT),
-    summaryText: buildSummaryText(baseline, current, stats, clusterDiff, connectionDiff, nodeDiff, tableCellChanges, layout, visibilityChanges.length > 0) +
-      visibilityChanges.map((change) => `\n\n${change.name}: contents ${change.hidden ? "hidden" : "shown"} in FigJam.`).join(""),
+    summaryText: buildSummaryText(baseline, current, stats, clusterDiff, connectionDiff, nodeDiff, tableCellChanges, layout, reportedVisibilityChanges.length > 0) +
+      reportedVisibilityChanges.map((change) => `\n\n${change.name}: contents ${change.hidden ? "hidden" : "shown"} in FigJam.`).join(""),
     tableCellChanges: tableCellChanges.slice(0, TABLE_CELL_LIMIT).map((change) => {
       const [previousText, currentText] = textExcerpts(collapseWhitespace(change.previousText), collapseWhitespace(change.currentText));
       return { ...change, previousText, currentText };

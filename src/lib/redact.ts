@@ -50,7 +50,7 @@ function redactUrlPasswords(text: string): string {
     const colon = authority.indexOf(":");
     const slash = authority.indexOf("/");
     const colonBeforeSlash = colon >= 0 && (slash < 0 || colon < slash);
-    const port = slash >= 0 && colonBeforeSlash && /^\d+$/.test(authority.slice(colon + 1, slash));
+    const port = colonBeforeSlash && /^\d+(?:[/?#]|$)/.test(authority.slice(colon + 1));
     if (/^[A-Za-z][A-Za-z0-9+.-]*$/.test(scheme) && colonBeforeSlash && !port && at > colon && at < authority.length - 1 && authority[at + 1] !== "/") {
       const password = authority.slice(colon + 1, at);
       const placeholder = /^(?:\$\{[^}]*\}|\{\{[^}]*\}\}|<[^>]*>|\*\*\*|xxx|password|TBD|\[redacted\])$/i.test(password);

@@ -106,7 +106,7 @@ export const wordFormFixtures: Array<{ name: string; board: BoardData; query: st
   ["English plural to singular", "sensor", "sensors", true],
   ["German suffix compound", "Lieferprozess", "Prozess", true],
   ["English suffix compound", "Kundenfeedback", "Feedback", true],
-  ["former stopword", "Projekt", "Projekt", true],
+  ["former stopwords", "Projekt Thema", "Projekt Thema", true],
   ["no two-letter extension", "Terminal", "Termin", false],
   ["short word stays exact", "Planet", "Plan", false],
   ["short word is not a prefix", "Testament", "Test", false],

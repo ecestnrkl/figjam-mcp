@@ -404,7 +404,8 @@ larger ones are scaled down locally.
 ## Privacy
 
 - The server reads from Figma and never changes a board.
-- Hidden elements and their descendants are skipped before extraction, image loading and provider requests; contents hidden inside a FigJam section are skipped too.
+- New ingests skip hidden elements and their descendants, including contents hidden inside a FigJam section, before extraction, image loading and provider requests.
+- Re-ingest the board after updating, since earlier snapshots still contain and return hidden section contents, including when requested by `snapshotId`, until they age out of history or you delete the cache.
 - URL passwords in userinfo are redacted alongside other explicit credentials.
 - `balanced` and `max_quality` ingests send board text and images (originals or
   renders) to the configured LLM provider. `answer_from_board` sends the question and selected
@@ -430,6 +431,8 @@ larger ones are scaled down locally.
   that its conclusion is right.
 - Search is lexical; some word forms and compounds match, but synonyms and
   translations do not.
+- Suffix matching can include unrelated words such as `transaction` for `action`
+  or `suitable` for `table`, with exact matches ranked first.
 - Local stdio only; no hosted or multi-user mode.
 
 Measured results: [evaluation](https://github.com/ecestnrkl/figjam-mcp/blob/main/docs/evaluation.md).

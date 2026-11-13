@@ -681,7 +681,7 @@ describe("getBoardContext response size", () => {
     const data = evidenceBoard("Placeholder123", [{ ...textNode("1:1", ""), name: "Drawing", type: "SHAPE_WITH_TEXT" }]);
     data.clusters[0]!.summary = "Cluster contains 2 board elements with 0 extracted text items. No readable text was extracted from this cluster.";
     setBoard(data.boardId, data);
-    for (const request of [{ boardId: data.boardId }, { boardId: data.boardId, topic: "board elements" }, { boardId: data.boardId, nodeIds: ["1:1"] }]) {
+    for (const request of [{ boardId: data.boardId }, { boardId: data.boardId, nodeIds: ["1:1"] }]) {
       const { text, structuredContent: output } = await getBoardContext(request);
       const placeholder = output.evidence.find(item => item.sourceType === "cluster_summary");
       expect(placeholder, JSON.stringify(request)).toMatchObject({ modelDerived: true });
@@ -691,6 +691,14 @@ describe("getBoardContext response size", () => {
     }
     const detail = await getBoardContext({ boardId: data.boardId, nodeIds: ["1:1"] });
     expect(detail.text).toContain("GENERATED PLACEHOLDER, no model — verify against original");
+  });
+
+  it("does not match a topic found only in generated placeholder text", async () => {
+    const data = evidenceBoard("PlaceholderTopic123", [{ ...textNode("1:1", ""), name: "Drawing", type: "SHAPE_WITH_TEXT" }]);
+    data.clusters[0]!.summary = "Cluster contains 1 board element with 0 extracted text items.";
+    setBoard(data.boardId, data);
+    const { structuredContent } = await getBoardContext({ boardId: data.boardId, topic: "element" });
+    expect(structuredContent).toMatchObject({ totalMatched: 0, evidence: [] });
   });
 
   it("does not repeat node names that open the text and keeps model interpretations marked", async () => {
@@ -972,6 +980,53 @@ describe("getBoardContext by section", () => {
   beforeEach(() => setBoard("Sections123", sectionBoard("Sections123")));
   const texts = ({ structuredContent }: { structuredContent: { evidence: Array<{ text: string }> } }) =>
     structuredContent.evidence.map((item) => item.text);
+
+  it("reads the interpretation after the three original notes of its cluster", async () => {
+    const data = evidenceBoard("DerivedReadingOrder123", [
+      textNode("201:1", "First note"),
+      { ...textNode("201:2", "Second note"), x: 120 },
+      { ...textNode("201:3", "Third note"), x: 240 },
+    ]);
+    data.nodes.push({ ...textNode("1:0", ""), name: "Planning", type: "SECTION", sectionIds: [] });
+    data.clusters = [{ ...data.clusters[0]!, nodeIds: ["201:1", "201:2", "201:3"],
+      summarySource: "text_llm", summary: "Interpretation of the three notes." }];
+    setBoard(data.boardId, data);
+    const { structuredContent } = await getBoardContext({ boardId: data.boardId, nodeIds: ["1:0"], detail: "full" });
+    expect(structuredContent.evidence.map(({ nodeId, sourceType }) => [nodeId, sourceType])).toEqual([
+      ["201:1", "board_text"], ["201:2", "board_text"], ["201:3", "board_text"],
+      ["201:1", "model_interpretation"],
+    ]);
+  });
+
+  it.each([
+    ["page", "0:1"],
+    ["section", "1:0"],
+  ])("keeps derived excerpts with their clusters in a %s read with metadata", async (_scope, id) => {
+    const data = largeBoard("DerivedProbe123", 6, 4, 1, { imageClusters: 1 });
+    const image = data.nodes.find((node) => node.id === "4:0")!;
+    const imageCluster = data.clusters.at(-1)!;
+    Object.assign(image, { name: "Concept sketch", x: 600, y: 0 });
+    Object.assign(imageCluster.boundingBox, { x: image.x, y: image.y });
+    for (const cluster of data.clusters.slice(0, -1)) cluster.summarySource = "text_llm";
+    setBoard(data.boardId, data);
+
+    const selection = { nodeIds: [id] };
+    const { structuredContent } = await getBoardContext({ boardId: data.boardId, ...selection, detail: "full", limit: 5 });
+    expect(structuredContent.evidence.map(({ nodeId, sourceType }) => [nodeId, sourceType])).toEqual([
+      ["10:0", "board_text"], ["10:1", "board_text"], ["10:2", "board_text"], ["10:3", "board_text"],
+      ["10:100", "model_interpretation"],
+    ]);
+    expect(structuredContent.nextCursor).toBeDefined();
+
+    const { evidence } = retrieveEvidence(data, selection);
+    const placeholder = evidence.findIndex((item) => item.sourceType === "cluster_summary");
+    expect(evidence.slice(placeholder - 1, placeholder + 2).map(({ clusterId, sourceType }) => [clusterId, sourceType])).toEqual([
+      ["cluster_1", "model_interpretation"], [imageCluster.id, "cluster_summary"], ["cluster_2", "board_text"],
+    ]);
+    expect(evidence.slice(-2).map(({ nodeId, sourceType }) => [nodeId, sourceType])).toEqual([
+      ["10:102", "board_metadata"], [image.id, "board_metadata"],
+    ]);
+  });
 
   it("reads every excerpt inside a section, frame, group or page in reading order, nested sections included", async () => {
     const section = await getBoardContext({ boardId: "Sections123", nodeIds: ["1:1"] });
