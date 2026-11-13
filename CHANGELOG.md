@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.13.1 — Unreleased
+
+- Retry transient Windows filesystem errors when acquiring, recovering, and cleaning up cache write locks.
+
 ## 0.13.0 — 2026-11-13
 
 - Find common word forms and compounds with exact matches ranked first, and suggest similar board words when search finds no matches. Generated placeholders remain visible in reads and are skipped by search.

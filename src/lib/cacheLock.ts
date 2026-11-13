@@ -1,8 +1,11 @@
 import { createHash, randomUUID } from "node:crypto";
-import { link, mkdir, open, readFile, rename, rm, rmdir, stat, writeFile } from "node:fs/promises";
+import { link, lstat, mkdir, open, readFile, rename, rm, rmdir, stat, writeFile } from "node:fs/promises";
 import { hostname } from "node:os";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+
+// Recursive mode enables Node's retries for the temporary owner file as well.
+const cleanupOptions = { recursive: true, force: true, maxRetries: 3, retryDelay: 20 };
 
 /** Directory locks coordinate independent server processes sharing the same cache. */
 export async function withCacheLock<T>(directory: string, operation: () => Promise<T>, signal?: AbortSignal): Promise<T> {
@@ -20,8 +23,10 @@ export async function withCacheLock<T>(directory: string, operation: () => Promi
     } finally { await ownerFile.close(); }
     for (;;) {
       signal?.throwIfAborted();
+      let created = false;
       try {
         await mkdir(lockPath, { mode: 0o700 });
+        created = true;
         try { await link(temporary, path.join(lockPath, "owner.json")); }
         catch (error) {
           // Only an empty, still-unpublished lock may be removed here.
@@ -30,9 +35,17 @@ export async function withCacheLock<T>(directory: string, operation: () => Promi
         }
         break;
       } catch (error) {
-        if (code(error) !== "EEXIST") throw error;
-        if (await reclaimAbandonedLock(lockPath)) continue;
+        const failure = code(error);
+        const retryableMkdirError = !created && isTransientLockError(failure);
+        if (failure !== "EEXIST" && !retryableMkdirError) throw error;
+        const recovery = await reclaimAbandonedLock(lockPath);
+        if (recovery === "retired" || (recovery === "missing" && !retryableMkdirError)) continue;
         if (Date.now() - started >= 10_000) {
+          if (retryableMkdirError && error instanceof Error &&
+            await lstat(lockPath).then(() => false, error => code(error) === "ENOENT")) {
+            error.message += "; check permissions of FIGJAM_MCP_CACHE_DIR or the cache directory, then retry ingest_board.";
+            throw error;
+          }
           throw Object.assign(new Error("another server process is writing; retry ingest_board"), { code: "EBUSY" });
         }
         await delay(20, undefined, { signal });
@@ -41,17 +54,17 @@ export async function withCacheLock<T>(directory: string, operation: () => Promi
     try { return await operation(); } finally {
       try {
         const owner = JSON.parse(await readFile(path.join(lockPath, "owner.json"), "utf8")) as { token?: unknown };
-        if (owner.token === token) await rm(lockPath, { recursive: true, force: true });
+        if (owner.token === token) await rm(lockPath, cleanupOptions);
       } catch {
         console.error("Cache lock cleanup failed; retry ingest_board to recover a stopped local writer.");
       }
     }
   } finally {
-    await rm(temporary, { force: true }).catch(() => console.error("Cache owner temporary file cleanup deferred."));
+    await rm(temporary, cleanupOptions).catch(() => console.error("Cache owner temporary file cleanup deferred."));
   }
 }
 
-async function reclaimAbandonedLock(lockPath: string): Promise<boolean> {
+async function reclaimAbandonedLock(lockPath: string): Promise<"retired" | "held" | "missing"> {
   try {
     const directory = await stat(lockPath);
     let abandoned = Date.now() - directory.mtimeMs > 600_000;
@@ -66,19 +79,24 @@ async function reclaimAbandonedLock(lockPath: string): Promise<boolean> {
         abandoned = code(error) === "ENOENT" && Date.now() - directory.mtimeMs > 30_000;
       }
     }
-    if (!abandoned) return false;
+    if (!abandoned) return "held";
     // Every observer of this directory uses the same destination. Keep it nonempty:
     // a late contender must fail rather than rename a newly acquired writer's lock.
     const identity = createHash("sha256").update(JSON.stringify([directory.dev, directory.ino, directory.birthtimeMs])).digest("hex");
     const retired = `${lockPath}-${identity}.retired`;
     await writeFile(path.join(lockPath, ".retired"), "", { flag: "a", mode: 0o600 });
-    try { await rename(lockPath, retired); return true; } catch (error) {
-      if (["ENOENT", "EEXIST", "ENOTEMPTY", "EPERM"].includes(code(error) ?? "")) return false;
+    try { await rename(lockPath, retired); return "retired"; } catch (error) {
+      if (["ENOENT", "EEXIST", "ENOTEMPTY"].includes(code(error) ?? "")) return "held";
       throw error;
     }
   } catch (error) {
-    if (code(error) === "ENOENT") return true;
+    const failure = code(error);
+    if (failure === "ENOENT") return "missing";
+    if (isTransientLockError(failure)) return "held";
     throw error;
   }
+}
+function isTransientLockError(failure: string | undefined): boolean {
+  return failure === "EPERM" || failure === "EACCES" || failure === "EBUSY";
 }
 function code(error: unknown): string | undefined { return (error as NodeJS.ErrnoException).code; }
