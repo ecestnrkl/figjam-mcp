@@ -65,7 +65,7 @@ describe("diffBoards", () => {
     expect(current.nodes).toHaveLength(4700);
     const diff = diffBoards(baseline, current);
     expect(diff.stats).toEqual({
-      addedNodes: 1020, removedNodes: 1020, editedNodes: 1086,
+      addedNodes: 1020, removedNodes: 1020, editedNodes: 1086, movedNodes: 0,
       newClusters: 85, removedClusters: 85, modifiedClusters: 155, unchangedClusters: 0,
       addedConnections: 455, removedConnections: 455,
     });
@@ -411,41 +411,129 @@ describe("diffBoards", () => {
     expect(diff.stats.removedConnections).toBe(0);
   });
 
-  it.each([
-    { kind: "position", overrides: { x: 5000, y: 5000 }, fingerprint: undefined, edited: 0 },
-    { kind: "size", overrides: { width: 5000, height: 5000 }, fingerprint: undefined, edited: 0 },
-    { kind: "size with fingerprint", overrides: { width: 5000, contentFingerprint: "resized" }, fingerprint: "original", edited: 1 },
-  ])("counts $kind-only changes in the layout line", ({ overrides, fingerprint, edited }) => {
-    const baseline = board(
-      [node("a", "Sticky", { contentFingerprint: fingerprint })],
-      [cluster("cluster_1", "Group", ["a"])],
-      1,
-    );
-    const current = board(
-      [node("a", "Sticky", overrides)],
-      [cluster("cluster_1", "Group", ["a"])],
-      2,
-    );
-
-    const diff = diffBoards(baseline, current);
-    expect(diff.stats.editedNodes).toBe(edited);
-    expect(diff.stats.unchangedClusters).toBe(edited ? 0 : 1);
-    expect(diff.summaryText).toContain("Layout: 1 node moved or resized.");
-    expect(diff.summaryText).not.toContain("identical");
-  });
-
-  it("counts only surviving nodes with geometry-only changes in the layout line", () => {
+  it("counts only unlisted position changes in the layout line", () => {
+    const section = node("section", undefined, { type: "SECTION", width: 1000 });
+    const note = node("moved", "Same", { sectionIds: [section.id] });
     const baseline = board([
-      node("moved", "Same"), node("edited", "Before"), node("removed", "Removed"),
-      node("arrow", undefined, { type: "CONNECTOR" }), node("section", undefined, { type: "SECTION" }),
+      section, note, node("edited", "Before"), node("removed", "Removed"),
+      node("arrow", undefined, { type: "CONNECTOR" }), node("resized", "Same"),
     ], [], 1);
     const current = board([
-      node("moved", "Same", { x: 500 }), node("edited", "After", { x: 500 }), node("added", "Added", { x: 500 }),
-      node("arrow", undefined, { type: "CONNECTOR", x: 500 }), node("section", undefined, { type: "SECTION", width: 500 }),
+      { ...section, width: 2000 }, { ...note, x: 500 }, node("edited", "After", { x: 500 }), node("added", "Added", { x: 500 }),
+      node("arrow", undefined, { type: "CONNECTOR", x: 500 }), node("resized", "Same", { width: 200 }),
     ], [], 2);
     const diff = diffBoards(baseline, current);
-    expect(diff.summaryText).toContain("Layout: 2 nodes moved or resized.");
-    expect(diff.stats).toMatchObject({ addedNodes: 1, removedNodes: 1, editedNodes: 1 });
+    expect(diff.summaryText).toContain("Layout: 1 node moved within its section or page.");
+    expect(diff.nodeChanges.map((change) => change.nodeId)).toEqual(["edited", "added", "removed"]);
+  });
+
+  it.each([
+    { offset: 0, line: "Layout: 1 section moved." },
+    { offset: 50, line: "Layout: 1 node moved within its section or page; 1 section moved." },
+  ])("counts a section's movement separately from a child's $offset offset", ({ offset, line }) => {
+    const section = node("section", undefined, { type: "SECTION", x: 0.1, sectionIds: ["section"] });
+    const inner = node("inner", undefined, { type: "SECTION", x: 10.2, sectionIds: ["section", "inner"] });
+    const note = node("note", "Same", { x: 20.3, sectionIds: ["section", "inner"] });
+    const before = [section, inner, note];
+    const after = before.map((item) => ({ ...item, x: item.x + 200 + (item === note ? offset : 0) }));
+    const diff = diffBoards(board(before, [], 1), board(after, [], 2));
+    expect(diff.summaryText).toContain(line);
+    expect(diff.nodeChanges).toEqual([]);
+  });
+
+  describe("moves between sections or pages", () => {
+    const pages = [
+      node("0:1", undefined, { type: "CANVAS", name: "Workshop" }),
+      node("0:2", undefined, { type: "CANVAS", name: "Review" }),
+    ];
+    const sections = [
+      node("1:1", undefined, { type: "SECTION", name: "Ideas", pageId: "0:1" }),
+      node("1:2", undefined, { type: "SECTION", name: "Decisions", pageId: "0:1", x: 500 }),
+    ];
+    const snapshot = (notes: NormalizedNode[], createdAt: number) => board([...pages, ...sections, ...notes], [], createdAt);
+    const idea = node("2:1", "First\nidea", { name: "Proposal", pageId: "0:1", sectionIds: ["1:1"] });
+
+    it.each([
+      { kind: "between sections", before: ["1:1"], after: ["1:2"], pageId: "0:1",
+        fields: { previousSectionId: "1:1", previousSection: "Ideas", sectionId: "1:2", section: "Decisions" },
+        place: '"Ideas" → "Decisions"' },
+      { kind: "out of a section", before: ["1:1"], after: [], pageId: "0:1",
+        fields: { previousSectionId: "1:1", previousSection: "Ideas" }, place: '"Ideas" → outside sections' },
+      { kind: "into a section", before: [], after: ["1:2"], pageId: "0:1",
+        fields: { sectionId: "1:2", section: "Decisions" }, place: 'outside sections → "Decisions"' },
+      { kind: "between pages", before: [], after: [], pageId: "0:2",
+        fields: { previousPageId: "0:1", pageId: "0:2" },
+        place: 'outside sections on "Workshop" → outside sections on "Review"' },
+      { kind: "out of a section onto another page", before: ["1:1"], after: [], pageId: "0:2",
+        fields: { previousSectionId: "1:1", previousSection: "Ideas", previousPageId: "0:1", pageId: "0:2" },
+        place: '"Ideas" on "Workshop" → outside sections on "Review"' },
+    ])("names a move $kind with its origin and destination", ({ before, after, pageId, fields, place }) => {
+      const diff = diffBoards(snapshot([{ ...idea, sectionIds: before }], 1),
+        snapshot([{ ...idea, sectionIds: after, pageId, x: 500 }], 2));
+      expect(diff.nodeChanges).toEqual([{
+        nodeId: "2:1", changeType: "moved", nodeType: "STICKY", name: "Proposal", currentText: "First idea",
+        url: "https://www.figma.com/board/board?node-id=2%3A1", ...fields,
+      }]);
+      expect(diff.stats).toMatchObject({ movedNodes: 1, editedNodes: 0 });
+      expect(diff.summaryText).toContain(`Moved nodes (1):\n- sticky "Proposal" 2:1: "First idea"; from ${place}`);
+      expect(diff.summaryText).not.toContain("Layout:");
+    });
+
+    it("lists a text edit and move as a single edited node", () => {
+      const diff = diffBoards(snapshot([idea], 1),
+        snapshot([{ ...idea, text: "Revised idea", sectionIds: ["1:2"], x: 500 }], 2));
+      expect(diff.nodeChanges).toEqual([expect.objectContaining({
+        nodeId: "2:1", changeType: "edited", changes: ["text", "moved"], previousText: "First idea", currentText: "Revised idea",
+        previousSectionId: "1:1", previousSection: "Ideas", sectionId: "1:2", section: "Decisions",
+      })]);
+      expect(diff.stats).toMatchObject({ movedNodes: 1, editedNodes: 1 });
+      expect(diff.summaryText).toContain('Edited nodes (1):\n- sticky 2:1: "First idea" → "Revised idea"; moved from "Ideas" → "Decisions"');
+      expect(diff.summaryText).not.toMatch(/Moved nodes|Layout:/);
+    });
+
+    it("caps moves in reading order between the edited and added blocks", () => {
+      const notes = Array.from({ length: 102 }, (_, i) => ({ ...idea, id: `2:${i + 10}`, y: i * 200 }));
+      const edited = node("3:1", "Before");
+      const diff = diffBoards(snapshot([...notes, edited], 1), snapshot([
+        ...notes.toReversed().map((note) => ({ ...note, sectionIds: ["1:2"], x: 500 })),
+        { ...edited, text: "After" }, node("3:2", "Added"),
+      ], 2));
+      expect(diff.stats.movedNodes).toBe(102);
+      expect(diff.nodeChanges.map((change) => change.nodeId)).toEqual(["3:1", ...notes.slice(0, 99).map((note) => note.id)]);
+      expect(diff.nodeChangesOmitted).toBe(4);
+      expect(diff.summaryText).toMatch(/Edited nodes \(1\):[^]*Moved nodes \(102\):\n- sticky "Proposal" 2:10:[^]*\n- … and 82 more\nAdded nodes \(1\):/);
+      expect(diff.summaryText).not.toContain("Layout:");
+    });
+
+    it("keeps detecting moves across extraction versions without treating a resize as an edit", () => {
+      const other = node("2:2", "Unmoved", { contentFingerprint: "old" });
+      const diff = diffBoards(
+        { ...snapshot([{ ...idea, contentFingerprint: "old" }, other], 1), extractionVersion: 7 },
+        { ...snapshot([{ ...idea, sectionIds: ["1:2"], contentFingerprint: "new" },
+          { ...other, width: 500, contentFingerprint: "new" }], 2), extractionVersion: 8 },
+      );
+      expect(diff.nodeChanges).toEqual([expect.objectContaining({ nodeId: "2:1", changeType: "moved" })]);
+      expect(diff.stats).toMatchObject({ movedNodes: 1, editedNodes: 0 });
+      expect(diff.summaryText).not.toContain("Layout:");
+    });
+
+    it.each([
+      { direction: "merge", key: "removedClusters", heading: "Removed",
+        annotation: "(nodes still on the board)" },
+      { direction: "split", key: "newClusters", heading: "New",
+        annotation: "(regrouped from existing nodes)" },
+    ] as const)("marks a $direction as regrouping when the nodes survive", ({ direction, key, heading, annotation }) => {
+      const group = [node("2:2", "Second idea"), node("2:3", "Third idea")].map((note) => ({ ...note, sectionIds: ["1:2"] }));
+      const split = snapshot([idea, ...group], 1);
+      split.clusters = [cluster("singleton", "Proposal", [idea.id]), cluster("group", "Group", group.map((note) => note.id))];
+      const merged = snapshot([{ ...idea, sectionIds: ["1:2"] }, ...group], 2);
+      merged.clusters = [cluster("group", "Group", [idea.id, ...group.map((note) => note.id)])];
+      const diff = direction === "merge" ? diffBoards(split, merged)
+        : diffBoards({ ...merged, createdAt: 1 }, { ...split, createdAt: 2 });
+      expect(diff.stats[key]).toBe(1);
+      expect(diff[key]).toEqual([expect.objectContaining({ label: "Proposal", regrouped: true })]);
+      expect(diff.summaryText).toContain(`${heading} clusters (1):\n- "Proposal" in "Ideas" ${annotation}`);
+    });
   });
 
   it("reports no changed cluster when only the cluster labels differ", () => {
@@ -524,12 +612,18 @@ describe("diffBoards", () => {
       expect(diff.summaryText).toContain('- image "Café floor plan" 5:95 in "4 · Decisions & next steps": image replaced');
     });
 
-    it("calls a change of color or size an appearance change", () => {
+    it("calls a change of color an appearance change", () => {
       const color = pair([sticky("Same", { contentFingerprint: "yellow" })], [sticky("Same", { contentFingerprint: "green" })]);
       expect(color.nodeChanges).toEqual([expect.objectContaining({ previousText: "Same", currentText: "Same", changes: ["appearance"] })]);
-      expect(color.summaryText).toContain('- sticky 5:87 in "4 · Decisions & next steps": appearance changed (color, size or style)');
-      const size = pair([sticky("Same", { contentFingerprint: "100" })], [sticky("Same", { width: 200, contentFingerprint: "200" })]);
-      expect(size.nodeChanges[0]?.changes).toEqual(["appearance"]);
+      expect(color.summaryText).toContain('- sticky 5:87 in "4 · Decisions & next steps": appearance changed (color or style)');
+    });
+
+    it.each([{ width: 200 }, { height: 200 }])("names a resize with dimensions %j once", (dimensions) => {
+      const before = sticky("Same", { contentFingerprint: "original" });
+      const diff = pair([before], [{ ...before, ...dimensions, contentFingerprint: "resized" }]);
+      expect(diff.nodeChanges).toEqual([expect.objectContaining({ changeType: "edited", changes: ["size"] })]);
+      expect(diff.summaryText).toContain("5:87 in \"4 · Decisions & next steps\": resized");
+      expect(diff.summaryText).not.toContain("Layout:");
     });
 
     it("says when texts differ only in whitespace", () => {

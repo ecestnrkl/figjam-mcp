@@ -9,7 +9,7 @@ import { inClusterReadingOrder, pagePositions } from "./readingOrder.js";
 /**
  * Compares two ingest snapshots of the same board — "what changed since the
  * last workshop?". Works on three levels:
- *  - nodes: added / removed / edited content nodes (structural containers
+ *  - nodes: added / removed / edited / moved content nodes (structural containers
  *    and connectors excluded — connectors are diffed separately),
  *    and named with their section and old and new text,
  *  - clusters: matched across snapshots by member overlap, then classified
@@ -23,6 +23,7 @@ export interface ClusterSummaryRef {
   summary: string;
   /** Innermost section shared by the members, by name; absent outside sections. */
   section?: string;
+  regrouped?: true;
 }
 
 export interface ModifiedClusterDiff {
@@ -39,6 +40,7 @@ export interface BoardDiffStats {
   addedNodes: number;
   removedNodes: number;
   editedNodes: number;
+  movedNodes: number;
   newClusters: number;
   removedClusters: number;
   modifiedClusters: number;
@@ -67,12 +69,12 @@ export interface BoardDiffResult {
   tableCellChangesOmitted?: number;
 }
 
-/** What differs on an edited node; "appearance" only when nothing else explains a changed contentFingerprint. */
-export type NodeChangeAspect = "text" | "name" | "image" | "rotation" | "type" | "appearance";
+/** What differs on an edited node. Size and appearance explain otherwise unaccounted fingerprint changes. */
+export type NodeChangeAspect = "text" | "name" | "image" | "rotation" | "type" | "appearance" | "size" | "moved";
 
 export interface NodeChange {
   nodeId: string;
-  changeType: "added" | "removed" | "edited";
+  changeType: "added" | "removed" | "edited" | "moved";
   nodeType: string;
   /** Shown only when the text did not change and the name is neither a default name nor the text itself. */
   name?: string;
@@ -81,6 +83,10 @@ export interface NodeChange {
   /** Innermost section; absent outside sections. */
   sectionId?: string;
   section?: string;
+  previousSectionId?: string;
+  previousSection?: string;
+  previousPageId?: string;
+  pageId?: string;
   /** Whitespace-collapsed excerpts, see textExcerpts. */
   previousText?: string;
   currentText?: string;
@@ -160,23 +166,31 @@ export function diffBoards(baseline: BoardData, current: BoardData): BoardDiffRe
   }
   const baselineNodes = contentNodesById(baseline);
   const currentNodes = contentNodesById(current);
+  const beforeById = new Map(baseline.nodes.map((node) => [node.id, node]));
+  const afterById = new Map(current.nodes.map((node) => [node.id, node]));
 
   const addedNodeIds = [...currentNodes.keys()].filter((id) => !baselineNodes.has(id));
   const removedNodeIds = [...baselineNodes.keys()].filter((id) => !currentNodes.has(id));
-  const editedNodeIds = [...currentNodes.keys()].filter((id) => {
+  const editedNodeIds: string[] = [];
+  const movedNodeIds = new Set<string>();
+  for (const [id, after] of currentNodes) {
     const before = baselineNodes.get(id);
-    return before !== undefined && nodeContentChanged(before, currentNodes.get(id)!);
-  });
+    if (!before) continue;
+    if (nodeContentChanged(before, after)) editedNodeIds.push(id);
+    if (before.pageId !== after.pageId || before.sectionIds?.at(-1) !== after.sectionIds?.at(-1)) movedNodeIds.add(id);
+  }
 
-  const clusterDiff = diffClusters(baseline, current);
+  const clusterDiff = diffClusters(baseline, current, beforeById, afterById);
   const connectionDiff = diffConnections(baseline, current);
   const tableCellChanges = diffTableCells(baselineNodes, currentNodes);
-  const nodeDiff = describeNodeChanges(baseline, current, addedNodeIds, removedNodeIds, editedNodeIds);
+  const nodeDiff = describeNodeChanges(baseline, current, beforeById, afterById, addedNodeIds, removedNodeIds, editedNodeIds, movedNodeIds);
+  const layout = layoutChanges(beforeById, afterById, nodeDiff.listedIds);
 
   const stats: BoardDiffStats = {
     addedNodes: addedNodeIds.length,
     removedNodes: removedNodeIds.length,
     editedNodes: editedNodeIds.length,
+    movedNodes: movedNodeIds.size,
     newClusters: clusterDiff.newClusters.length,
     removedClusters: clusterDiff.removedClusters.length,
     modifiedClusters: clusterDiff.modifiedClusters.length,
@@ -192,7 +206,7 @@ export function diffBoards(baseline: BoardData, current: BoardData): BoardDiffRe
     modifiedClusters: clusterDiff.modifiedClusters.slice(0, CLUSTER_LIMIT),
     addedConnections: connectionDiff.added.slice(0, CONNECTION_LIMIT),
     removedConnections: connectionDiff.removed.slice(0, CONNECTION_LIMIT),
-    summaryText: buildSummaryText(baseline, current, stats, clusterDiff, connectionDiff, nodeDiff, tableCellChanges, visibilityChanges.length > 0) +
+    summaryText: buildSummaryText(baseline, current, stats, clusterDiff, connectionDiff, nodeDiff, tableCellChanges, layout, visibilityChanges.length > 0) +
       visibilityChanges.map((change) => `\n\n${change.name}: contents ${change.hidden ? "hidden" : "shown"} in FigJam.`).join(""),
     tableCellChanges: tableCellChanges.slice(0, TABLE_CELL_LIMIT).map((change) => {
       const [previousText, currentText] = textExcerpts(collapseWhitespace(change.previousText), collapseWhitespace(change.currentText));
@@ -233,12 +247,12 @@ interface NodeChangeItem {
   change: NodeChange;
   before?: NormalizedNode;
   after?: NormalizedNode;
-  /** The snapshot the node is named from: the current one, the baseline for removed nodes. */
-  board: BoardData;
+  moveRoute?: string;
 }
 
 interface NodeDiffInternal {
   entries: NodeChange[];
+  listedIds: Set<string>;
   omitted: number;
   cellOnlyTables: number;
   /** Per block: the first NODE_LINES_PER_BLOCK items and the total. */
@@ -246,18 +260,22 @@ interface NodeDiffInternal {
 }
 
 /**
- * Entries for edited, then added, then removed nodes, each in reading order.
- * A table whose change is explained by its cells has no entry: tableCellChanges
- * names them. Entries are built only for what nodeChanges and summaryText show.
+ * Entries for edited, moved, added, then removed nodes, each in reading order.
+ * Tables with only cell changes are named by tableCellChanges. Entries are
+ * built only for what nodeChanges and summaryText show.
  */
 function describeNodeChanges(
-  baseline: BoardData, current: BoardData, addedIds: string[], removedIds: string[], editedIds: string[],
+  baseline: BoardData, current: BoardData, before: Map<string, NormalizedNode>, after: Map<string, NormalizedNode>,
+  addedIds: string[], removedIds: string[], editedIds: string[], movedIds: Set<string>,
 ): NodeDiffInternal {
-  const before = new Map(baseline.nodes.map((node) => [node.id, node]));
-  const after = new Map(current.nodes.map((node) => [node.id, node]));
-  const aspects = new Map(editedIds.map((id) => [id, changedAspects(before.get(id)!, after.get(id)!)]));
+  const aspects = new Map(editedIds.map((id) => {
+    const changes = changedAspects(before.get(id)!, after.get(id)!);
+    if (movedIds.has(id)) changes.push("moved");
+    return [id, changes];
+  }));
   const groups = [
     { title: "Edited nodes", ids: readingOrder(current, editedIds.filter((id) => aspects.get(id)!.length > 0)) },
+    { title: "Moved nodes", ids: readingOrder(current, [...movedIds].filter((id) => !aspects.has(id))) },
     { title: "Added nodes", ids: readingOrder(current, addedIds) },
     { title: "Removed nodes", ids: readingOrder(baseline, removedIds) },
   ];
@@ -267,10 +285,22 @@ function describeNodeChanges(
     if (!result) {
       const previous = before.get(id);
       const next = after.get(id);
-      result = previous && next
-        ? { change: editedEntry(current, previous, next, aspects.get(id)!), before: previous, after: next, board: current }
-        : next ? { change: createdEntry(current, next, "added"), after: next, board: current }
-          : { change: createdEntry(baseline, previous!, "removed"), before: previous, board: baseline };
+      const changes = aspects.get(id);
+      const change = next
+        ? changes ? editedEntry(current, previous!, next, changes) : createdEntry(current, next, previous ? "moved" : "added")
+        : createdEntry(baseline, previous!, "removed");
+      result = { change, before: previous, after: next };
+      if (previous && next && movedIds.has(id)) {
+        const origin = sectionOf(baseline, previous);
+        if (origin.sectionId) change.previousSectionId = origin.sectionId;
+        if (origin.section) change.previousSection = origin.section;
+        const pageChanged = previous.pageId !== next.pageId;
+        if (pageChanged) {
+          if (previous.pageId !== undefined) change.previousPageId = previous.pageId;
+          if (next.pageId !== undefined) change.pageId = next.pageId;
+        }
+        result.moveRoute = `${movePlace(before, origin, previous.pageId, pageChanged)} → ${movePlace(after, change, next.pageId, pageChanged)}`;
+      }
       built.set(id, result);
     }
     return result;
@@ -278,6 +308,7 @@ function describeNodeChanges(
   const all = groups.flatMap((group) => group.ids);
   return {
     entries: all.slice(0, NODE_CHANGE_LIMIT).map((id) => item(id).change),
+    listedIds: new Set(all),
     omitted: Math.max(0, all.length - NODE_CHANGE_LIMIT),
     cellOnlyTables: editedIds.length - groups[0]!.ids.length,
     blocks: groups.map((group) => ({
@@ -296,7 +327,7 @@ function changedAspects(before: NormalizedNode, after: NormalizedNode): NodeChan
   if (before.rotation !== after.rotation) aspects.push("rotation");
   if (before.type !== after.type) aspects.push("type");
   if (aspects.length === 0 && !cellsChanged && before.contentFingerprint !== after.contentFingerprint) {
-    aspects.push("appearance");
+    aspects.push(before.width !== after.width || before.height !== after.height ? "size" : "appearance");
   }
   return aspects;
 }
@@ -313,13 +344,24 @@ function sectionOf(board: BoardData, node: NormalizedNode): { sectionId?: string
   return { sectionId, ...(section ? { section: boundedText(section, NAME_CHARS) } : {}) };
 }
 
-function createdEntry(board: BoardData, node: NormalizedNode, changeType: "added" | "removed"): NodeChange {
+function movePlace(
+  nodes: Map<string, NormalizedNode>, { sectionId, section }: Pick<NodeChange, "sectionId" | "section">,
+  pageId: string | undefined, pageChanged: boolean,
+): string {
+  const place = section ? quote(section) : sectionId ? `section ${sectionId}` : "outside sections";
+  if (!pageChanged) return place;
+  const name = pageId === undefined ? undefined : collapseWhitespace(nodes.get(pageId)?.name);
+  const page = name ? quote(boundedText(name, NAME_CHARS)) : pageId === undefined ? "unknown page" : `page ${pageId}`;
+  return `${place} on ${page}`;
+}
+
+function createdEntry(board: BoardData, node: NormalizedNode, changeType: "added" | "removed" | "moved"): NodeChange {
   const text = collapseWhitespace(node.text);
   const name = shownName(node);
   return {
     ...entryBase(board, node, changeType),
     ...(name ? { name } : {}),
-    ...(text === undefined ? {} : changeType === "added" ? { currentText: leadingText(text) } : { previousText: leadingText(text) }),
+    ...(text === undefined ? {} : changeType === "removed" ? { previousText: leadingText(text) } : { currentText: leadingText(text) }),
   };
 }
 
@@ -503,10 +545,10 @@ interface ClusterDiffInternal {
  * unchanged; everything unmatched is new (current side) or removed
  * (baseline side).
  */
-function diffClusters(baseline: BoardData, current: BoardData): ClusterDiffInternal {
-  const baselineNodesById = new Map(baseline.nodes.map((node) => [node.id, node]));
-  const currentNodesById = new Map(current.nodes.map((node) => [node.id, node]));
-
+function diffClusters(
+  baseline: BoardData, current: BoardData,
+  baselineNodesById: Map<string, NormalizedNode>, currentNodesById: Map<string, NormalizedNode>,
+): ClusterDiffInternal {
   const pairs: Array<{ prev: RefinedCluster; cur: RefinedCluster; overlap: number }> = [];
   const previousByMember = new Map<string, RefinedCluster[]>();
   for (const prev of baseline.clusters) {
@@ -565,12 +607,21 @@ function diffClusters(baseline: BoardData, current: BoardData): ClusterDiffInter
   return {
     newClusters: current.clusters
       .filter((cluster) => !matchedCur.has(cluster.id))
-      .map((cluster) => ({ label: cluster.label, summary: cluster.summary, ...clusterSection(cluster, currentNodesById) })),
+      .map((cluster) => clusterRef(cluster, currentNodesById, baselineNodesById)),
     removedClusters: baseline.clusters
       .filter((cluster) => !matchedPrev.has(cluster.id))
-      .map((cluster) => ({ label: cluster.label, summary: cluster.summary, ...clusterSection(cluster, baselineNodesById) })),
+      .map((cluster) => clusterRef(cluster, baselineNodesById, currentNodesById)),
     modifiedClusters,
     unchangedClusters,
+  };
+}
+
+function clusterRef(
+  cluster: RefinedCluster, nodes: Map<string, NormalizedNode>, otherNodes: Map<string, NormalizedNode>,
+): ClusterSummaryRef {
+  return {
+    label: cluster.label, summary: cluster.summary, ...clusterSection(cluster, nodes),
+    ...(cluster.nodeIds.length > 0 && cluster.nodeIds.every((id) => otherNodes.has(id)) ? { regrouped: true } : {}),
   };
 }
 
@@ -677,20 +728,40 @@ function renamedSections(baseline: BoardData, current: BoardData): string[] {
   });
 }
 
-/** Count placement changes only; added, removed and content-edited nodes are described elsewhere. */
-function layoutChangeCount(baseline: BoardData, current: BoardData): number {
-  const previous = new Map(baseline.nodes.map((node) => [node.id, node]));
-  return current.nodes.filter((node) => {
+/** Count only unlisted moves, using the container's origin to ignore movement inherited from it. */
+function layoutChanges(previous: Map<string, NormalizedNode>, next: Map<string, NormalizedNode>, listedIds: Set<string>): string[] {
+  const containerId = (node: NormalizedNode) => {
+    const inner = node.sectionIds?.at(-1);
+    // Normalized sections include themselves in their own section path.
+    return (inner === node.id ? node.sectionIds?.at(-2) : inner) ?? (node.pageId === node.id ? undefined : node.pageId);
+  };
+  let nodesMoved = 0;
+  let sectionsMoved = 0;
+  for (const node of next.values()) {
+    if (node.type === "CONNECTOR" || listedIds.has(node.id)) continue;
     const before = previous.get(node.id);
-    if (node.type === "CONNECTOR" || !before) return false;
-    const resized = before.width !== node.width || before.height !== node.height;
-    // Extraction includes dimensions in the appearance fingerprint. A resize
-    // alone can change it, while the existing content/cluster classification stays intact.
-    const sameContent = resized
-      ? !nodeContentChanged({ ...before, contentFingerprint: undefined }, { ...node, contentFingerprint: undefined })
-      : !nodeContentChanged(before, node);
-    return sameContent && (resized || before.x !== node.x || before.y !== node.y);
-  }).length;
+    if (!before) continue;
+    const originId = containerId(before);
+    const destinationId = containerId(node);
+    const origin = originId === undefined ? undefined : previous.get(originId);
+    const destination = destinationId === undefined ? undefined : next.get(destinationId);
+    const repositioned = movedOnAxis(before.x, node.x, origin?.x ?? 0, destination?.x ?? 0) ||
+      movedOnAxis(before.y, node.y, origin?.y ?? 0, destination?.y ?? 0);
+    if (node.type === "SECTION") {
+      if (repositioned || originId !== destinationId) sectionsMoved++;
+    } else if (repositioned) nodesMoved++;
+  }
+  return [
+    ...(nodesMoved > 0 ? [`${nodesMoved} ${nodesMoved === 1 ? "node moved within its" : "nodes moved within their"} section or page`] : []),
+    ...(sectionsMoved > 0 ? [`${sectionsMoved} section${sectionsMoved === 1 ? "" : "s"} moved`] : []),
+  ];
+}
+
+function movedOnAxis(before: number, after: number, origin: number, destination: number): boolean {
+  if (origin === destination) return before !== after;
+  const delta = (after - before) - (destination - origin);
+  // Subtracting absolute coordinates can leave rounding noise after a shared move.
+  return Math.abs(delta) > 2 * Number.EPSILON * Math.max(Math.abs(before), Math.abs(after), Math.abs(origin), Math.abs(destination));
 }
 
 function buildSummaryText(
@@ -701,6 +772,7 @@ function buildSummaryText(
   connections: ConnectionDiffInternal,
   nodes: NodeDiffInternal,
   tableCells: TableCellChange[],
+  layout: string[],
   visibilityChanged: boolean,
 ): string {
   const lines: string[] = [
@@ -708,13 +780,12 @@ function buildSummaryText(
     "",
   ];
   const renames = renamedSections(baseline, current);
-  const layoutChanges = layoutChangeCount(baseline, current);
 
   if (
-    stats.addedNodes + stats.removedNodes + stats.editedNodes === 0 &&
+    stats.addedNodes + stats.removedNodes + stats.editedNodes + stats.movedNodes === 0 &&
     stats.newClusters + stats.removedClusters + stats.modifiedClusters === 0 &&
     stats.addedConnections + stats.removedConnections === 0 &&
-    renames.length === 0 && layoutChanges === 0
+    renames.length === 0 && layout.length === 0
   ) {
     if (!visibilityChanged) lines.push(snapshotIdForBoard(baseline) === snapshotIdForBoard(current)
       ? "No changes — the board content is identical."
@@ -723,17 +794,17 @@ function buildSummaryText(
   }
 
   if (renames.length > 0) lines.push(`Renamed sections (${renames.length}):`, ...capped(renames, (line) => line));
-  if (layoutChanges > 0) lines.push(`Layout: ${layoutChanges} node${layoutChanges === 1 ? "" : "s"} moved or resized.`);
+  if (layout.length > 0) lines.push(`Layout: ${layout.join("; ")}.`);
 
   if (clusters.newClusters.length > 0) {
     lines.push(`New clusters (${clusters.newClusters.length}):`);
     lines.push(
-      ...capped(clusters.newClusters, (c) => `- "${c.label}"${clusterPlace(c.label, c.section)}: ${firstSentence(c.summary)}`),
+      ...capped(clusters.newClusters, (c) => `- "${c.label}"${clusterPlace(c.label, c.section)}${c.regrouped ? " (regrouped from existing nodes)" : ""}: ${firstSentence(c.summary)}`),
     );
   }
   if (clusters.removedClusters.length > 0) {
     lines.push(`Removed clusters (${clusters.removedClusters.length}):`);
-    lines.push(...capped(clusters.removedClusters, (c) => `- "${c.label}"${clusterPlace(c.label, c.section)}`));
+    lines.push(...capped(clusters.removedClusters, (c) => `- "${c.label}"${clusterPlace(c.label, c.section)}${c.regrouped ? " (nodes still on the board)" : ""}`));
   }
   if (clusters.modifiedClusters.length > 0) {
     lines.push(`Modified clusters (${clusters.modifiedClusters.length}):`);
@@ -770,7 +841,8 @@ function buildSummaryText(
   }
   lines.push(
     `Nodes: +${stats.addedNodes} added / -${stats.removedNodes} removed / ${stats.editedNodes} edited` +
-      (nodes.cellOnlyTables > 0 ? ` (${nodes.cellOnlyTables} of them ${nodes.cellOnlyTables === 1 ? "a table" : "tables"} with cell changes, listed under Table cells).` : "."),
+      (nodes.cellOnlyTables > 0 ? ` (${nodes.cellOnlyTables} of them ${nodes.cellOnlyTables === 1 ? "a table" : "tables"} with cell changes, listed under Table cells)` : "") +
+      (stats.movedNodes > 0 ? ` / ${stats.movedNodes} moved` : "") + ".",
   );
   if (stats.unchangedClusters > 0) {
     lines.push(`Unchanged clusters: ${stats.unchangedClusters}.`);
@@ -780,12 +852,13 @@ function buildSummaryText(
 }
 
 /** "- sticky 5:87 in "Section": "old" → "new"". */
-function nodeChangeLine({ change, before, after, board }: NodeChangeItem): string {
+function nodeChangeLine({ change, before, after, moveRoute }: NodeChangeItem): string {
   const node = (after ?? before)!;
-  const head = `- ${nodeLabel(board, node, change.name)}: `;
+  const head = `- ${nodeLabel(node, change.name)}${moveRoute ? "" : ` ${sectionPlace(change)}`}: `;
   if (change.changeType !== "edited") {
     const text = change.currentText ?? change.previousText;
-    return head + (text !== undefined ? quote(text) : node.imageRef ? "image" : "no text");
+    return head + (text !== undefined ? quote(text) : node.imageRef ? "image" : "no text") +
+      (moveRoute ? `; from ${moveRoute}` : "");
   }
   const parts: string[] = [];
   for (const aspect of change.changes ?? []) {
@@ -802,7 +875,11 @@ function nodeChangeLine({ change, before, after, board }: NodeChangeItem): strin
     } else if (aspect === "type") {
       parts.push(`type changed from ${readableType(before!)} to ${readableType(after!)}`);
     } else if (aspect === "appearance") {
-      parts.push("appearance changed (color, size or style)");
+      parts.push("appearance changed (color or style)");
+    } else if (aspect === "size") {
+      parts.push("resized");
+    } else if (aspect === "moved") {
+      parts.push(`moved from ${moveRoute}`);
     }
   }
   return head + parts.join("; ");
@@ -830,14 +907,15 @@ function tableCellLine(board: BoardData, table: NormalizedNode, change: TableCel
     const [previous, next] = textExcerpts(before, after);
     detail = `${cellText(previous)} → ${cellText(next)}`;
   }
-  return `- ${nodeLabel(board, table, change.tableName)}${place}: ${detail}`;
+  return `- ${nodeLabel(table, change.tableName)} ${sectionPlace(sectionOf(board, table))}${place}: ${detail}`;
 }
 
-/** "sticky 5:87 in "Section"", with the name after the type when given. */
-function nodeLabel(board: BoardData, node: NormalizedNode, name: string | undefined): string {
-  const { sectionId, section } = sectionOf(board, node);
-  const place = section ? `in ${quote(section)}` : sectionId ? `in section ${sectionId}` : "outside sections";
-  return `${readableType(node)}${name ? ` ${quote(name)}` : ""} ${node.id} ${place}`;
+function sectionPlace({ sectionId, section }: Pick<NodeChange, "sectionId" | "section">): string {
+  return section ? `in ${quote(section)}` : sectionId ? `in section ${sectionId}` : "outside sections";
+}
+
+function nodeLabel(node: NormalizedNode, name: string | undefined): string {
+  return `${readableType(node)}${name ? ` ${quote(name)}` : ""} ${node.id}`;
 }
 
 /** sticky, text, shape, table, image, …; Figma's type in lower case otherwise. */

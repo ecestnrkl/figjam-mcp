@@ -233,7 +233,7 @@ const contextOutput = { contextText: "Context.", clusters: [], snapshotId: "snap
   truncation: { remainingEvidence: 0, omittedConnections: 0, omittedRelations: 0, omittedTextConnections: 0, omittedTextRelations: 0 } };
 const diffOutput = { boardId: "Board123", baselineCreatedAt: "2026-01-01T00:00:00.000Z", currentCreatedAt: "2026-01-02T00:00:00.000Z",
   summaryText: "No changes.", newClusters: [], removedClusters: [], modifiedClusters: [], addedConnections: [], removedConnections: [],
-  stats: { addedNodes: 0, removedNodes: 0, editedNodes: 0, newClusters: 0, removedClusters: 0, modifiedClusters: 0, unchangedClusters: 0, addedConnections: 0, removedConnections: 0 } };
+  stats: { addedNodes: 0, removedNodes: 0, editedNodes: 0, movedNodes: 0, newClusters: 0, removedClusters: 0, modifiedClusters: 0, unchangedClusters: 0, addedConnections: 0, removedConnections: 0 } };
 const diagnoseOutput = { ok: true, preset: "synthetic", visionModels: [], textModels: [], fastTextModels: [], providerRequireParameters: false, checks: [], summary: "All checks passed." };
 
 /** Every tool with arguments that are valid and a handler result the output schema accepts. */
