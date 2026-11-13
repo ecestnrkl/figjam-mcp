@@ -45,6 +45,8 @@ export interface NormalizedNode {
   table?: { cells: TableCell[] };
   /** Includes source properties which affect rendered content. */
   contentFingerprint?: string;
+  /** IDs only: descendants omitted because this section is hidden in FigJam. */
+  hiddenDescendantIds?: string[];
   connectorStartArrowhead?: string;
   connectorEndArrowhead?: string;
   /** For CONNECTOR nodes: the node id the arrow starts at, if attached. */

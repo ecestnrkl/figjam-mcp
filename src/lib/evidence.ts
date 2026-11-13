@@ -366,6 +366,7 @@ function boardLookups(board: BoardData): { nodesById: Map<string, NormalizedNode
 /** IDs of the nodes, table cells and excerpts of this snapshot. */
 export function knownNodeIds(board: BoardData): Set<string> {
   const known = new Set(board.nodes.map((node) => node.id));
+  for (const node of board.nodes) for (const id of node.hiddenDescendantIds ?? []) known.add(id);
   // Empty cells of skipped empty rows are in no row excerpt but exist.
   for (const node of board.nodes) for (const cell of node.table?.cells ?? []) known.add(cell.id);
   for (const { evidence, cellIds } of getIndex(board).entries) {
@@ -738,6 +739,7 @@ function buildEvidence(board: BoardData, snapshotId: string): EvidenceSource[] {
   };
   const nodesById = new Map(board.nodes.map((node) => [node.id, node]));
   for (const node of board.nodes) {
+    if (node.hiddenDescendantIds !== undefined) continue;
     const cluster = clusterOf.get(node.id);
     const provenance = nodeProvenance(node, nodesById);
     const rows = node.table?.cells.length ? tableRows(node) : undefined;

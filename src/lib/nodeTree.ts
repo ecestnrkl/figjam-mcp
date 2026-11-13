@@ -9,6 +9,7 @@ interface RawFigmaNode {
   name: string;
   type: string;
   visible?: boolean;
+  sectionContentsHidden?: boolean;
   absoluteBoundingBox?: { x: number; y: number; width: number; height: number };
   rotation?: number;
   characters?: string;
@@ -114,6 +115,7 @@ interface Entry {
   children: number[];
   contentFingerprint?: string;
   redactedCell?: boolean;
+  hiddenDescendantIds?: string[];
 }
 
 function cellText(entry: Entry, entries: Entry[]): string {
@@ -170,6 +172,22 @@ export function flattenNodeTree(rawFigmaJson: unknown): NormalizedNode[] {
     entries.push(entry);
     parent?.children.push(index);
     const children = raw.children ?? [];
+    if (raw.type === "SECTION" && raw.sectionContentsHidden === true) {
+      // Retain identifiers only, so a direct read can explain why it is unavailable.
+      const hidden: string[] = [];
+      const pending = children.map((child) => ({ child, depth: depth + 1 }));
+      while (pending.length) {
+        const next = pending.pop()!;
+        if (!isRawFigmaNode(next.child)) throw new Error("flattenNodeTree: invalid child node");
+        if (next.depth > MAX_BOARD_DEPTH) throw new Error(`Board exceeds the ${MAX_BOARD_DEPTH}-level nesting limit`);
+        hidden.push(next.child.id);
+        if (hidden.length + entries.length + stack.length > MAX_BOARD_NODES) throw new Error(`Board exceeds the ${MAX_BOARD_NODES}-node limit`);
+        for (const child of next.child.children ?? []) pending.push({ child, depth: next.depth + 1 });
+      }
+      entry.hiddenDescendantIds = hidden.sort(compareCodeUnits);
+      entry.keep = true;
+      continue;
+    }
     if (entries.length + stack.length + children.length > MAX_BOARD_NODES) {
       throw new Error(`Board exceeds the ${MAX_BOARD_NODES}-node limit`);
     }
@@ -232,6 +250,7 @@ export function flattenNodeTree(rawFigmaJson: unknown): NormalizedNode[] {
       parentId: entry.parentId, pageId: entry.pageId, sectionIds: entry.sectionIds,
       renderNodeId: node.id, table: cells ? { cells } : undefined,
       contentFingerprint: entry.contentFingerprint,
+      ...(entry.hiddenDescendantIds ? { hiddenDescendantIds: entry.hiddenDescendantIds } : {}),
       connectorStartId: node.connectorStart?.endpointNodeId,
       connectorEndId: node.connectorEnd?.endpointNodeId,
       connectorStartArrowhead: node.connectorStartStrokeCap,

@@ -16,7 +16,7 @@ import {
   formatEvidenceConnection, MAX_CONTEXT_RESPONSE_BYTES, readableContainerIds,
   evidenceTokens, firstTableRow, knownNodeIds, retrieveEvidence, snapshotIdForBoard, tableCellPositions, unknownNodeIds, type Evidence,
 } from "../lib/evidence.js";
-import { SectionIndex } from "../lib/sections.js";
+import { sectionReference, hiddenSectionNotice, SectionIndex } from "../lib/sections.js";
 import type { BoardData, RefinedCluster } from "../types.js";
 
 /**
@@ -116,7 +116,10 @@ export async function getBoardContext(input: GetBoardContextInput, extra: { noti
   const readWarning = getBoardReadWarning(stored);
   const emptyNotice = board.clusters.length === 0 && retrieveEvidence(board).evidence.length === 0
     ? "The board contains no readable content." : undefined;
-  const notices = [readWarning, emptyNotice, conversionNotice(resolved?.conversions ?? []), ...(extra.notices ?? [])]
+  const hiddenSections = board.nodes.filter((node) => node.hiddenDescendantIds && options.nodeIds?.some(
+    (id) => id === node.id || node.hiddenDescendantIds!.includes(id)));
+  const hiddenNotice = hiddenSections.map((node) => `${sectionReference(node)}: ${hiddenSectionNotice(node.hiddenDescendantIds!.length)}.`).join(" ");
+  const notices = [readWarning, emptyNotice, hiddenNotice, conversionNotice(resolved?.conversions ?? []), ...(extra.notices ?? [])]
     .filter((notice): notice is string => Boolean(notice));
   const retrieved = retrieveEvidence(board, {
     query: options.topic, nodeIds: options.nodeIds, outsideSections: options.outsideSections,
@@ -136,7 +139,8 @@ export async function getBoardContext(input: GetBoardContextInput, extra: { noti
   // An arrow's label is no excerpt; it is listed under connections instead.
   const connectorIds = new Set(board.nodes.filter((node) => node.type === "CONNECTOR").map((node) => node.id));
   const arrowIds = withoutExcerpts.filter((id) => connectorIds.has(id));
-  const textlessIds = withoutExcerpts.filter((id) => !connectorIds.has(id));
+  const hiddenIds = new Set(hiddenSections.flatMap((node) => [node.id, ...node.hiddenDescendantIds!]));
+  const textlessIds = withoutExcerpts.filter((id) => !connectorIds.has(id) && !hiddenIds.has(id));
   const resultFingerprint = createHash("sha256")
     .update(retrieved.evidence.map((item) => item.evidenceId).join("\0")).digest("hex");
   if (cursor && !cursor.check && cursor.snapshot !== retrieved.snapshotId) throw new Error(CURSOR_SNAPSHOT_GONE);

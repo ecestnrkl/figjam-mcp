@@ -11,7 +11,7 @@ import { compareCodeUnits } from "./stringOrder.js";
 import { withCacheLock } from "./cacheLock.js";
 
 export const CACHE_SCHEMA_VERSION = 4;
-export const EXTRACTION_VERSION = 7;
+export const EXTRACTION_VERSION = 8;
 export const PROMPT_VERSION = 8;
 function defaultCacheRoot(): string { return process.platform === "darwin"
   ? path.join(homedir(), "Library", "Caches", "figjam-context-mcp")
@@ -31,7 +31,7 @@ const nodeSchema = z.object({
   width: finite, height: finite, rotation: finite, text: z.string().optional(),
   imageRef: z.string().optional(), parentId: z.string().optional(), pageId: z.string().optional(),
   sectionIds: z.array(z.string()).optional(), renderNodeId: z.string().optional(),
-  contentFingerprint: z.string().optional(),
+  contentFingerprint: z.string().optional(), hiddenDescendantIds: z.array(z.string()).max(MAX_BOARD_NODES).optional(),
   connectorStartId: z.string().optional(), connectorEndId: z.string().optional(),
   connectorStartArrowhead: z.string().optional(), connectorEndArrowhead: z.string().optional(),
   table: z.object({ cells: z.array(z.object({ id: z.string(), text: z.string(), row: finite.optional(), column: finite.optional() })) }).optional(),

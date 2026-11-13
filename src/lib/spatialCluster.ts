@@ -15,7 +15,7 @@ export function partitionedBoardClusters(
   const partitions = new Map<string, NormalizedNode[]>();
   for (const node of nodes) {
     toFootprint(node); // Validate even excluded containers/zero-size entries.
-    if (parentIds.has(node.id) || node.type === "CONNECTOR" ||
+    if (parentIds.has(node.id) || node.hiddenDescendantIds !== undefined || node.type === "CONNECTOR" ||
         (node.width <= 0 && node.height <= 0)) continue;
     const key = JSON.stringify([node.pageId ?? null, node.sectionIds?.at(-1) ?? null]);
     const members = partitions.get(key) ?? [];

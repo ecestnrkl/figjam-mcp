@@ -182,7 +182,7 @@ export class SectionIndex {
   requestedOutline(counts: Array<{ id: string; count: number }>, budget: number): string {
     const lines = counts.map(({ id, count }) => {
       const node = this.nodesById.get(id);
-      return `- ${id}${node ? ` ${this.name(node)}` : ""} — ${count} excerpt${plural(count)}`;
+      return `- ${id}${node ? ` ${this.name(node)}` : ""} — ${node?.hiddenDescendantIds ? hiddenSectionNotice(node.hiddenDescendantIds.length) : `${count} excerpt${plural(count)}`}`;
     });
     const render = (shown: number) => {
       const omitted = lines.length - shown;
@@ -201,6 +201,8 @@ export class SectionIndex {
   }
 
   private excerptCount(id: string): string {
+    const hidden = this.nodesById.get(id)?.hiddenDescendantIds;
+    if (hidden) return hiddenSectionNotice(hidden.length);
     const count = this.excerpts.get(id) ?? 0;
     return `${count} excerpt${plural(count)}`;
   }
@@ -260,4 +262,14 @@ function fitOutline(
 
 function plural(count: number): string {
   return count === 1 ? "" : "s";
+}
+
+export function hiddenSectionNotice(count: number): string {
+  return `Contents hidden in FigJam; ${count} element${plural(count)} not read`;
+}
+
+/** Match the bounded section names used in the overview. */
+export function sectionReference(node: NormalizedNode): string {
+  const name = node.name.replace(/\s+/g, " ").trim();
+  return `Section ${node.id} ${name ? boundedText(name, 80) : "(unnamed section)"}`;
 }

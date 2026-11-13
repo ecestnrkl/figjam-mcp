@@ -14,6 +14,7 @@ import type { Cluster, ClusterRelation, ConnectorEdge, NormalizedNode, RefinedCl
  * without both endpoints there is no relation to express.
  */
 export function extractConnectorEdges(nodes: NormalizedNode[]): ConnectorEdge[] {
+  const hiddenIds = new Set(nodes.flatMap((node) => node.hiddenDescendantIds ?? []));
   // Canvas endpoints are coordinate anchors, not claims about a document or page.
   const nonContentIds = new Set(nodes
     .filter(node => ["DOCUMENT", "CANVAS", "PAGE"].includes(node.type))
@@ -26,7 +27,8 @@ export function extractConnectorEdges(nodes: NormalizedNode[]): ConnectorEdge[] 
     .filter(
       (node) =>
         node.type === "CONNECTOR" && Boolean(node.connectorStartId) && Boolean(node.connectorEndId)
-        && !nonContentIds.has(node.connectorStartId!) && !nonContentIds.has(node.connectorEndId!),
+        && !nonContentIds.has(node.connectorStartId!) && !nonContentIds.has(node.connectorEndId!)
+        && !hiddenIds.has(node.connectorStartId!) && !hiddenIds.has(node.connectorEndId!),
     )
     .map((node) => ({
       connectorId: node.id,

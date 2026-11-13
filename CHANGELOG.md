@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.13.0 — Unreleased
+
+- Hidden section contents are excluded from new snapshots and URL passwords are redacted; previously retained snapshots remain unchanged on disk, and the first ingest after this update reinterprets images (extraction version 8).
+
 ## 0.12.1 — 2026-11-11
 
 - Credential tables protect nonempty values in either direction, including ambiguous headers; empty cells stay empty, protected clusters skip vision, and historical model interpretations are rebuilt from shared deterministic fallbacks.

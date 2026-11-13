@@ -1,6 +1,7 @@
 import type { BoardData, ConnectorEdge, NormalizedNode, RefinedCluster, TableCell } from "../types.js";
 import { isGenericNodeName, STRUCTURAL_TYPES } from "./nodeTree.js";
 import { hashClusterNodes } from "./persistentCache.js";
+import { sectionReference } from "./sections.js";
 import { connectorArrow } from "./connectorGraph.js";
 import { boundedText, nodeLink, snapshotIdForBoard, tableCellPositions } from "./evidence.js";
 
@@ -126,6 +127,27 @@ const READABLE_TYPES: Record<string, string> = {
 };
 
 export function diffBoards(baseline: BoardData, current: BoardData): BoardDiffResult {
+  const previousSections = new Map(baseline.nodes.filter((node) => node.type === "SECTION").map((node) => [node.id, node]));
+  const currentSections = new Map(current.nodes.filter((node) => node.type === "SECTION").map((node) => [node.id, node]));
+  const visibilityChanges = [...currentSections.values()].flatMap((node) => {
+    const previous = previousSections.get(node.id);
+    if (!previous || Boolean(previous.hiddenDescendantIds) === Boolean(node.hiddenDescendantIds)) return [];
+    return [{ id: node.id, name: sectionReference(node), hidden: Boolean(node.hiddenDescendantIds) }];
+  });
+  if (visibilityChanges.length) {
+    const changed = new Set(visibilityChanges.map((change) => change.id));
+    const removed = new Set([baseline, current].flatMap((board) => board.nodes.flatMap((node) => {
+      if (changed.has(node.id)) return node.hiddenDescendantIds ?? [];
+      return node.sectionIds?.some((id) => changed.has(id)) ? [node.id, ...(node.table?.cells.map((cell) => cell.id) ?? [])] : [];
+    })));
+    const filter = (board: BoardData): BoardData => {
+      const clusters = board.clusters.filter((cluster) => !cluster.nodeIds.some((id) => removed.has(id) || changed.has(id)));
+      return { ...board, nodes: board.nodes.filter((node) => !removed.has(node.id)), clusters,
+        connectorEdges: board.connectorEdges?.filter((edge) => !removed.has(edge.connectorId) && !removed.has(edge.fromNodeId) && !removed.has(edge.toNodeId)) };
+    };
+    baseline = filter(baseline);
+    current = filter(current);
+  }
   // Fingerprint algorithms change with extraction rules. Compare stored evidence
   // across versions without treating the algorithm change as a visual edit.
   if ((baseline.extractionVersion ?? 4) !== (current.extractionVersion ?? 4)) {
@@ -169,7 +191,8 @@ export function diffBoards(baseline: BoardData, current: BoardData): BoardDiffRe
     modifiedClusters: clusterDiff.modifiedClusters.slice(0, CLUSTER_LIMIT),
     addedConnections: connectionDiff.added.slice(0, CONNECTION_LIMIT),
     removedConnections: connectionDiff.removed.slice(0, CONNECTION_LIMIT),
-    summaryText: buildSummaryText(baseline, current, stats, clusterDiff, connectionDiff, nodeDiff, tableCellChanges),
+    summaryText: buildSummaryText(baseline, current, stats, clusterDiff, connectionDiff, nodeDiff, tableCellChanges, visibilityChanges.length > 0) +
+      visibilityChanges.map((change) => `\n\n${change.name}: contents ${change.hidden ? "hidden" : "shown"} in FigJam.`).join(""),
     tableCellChanges: tableCellChanges.slice(0, TABLE_CELL_LIMIT).map((change) => {
       const [previousText, currentText] = textExcerpts(collapseWhitespace(change.previousText), collapseWhitespace(change.currentText));
       return { ...change, previousText, currentText };
@@ -684,6 +707,7 @@ function buildSummaryText(
   connections: ConnectionDiffInternal,
   nodes: NodeDiffInternal,
   tableCells: TableCellChange[],
+  visibilityChanged: boolean,
 ): string {
   const lines: string[] = [
     `FigJam board ${current.fileKey} — changes from ${timestamp(baseline.createdAt)} (snapshot ${snapshotIdForBoard(baseline)}) to ${timestamp(current.createdAt)} (snapshot ${snapshotIdForBoard(current)}):`,
@@ -698,10 +722,10 @@ function buildSummaryText(
     stats.addedConnections + stats.removedConnections === 0 &&
     renames.length === 0 && layoutChanges === 0
   ) {
-    lines.push(snapshotIdForBoard(baseline) === snapshotIdForBoard(current)
+    if (!visibilityChanged) lines.push(snapshotIdForBoard(baseline) === snapshotIdForBoard(current)
       ? "No changes — the board content is identical."
       : "No content, name or layout changes found; the snapshots differ only in details diff_board does not compare.");
-    return lines.join("\n");
+    return lines.join("\n").trimEnd();
   }
 
   if (renames.length > 0) lines.push(`Renamed sections (${renames.length}):`, ...capped(renames, (line) => line));
