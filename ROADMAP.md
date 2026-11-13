@@ -59,15 +59,37 @@ installable in two minutes, documented, and used on real boards.
 - [x] Search ignores accents and hyphens; reading paths offer cursors, Figma links and citation guidance
 - [x] Quick start for testers with a success check
 
+## 0.13.0 — dependable on unfamiliar boards
+
+- [x] Contents hidden inside a FigJam section stay out of snapshots, images and provider requests; URL passwords are redacted
+- [x] Connection, proxy, certificate, model and configuration errors name the cause and the next step; branch links work
+- [x] Search finds common word forms and compounds with exact matches first and suggests board words on a miss
+- [x] Slightly offset rows read left to right; `diff_board` names moves, resizes and regrouped clusters; hosts get the workflow at initialization and page reads stay fast on boards with many sections
+
 ## 1.0.0 — proven in real use
 
 - [x] Public demo board and a screen recording
-- [ ] Real workshops
-- [ ] Stable tool contract
+- [ ] User tests on real workshop boards: three to five people install from the README in their own MCP client, ask their own questions and check the citations; friction becomes issues
+- [ ] Fix what the tests show before anything new
+- [ ] Stable tool contract: tool names, input schemas and required output fields are frozen and documented. Decide before the freeze:
+  - the length limit of `nodeIds` and `focusNodeIds` entries, so that a Figma link with a long board name fits
+  - which excerpt fields stay when they follow from others, such as `url` from `nodeId`
+  - what `snapshotId` identifies: the board content alone, or also image interpretations, which can change between ingests
+  - how much of the output schemas `tools/list` advertises
 
 ## Later — only when real usage asks for it
 
-- An outline for boards that use frames instead of sections
-- Background image interpretation with a daily limit
-- Votes and sticky colors
-- Answer-kind refinements
+Each item names the observation that would justify it.
+
+- An outline for boards that use frames instead of sections — if testers' boards are organized in frames
+- Background image interpretation with a daily limit — if image interpretation regularly outlasts client timeouts on real boards
+- Votes and sticky colors — if testers ask about voting results or color coding
+- Answer-kind refinements — if answers to real questions misjudge whether something is confirmed, proposed or contested
+- Semantic search (local embeddings or hybrid ranking) — if user tests show frequent paraphrased or cross-language questions that hosts do not rephrase after a miss
+- Model-suggested search words in `answer_from_board` — if hosts call `answer_from_board` and its misses are mostly synonyms or another language
+- Fuzzy matches for typos — if similar-word suggestions do not lead hosts to a successful second search
+- An opt-in to read hidden section contents — if a facilitator asks for hidden sections to be included
+- Column headings and background shapes as group boundaries — if boards without sections merge neighboring groups or read columns in the wrong order
+- More credential formats and placeholder values — if a real board shows a missed key or a redacted placeholder
+- Detection of personal data beyond credentials — if testers' boards hold names or contact details they do not want sent to a provider
+- Link preview content and sticky authors — if testers ask for them and Figma's REST API returns them
