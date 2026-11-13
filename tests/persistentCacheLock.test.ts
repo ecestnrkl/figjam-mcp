@@ -15,6 +15,9 @@ const hooks = vi.hoisted(() => ({
   ownerPublished: undefined as (() => void) | undefined,
   afterRetireAttempt: undefined as ((succeeded: boolean) => void) | undefined,
   beforeSourceRename: undefined as (() => Promise<void>) | undefined,
+  beforeLockMkdir: undefined as (() => void) | undefined,
+  beforeRetireRename: undefined as (() => void) | undefined,
+  beforeRemove: undefined as ((filename: string) => void) | undefined,
   afterLockDirectoryCreated: undefined as (() => Promise<void>) | undefined,
   ownerLinkFailed: undefined as (() => void) | undefined,
   rejectedOwner: undefined as unknown,
@@ -35,8 +38,10 @@ vi.mock("node:fs/promises", async (importOriginal) => {
   };
   return { ...actual,
     mkdir: async (...args: Parameters<typeof actual.mkdir>) => {
+      const isLock = String(args[0]).endsWith(path.sep + ".write-lock");
+      if (isLock) hooks.beforeLockMkdir?.();
       const result = await actual.mkdir(...args);
-      if (String(args[0]).endsWith(path.sep + ".write-lock")) await hooks.afterLockDirectoryCreated?.();
+      if (isLock) await hooks.afterLockDirectoryCreated?.();
       return result;
     },
     link: async (...args: Parameters<typeof actual.link>) => {
@@ -55,16 +60,30 @@ vi.mock("node:fs/promises", async (importOriginal) => {
     },
     rename: async (...args: Parameters<typeof actual.rename>) => {
       if (path.basename(String(args[1])).startsWith("source-")) await hooks.beforeSourceRename?.();
-      try { await actual.rename(...args); } catch (error) {
-        if (String(args[1]).endsWith(".retired")) hooks.afterRetireAttempt?.(false);
+      const retiring = String(args[1]).endsWith(".retired");
+      try {
+        if (retiring) hooks.beforeRetireRename?.();
+        await actual.rename(...args);
+      } catch (error) {
+        if (retiring) hooks.afterRetireAttempt?.(false);
         throw error;
       }
-      if (String(args[1]).endsWith(".retired")) { hooks.retired++; hooks.afterRetireAttempt?.(true); }
+      if (retiring) { hooks.retired++; hooks.afterRetireAttempt?.(true); }
       if (String(args[1]).endsWith(path.sep + "owner.json")) {
         await ownerPublished(args[1]);
       }
     },
     rm: async (...args: Parameters<typeof actual.rm>) => {
+      // Model Node's recursive rm retry budget for injected EBUSY errors.
+      if (hooks.beforeRemove) {
+        const options = args[1];
+        const retries = options?.recursive ? options.maxRetries ?? 0 : 0;
+        for (let attempt = 0; ; attempt++) {
+          try { hooks.beforeRemove(String(args[0])); break; } catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== "EBUSY" || attempt >= retries) throw error;
+          }
+        }
+      }
       await actual.rm(...args);
       if (String(args[0]).endsWith(path.sep + ".write-lock")) hooks.active--;
     },
@@ -86,6 +105,7 @@ beforeEach(async () => {
 afterEach(async () => {
   hooks.delay = undefined; hooks.beforeRetire = undefined;
   hooks.ownerPublished = undefined; hooks.afterRetireAttempt = undefined; hooks.beforeSourceRename = undefined;
+  hooks.beforeLockMkdir = undefined; hooks.beforeRetireRename = undefined; hooks.beforeRemove = undefined;
   hooks.afterLockDirectoryCreated = undefined; hooks.ownerLinkFailed = undefined; hooks.rejectedOwner = undefined;
   vi.restoreAllMocks(); vi.unstubAllEnvs();
   await rm(root, { recursive: true, force: true });
@@ -142,6 +162,62 @@ it("recovers an ownerless lock only after thirty seconds", async () => {
   hooks.delay = () => { throw new Error("stale lock must not wait"); };
   const cache = await import("../src/lib/persistentCache.js");
   await cache.persistBoard(input);
+  expect(hooks.retired).toBe(1);
+  expect(await cache.readLatestBoard("locks")).toBeDefined();
+});
+
+it.each(["EPERM", "EACCES", "EBUSY"])("waits and acquires the lock after a transient mkdir %s", async (code) => {
+  await rm(path.join(root, "v4", ".write-lock"), { recursive: true });
+  hooks.beforeLockMkdir = vi.fn().mockImplementationOnce(() => { throw Object.assign(new Error(code), { code }); });
+  hooks.delay = vi.fn();
+  const cache = await import("../src/lib/persistentCache.js");
+  await cache.persistBoard(input);
+  expect(hooks.delay).toHaveBeenCalledTimes(1);
+  expect(hooks.beforeLockMkdir).toHaveBeenCalledTimes(2);
+  expect(await cache.readLatestBoard("locks")).toBeDefined();
+});
+
+it("reports the original mkdir permission error after waiting for an absent lock", async () => {
+  const lockPath = path.join(root, "v4", ".write-lock");
+  await rm(lockPath, { recursive: true });
+  const error = Object.assign(new Error(`EACCES: permission denied, mkdir '${lockPath}'`), {
+    code: "EACCES", path: lockPath, syscall: "mkdir",
+  });
+  hooks.beforeLockMkdir = () => { throw error; };
+  const clock = Date.now(); let elapsed = 0;
+  vi.spyOn(Date, "now").mockImplementation(() => clock + elapsed);
+  hooks.delay = () => { elapsed += 10_000; };
+  const cache = await import("../src/lib/persistentCache.js");
+  const publication = cache.persistBoard(input);
+  await expect(publication).rejects.toBe(error);
+  expect(elapsed).toBe(10_000);
+  expect(error.message).toContain(lockPath);
+  expect(error.message).toContain("check permissions of FIGJAM_MCP_CACHE_DIR or the cache directory, then retry ingest_board.");
+  expect(error.message).not.toContain("another server process is writing");
+});
+
+it.each([".write-lock", "temporary owner file"])("cleans up the %s after two EBUSY errors", async (target) => {
+  const directory = path.join(root, "v4");
+  await rm(path.join(directory, ".write-lock"), { recursive: true });
+  const matches = (name: string) => target === ".write-lock" ? name === target : name.startsWith(".write-owner-");
+  let attempts = 0;
+  hooks.beforeRemove = (filename) => {
+    if (matches(path.basename(filename)) && ++attempts <= 2) throw Object.assign(new Error("busy"), { code: "EBUSY" });
+  };
+  const cache = await import("../src/lib/persistentCache.js");
+  await cache.persistBoard(input);
+  expect(attempts).toBe(3);
+  expect((await readdir(directory)).some(matches)).toBe(false);
+});
+
+it.each(["EACCES", "EBUSY"])("waits and recovers an abandoned lock after a transient rename %s", async (code) => {
+  await writeFile(path.join(root, "v4", ".write-lock", "owner.json"), JSON.stringify({ pid: 12345, hostname: hostname(), token: "terminated" }));
+  vi.spyOn(process, "kill").mockImplementation(() => { throw Object.assign(new Error("no such process"), { code: "ESRCH" }); });
+  hooks.beforeRetireRename = vi.fn().mockImplementationOnce(() => { throw Object.assign(new Error(code), { code }); });
+  hooks.delay = vi.fn();
+  const cache = await import("../src/lib/persistentCache.js");
+  await cache.persistBoard(input);
+  expect(hooks.delay).toHaveBeenCalledTimes(1);
   expect(hooks.retired).toBe(1);
   expect(await cache.readLatestBoard("locks")).toBeDefined();
 });
