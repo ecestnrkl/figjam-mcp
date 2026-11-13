@@ -225,7 +225,9 @@ function fitOutline(
     const omitted = sectionCount - shown.filter((line) => line.section).length;
     const omittedPages = pageCount - shown.filter((line) => !line.section).length;
     const summary = [
-      ...(omitted > 0 ? [`${omitted} more section${plural(omitted)} not listed; use the page or parent IDs above to continue. Empty sections may be absent.`] : []),
+      ...(omitted > 0 ? [shown.length
+        ? `${omitted} more section${plural(omitted)} not listed; use the page or parent IDs above to continue. Empty sections may be absent.`
+        : `${omitted} section${plural(omitted)} not listed; call get_board_context without topic and with maxChars: 24000 for section IDs.`] : []),
       ...(omittedPages > 0 ? [`${omittedPages} more page${plural(omittedPages)} not listed in this bounded overview.`] : []),
     ];
     return [...header, ...shown.map((line) => line.text), ...summary, ...footer,

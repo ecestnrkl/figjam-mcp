@@ -19,6 +19,8 @@ const MAX_ENCLOSING_DEPTH = 1024;
 /** Original board text, model interpretations and generated placeholders remain distinguishable at every boundary. */
 export interface Evidence {
   evidenceId: string;
+  /** Presentation-only context, such as a repeated table heading. */
+  context?: true;
   snapshotId: string;
   nodeId: string;
   text: string;
@@ -121,6 +123,8 @@ interface EvidenceIndex {
   fields: Record<EvidenceField, FieldIndex>;
   /** Original-field terms only; a derived label cannot consume the expansion budget. */
   vocabulary: string[];
+  reversedVocabulary: string[];
+  vocabularySet: Set<string>;
   /** All parts of the first row excerpt of each table, by table ID. */
   firstRows: Map<string, Evidence[]>;
 }
@@ -132,12 +136,12 @@ const STOPWORDS = new Set([
   "a", "an", "and", "are", "as", "at", "be", "by", "can", "did", "do", "does", "for", "from",
   "has", "have", "how", "i", "in", "is", "it", "its", "me", "of", "on", "or", "our", "that",
   "the", "their", "there", "these", "this", "to", "was", "we", "were", "what", "when", "where",
-  "which", "who", "why", "with", "you", "your", "about", "board", "project", "please", "find",
+  "which", "who", "why", "with", "you", "your", "about", "please", "find",
   "aber", "als", "am", "an", "auch", "auf", "aus", "bei", "das", "dem", "den", "der", "des",
   "die", "ein", "eine", "einen", "einer", "es", "für", "hat", "haben", "im", "ist", "mit",
   "nach", "nicht", "oder", "sich", "sie", "sind", "über", "um", "und", "vom", "von", "war",
-  "welche", "welcher", "welches", "wer", "wie", "wo", "zu", "zum", "zur", "projekt", "bitte",
-  "dass", "laut", "bereits", "gibt", "etwas", "wann", "noch", "steht", "thema", "wurde", "wurden",
+  "welche", "welcher", "welches", "wer", "wie", "wo", "zu", "zum", "zur", "bitte",
+  "dass", "laut", "bereits", "gibt", "etwas", "wann", "noch", "steht", "wurde", "wurden",
   "schon", "kann", "wird", "werden", "einem", "eines",
 ]);
 
@@ -246,15 +250,19 @@ export function retrieveEvidence(board: BoardData, options: EvidenceQuery = {}):
     matches = contentFirst(readingOrder(board, index.entries.filter(({ evidence }) => !inSection(evidence))), (entry) => entry.evidence);
   } else if (options.query?.trim()) {
     const queryTerms = [...new Set(evidenceTokens(options.query))];
+    const alternatives = new Map(queryTerms.map((term) => [term, wordAlternatives(index, term)]));
+    const exactEntries = new Map(queryTerms.map((term) => [term, new Set(
+      (["text", "node", "section"] as const).flatMap((field) => (index.fields[field].postings.get(term) ?? []).map((posting) => posting.index)),
+    )]));
     const scores = new Map<number, number>();
     const coveredTerms = new Map<number, Set<string>>();
     for (const field of ["text", "node", "section"] as const) {
-      addFieldScores(index, field, queryTerms, scores, undefined, coveredTerms);
+      addFieldScores(index, field, queryTerms, alternatives, exactEntries, scores, undefined, coveredTerms);
     }
     // Page and derived cluster labels can help rank an original match, never create one.
     const matched = new Set(scores.keys());
-    addFieldScores(index, "page", queryTerms, scores, matched);
-    addFieldScores(index, "cluster", queryTerms, scores, matched);
+    addFieldScores(index, "page", queryTerms, alternatives, exactEntries, scores, matched);
+    addFieldScores(index, "cluster", queryTerms, alternatives, exactEntries, scores, matched);
     for (const [entry, score] of scores) {
       scores.set(entry, score * ((coveredTerms.get(entry)?.size ?? 0) / queryTerms.length) ** 2);
     }
@@ -566,14 +574,14 @@ export function boundedText(value: string, maxChars: number): string {
 }
 
 function addFieldScores(
-  index: EvidenceIndex, field: EvidenceField, queryTerms: string[], scores: Map<number, number>,
+  index: EvidenceIndex, field: EvidenceField, queryTerms: string[], expansions: Map<string, string[]>, exactEntries: Map<string, Set<number>>, scores: Map<number, number>,
   allowed?: Set<number>,
   coveredTerms?: Map<number, Set<string>>,
 ): void {
   const fieldIndex = index.fields[field];
   for (const term of queryTerms) {
-    const alternatives = [{ term, weight: 1 }, ...compoundPrefixes(index.vocabulary, term)
-      .map((prefix) => ({ term: prefix, weight: PREFIX_MATCH_WEIGHT }))];
+    const alternatives = [{ term, weight: 1 }, ...(expansions.get(term) ?? [])
+      .map((word) => ({ term: word, weight: PREFIX_MATCH_WEIGHT }))];
     // A query word contributes once per field/chunk; several matching compounds
     // must not turn a partial match into an unbounded frequency bonus.
     const termScores = new Map<number, number>();
@@ -586,7 +594,9 @@ function addFieldScores(
         const normalization = 1.2 * (0.5 + 0.5 * length / fieldIndex.averageLength);
         const score = alternative.weight * FIELD_WEIGHTS[field] * idf * posting.frequency * 2.2 /
           (posting.frequency + normalization);
-        termScores.set(posting.index, Math.max(termScores.get(posting.index) ?? 0, score));
+        if (alternative.weight === 1 || !exactEntries.get(term)?.has(posting.index)) {
+          termScores.set(posting.index, Math.max(termScores.get(posting.index) ?? 0, score));
+        }
       }
     }
     for (const [entry, score] of termScores) {
@@ -598,6 +608,47 @@ function addFieldScores(
       }
     }
   }
+}
+
+const WORD_ENDINGS = ["e", "n", "s", "en", "er", "es", "em", "ern", "nen", "ed", "ing"];
+const latinWord = (word: string) => /^[\p{Script=Latin}\p{M}]+$/u.test(word);
+const reverseWord = (word: string) => [...word].reverse().join("");
+
+function wordAlternatives(index: EvidenceIndex, term: string): string[] {
+  if (term.length < 5 || !latinWord(term)) return [];
+  const vocabulary = index.vocabularySet;
+  const words = new Set(compoundPrefixes(index.vocabulary, term));
+  const bases = [term, ...WORD_ENDINGS.filter((ending) => term.endsWith(ending) && term.length - ending.length >= 4)
+    .map((ending) => term.slice(0, -ending.length))];
+  for (const base of bases) {
+    if (vocabulary.has(base)) words.add(base);
+    for (const ending of WORD_ENDINGS) if (vocabulary.has(base + ending)) words.add(base + ending);
+  }
+  for (const reversed of compoundPrefixes(index.reversedVocabulary, reverseWord(term))) words.add(reverseWord(reversed));
+  words.delete(term);
+  return [...words];
+}
+
+/** Suggestions are board data, not matches. Call with a redacted board. */
+export function similarBoardWords(board: BoardData, query: string): string[] {
+  const terms = [...new Set(evidenceTokens(query))].filter((term) => term.length >= 3 && latinWord(term));
+  const trigrams = (word: string) => new Set(Array.from({ length: Math.max(0, word.length - 2) }, (_, i) => word.slice(i, i + 3)));
+  const queryGrams = terms.map(trigrams);
+  return getIndex(board).vocabulary.flatMap((word) => {
+    if (word.length < 3 || word.length > 80 || !latinWord(word)) return [];
+    const grams = trigrams(word);
+    let best = 0;
+    terms.forEach((term, i) => {
+      let prefix = 0;
+      while (prefix < Math.min(term.length, word.length) && term[prefix] === word[prefix]) prefix++;
+      const shared = [...queryGrams[i]!].filter((gram) => grams.has(gram)).length;
+      const score = Math.max(prefix >= 2 ? prefix / Math.max(term.length, word.length) : 0,
+        shared ? 2 * shared / (queryGrams[i]!.size + grams.size) : 0);
+      best = Math.max(best, score);
+    });
+    return best ? [{ word, score: best }] : [];
+  }).sort((a, b) => b.score - a.score || (a.word < b.word ? -1 : a.word > b.word ? 1 : 0))
+    .slice(0, 8).map(({ word }) => word);
 }
 
 function compoundPrefixes(vocabulary: string[], term: string): string[] {
@@ -679,7 +730,8 @@ function getIndex(board: BoardData): EvidenceIndex {
     fields[field].averageLength = totalLengths[field] / Math.max(1, entries.length) || 1;
   }
   const vocabulary = [...new Set(ORIGINAL_FIELDS.flatMap((field) => [...fields[field].postings.keys()]))].sort();
-  const index = { snapshotId, entries, fields, vocabulary, firstRows };
+  const reversedVocabulary = vocabulary.filter(latinWord).map(reverseWord).sort();
+  const index = { snapshotId, entries, fields, vocabulary, vocabularySet: new Set(vocabulary), reversedVocabulary, firstRows };
   indexes.set(board, index);
   return index;
 }

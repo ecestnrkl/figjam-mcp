@@ -132,11 +132,11 @@ describe("bounded compound prefixes", () => {
   it("matches long Latin word beginnings, retaining the original compound", () => {
     const board = evidenceBoard("CompoundPrefix", [textNode("a", "Simulatorverfügbarkeit klären")]);
     expect(retrieveEvidence(board, { query: "Simulator" }).evidence[0]).toMatchObject({ nodeId: "a", text: "Simulatorverfügbarkeit klären" });
-    expect(retrieveEvidence(board, { query: "verfügbarkeit" }).evidence).toEqual([]);
+    expect(retrieveEvidence(board, { query: "verfügbarkeit" }).evidence[0]?.nodeId).toBe("a");
   });
 
   it.each([
-    ["apple", "pineapple"], ["sens", "sensorwartung"], ["sensor", "sensoren"],
+    ["sens", "sensorwartung"],
     ["E731", "E731extension"], ["sensor7", "sensor7wartung"], ["EU", "european"],
   ])("keeps %s from partially matching %s", (query, word) => {
     expect(retrieveEvidence(evidenceBoard("PrefixBoundary", [textNode("a", word)]), { query }).evidence).toEqual([]);

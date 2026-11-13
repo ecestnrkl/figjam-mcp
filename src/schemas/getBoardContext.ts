@@ -29,7 +29,7 @@ export type ClusterContext = z.infer<typeof clusterContextSchema>;
 
 export const getBoardContextInputShape = {
   boardId: boardIdInputSchema.describe("The Figma file key returned by ingest_board, or the board URL. A URL with a node-id, without nodeIds, topic and outsideSections, reads that node"),
-  topic: topicSchema.optional().describe('Words to search for. An excerpt matches when at least one of them is in its text, its section or node name, the label of an arrow attached to it or, for a table row, its column headings, as a whole word ignoring case and accents (words of five or more letters also match compounds that begin with them); excerpts with more of the words come first. Other word forms, synonyms and translations do not match: include them yourself, for example "payment payments pay Bezahlung". Cannot be combined with nodeIds or outsideSections.'),
+  topic: topicSchema.optional().describe("Words to search in excerpt text, node or section names, arrow labels and table headings. Whole words ignore case and accents; words of at least five letters also match some word forms and compounds. Synonyms and translations do not match. No matches may suggest similar board words. Context excerpts are marked. Cannot be combined with nodeIds or outsideSections."),
   nodeIds: z.array(z.string().trim().min(1).max(200)).min(1).max(50).optional()
     .describe("Read exact source nodes, all rows of a table or the row of a table cell, or every excerpt inside a page, section, frame or group by its ID (nested sections included, in reading order); several IDs in one call share every page in request order; cannot be combined with topic"),
   outsideSections: z.boolean().optional()
@@ -57,6 +57,7 @@ export type GetBoardContextInput = z.input<typeof getBoardContextInputSchema>;
 
 export const evidenceSchema = z.object({
   evidenceId: z.string(),
+  context: z.literal(true).optional().describe("This excerpt is included only as context, not as a search match"),
   snapshotId: z.string().optional().describe("Omitted when inherited from the response snapshotId; only snapshotId is inherited"),
   nodeId: z.string(), text: z.string(),
   sourceType: z.enum(["board_text", "table_cell", "table_row", "board_metadata", "model_interpretation", "cluster_summary"]),

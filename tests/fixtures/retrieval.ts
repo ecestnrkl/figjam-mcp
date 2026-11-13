@@ -96,10 +96,21 @@ export const longQueryFixtures = [
   ]),
 }));
 
-/** Inflection is deliberately outside lexical retrieval; excluded from recall and MRR. */
-export const retrievalLimitations = [{
-  name: "plural question versus singular source",
-  query: "sensors",
-  expectedNodeId: "singular",
-  board: evidenceBoard("WordFormBoundary", [textNode("singular", "sensor")]),
-}];
+/** Word-form and compound boundaries, kept separate from the revision corpus. */
+export const wordFormFixtures: Array<{ name: string; board: BoardData; query: string; expectedNodeId?: string }> = [
+  ["German singular to plural", "Termine", "Termin", true],
+  ["German plural to singular", "Termin", "Termine", true],
+  ["German inflected to inflected", "Terminen", "Termine", true],
+  ["German umlaut plural", "Vorschläge", "Vorschlag", true],
+  ["English singular to plural", "sensors", "sensor", true],
+  ["English plural to singular", "sensor", "sensors", true],
+  ["German suffix compound", "Lieferprozess", "Prozess", true],
+  ["English suffix compound", "Kundenfeedback", "Feedback", true],
+  ["former stopword", "Projekt", "Projekt", true],
+  ["no two-letter extension", "Terminal", "Termin", false],
+  ["short word stays exact", "Planet", "Plan", false],
+  ["short word is not a prefix", "Testament", "Test", false],
+].map(([name, text, query, positive], index) => ({
+  name: name as string, query: query as string, ...(positive ? { expectedNodeId: "target" } : {}),
+  board: evidenceBoard(`WordForm${index}`, [textNode("target", text as string)]),
+}));

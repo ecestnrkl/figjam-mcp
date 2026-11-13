@@ -1,7 +1,7 @@
 /** npm run eval:retrieval [-- --with-llm [--grounding-only]]. Offline by default; only synthetic boards. */
 import { performance } from "node:perf_hooks";
 import { retrieveEvidence, evidenceTokens } from "../src/lib/evidence.ts";
-import { longQueryFixtures, retrievalFixtures, retrievalLimitations } from "../tests/fixtures/retrieval.ts";
+import { longQueryFixtures, retrievalFixtures, wordFormFixtures } from "../tests/fixtures/retrieval.ts";
 import { changeFixtures } from "../tests/fixtures/changes.ts";
 import { answerGroundingFixtures } from "../tests/fixtures/answerGrounding.ts";
 import { diffBoards } from "../src/lib/boardDiff.ts";
@@ -29,7 +29,7 @@ const cacheModule = withLlm ? await import("../src/lib/cache.ts") : undefined;
 const timings = [];
 const cases = [];
 const externalCases = [];
-for (const fixture of [...retrievalFixtures, ...longQueryFixtures]) {
+for (const fixture of [...retrievalFixtures, ...longQueryFixtures, ...wordFormFixtures]) {
   // A fresh immutable board includes index construction in each measurement.
   const board = structuredClone(fixture.board);
   const start = performance.now();
@@ -43,7 +43,7 @@ for (const fixture of [...retrievalFixtures, ...longQueryFixtures]) {
     correctAbstention: !fixture.expectedNodeId && result.evidence.length === 0,
     legacySummaryFactVisible: legacySummaryFactVisible(fixture),
   });
-  if (withLlm && !groundingOnly) externalCases.push(await evaluateAnswer(fixture, board));
+  if (withLlm && !groundingOnly && !wordFormFixtures.includes(fixture)) externalCases.push(await evaluateAnswer(fixture, board));
 }
 const semanticCases = [];
 for (const fixture of answerGroundingFixtures) {
@@ -77,7 +77,7 @@ const changeCases = changeFixtures.map((fixture) => {
   };
 });
 const result = {
-  evaluation: "29 synthetic lexical source-retrieval fixtures and one known word-form limitation; not a real-board benchmark",
+  evaluation: "Synthetic lexical source-retrieval fixtures, including word forms and compounds; not a real-board benchmark",
   mode: withLlm ? "explicit-provider-evaluation" : "offline",
   ...(withLlm ? { providerEvaluation: {
     selection: groundingOnly ? "grounding-only" : "retrieval-and-grounding",
@@ -93,12 +93,6 @@ const result = {
   recallAt15: positive.filter((item) => item.rank > 0 && item.rank <= 15).length / positive.length,
   meanReciprocalRank: positive.reduce((sum, item) => sum + (item.rank ? 1 / item.rank : 0), 0) / positive.length,
   meanReciprocalRankAt3: positive.reduce((sum, item) => sum + (item.rank > 0 && item.rank <= 3 ? 1 / item.rank : 0), 0) / positive.length,
-  knownLimitations: retrievalLimitations.map((fixture) => {
-    const expected = expectedEvidenceIds(fixture.board, fixture.expectedNodeId);
-    const evidence = retrieveEvidence(fixture.board, { query: fixture.query }).evidence;
-    return { name: fixture.name, rank: evidence.findIndex((item) => expected.has(item.evidenceId)) + 1,
-      excludedFromRecallAndMrr: true, reason: "Word forms are not normalized; lexical overlap is required." };
-  }),
   correctAbstentionRate: negative.filter((item) => item.correctAbstention).length / negative.length,
   coldRetrievalMs: distribution(timings),
   baselineProxy: {
@@ -126,7 +120,7 @@ const result = {
 };
 console.log(JSON.stringify(result, null, 2));
 if (cases.slice(0, retrievalFixtures.length).some((item) => item.answerable && item.rank !== 1) ||
-    result.recallAt6 < 1 || result.correctAbstentionRate < 1 || result.fixtures !== 29 ||
+    result.recallAt6 < 1 || result.correctAbstentionRate < 1 || result.fixtures !== retrievalFixtures.length + longQueryFixtures.length + wordFormFixtures.length ||
     changeCases.some((item) => !item.passed || !item.namedInText) ||
     externalCases.some((item) => item.error || item.validCitationCount !== item.citationCount ||
       (item.expectedNodeId ? !item.citesExpectedNode : !item.abstained)) ||
