@@ -45,6 +45,16 @@ function board(nodes: NormalizedNode[], clusters: RefinedCluster[], createdAt: n
 }
 
 describe("diffBoards", () => {
+  it("omits the visibility line when the older snapshot predates hidden section extraction", () => {
+    const section = node("1:1", undefined, { type: "SECTION", name: "Planning" });
+    const note = node("1:2", "Workshop note", { sectionIds: [section.id] });
+    const baseline = { ...board([section, note], [], 1), extractionVersion: 7 };
+    const current = { ...board([{ ...section, hiddenDescendantIds: [note.id] }], [], 2), extractionVersion: 8 };
+    const diff = diffBoards(baseline, current);
+    expect(diff.summaryText).not.toContain("contents hidden in FigJam");
+    expect(diff.nodeChanges).toEqual([]);
+  });
+
   it("lists changed nodes in reading order across and within clusters", () => {
     const nodes = [
       node("c", "Right cluster", { x: 700 }),

@@ -27,7 +27,9 @@ line, and later errors about missing credentials also include the load failure.
 | --- | --- | --- |
 | `FIGJAM_MCP_REDACT_CREDENTIALS` | `true` | Replaces explicit credentials with `[redacted]` before cache, output or provider use: password/key/token labels with short qualifiers or parenthetical notes, single-word values on the next non-empty line, underscore-separated labels, PIN codes and Zugangscode, bare PIN values starting with a digit, Bearer tokens, JWTs and known key formats (GitHub, OpenAI/OpenRouter, Figma, AWS, Slack, private key blocks). Credential-labelled table columns and rows are redacted; bare `Token` is left alone. Set `false` to turn it off. |
 
-Hidden elements (`visible: false`) and their descendants, including contents hidden inside a FigJam section, are not read, rendered or sent to a provider. URL passwords in userinfo are redacted alongside other explicit credentials.
+New ingests skip hidden elements (`visible: false`) and their descendants, including contents hidden inside a FigJam section, before extraction, rendering and provider requests.
+Re-ingest the board after updating, since earlier snapshots still contain and return hidden section contents, including when requested by `snapshotId`, until they age out of history or you delete the cache.
+URL passwords in userinfo are redacted alongside other explicit credentials.
 
 Messages replace exact configured Figma and LLM credentials, including a
 `figmaAccessToken` argument, with `[redacted]` when their trimmed value has at

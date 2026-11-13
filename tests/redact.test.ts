@@ -425,12 +425,20 @@ describe("protected credential table snapshots", () => {
 
 describe("URL credential redaction", () => {
   it.each([
+    "http://localhost:3000?email=a@b.com",
+    "http://localhost:3000#a@b",
+  ])("preserves a port followed by a query or fragment in %s", (url) => {
+    expect(redactCredentials(url)).toBe(url);
+    expect(redactMessageCredentials(url)).toBe(url);
+  });
+
+  it.each([
     "https://ece@host", "alice@example.test", "postgres://u:${DB_PASS}@host", "postgres://u:{{secret}}@host",
     "postgres://u:<password>@host", "postgres://u:***@host", "postgres://u:xxx@host",
     "postgres://u:password@host", "postgres://u:TBD@host",
   ])("redacts URL passwords in both paths and preserves %s", (unchanged) => {
-    const input = `postgres://admin:synthetic-value@db.test/a redis://:synthetic-value@host ${unchanged}`;
-    const expected = `postgres://admin:[redacted]@db.test/a redis://:[redacted]@host ${unchanged}`;
+    const input = `https://user:123@host postgres://admin:synthetic-value@db.test/a mongodb+srv://user:synthetic-value@db.test redis://:synthetic-value@host http://localhost:3000 ${unchanged}`;
+    const expected = `https://user:[redacted]@host postgres://admin:[redacted]@db.test/a mongodb+srv://user:[redacted]@db.test redis://:[redacted]@host http://localhost:3000 ${unchanged}`;
     expect(redactCredentials(input)).toBe(expected);
     expect(redactMessageCredentials(input)).toBe(expected);
   });

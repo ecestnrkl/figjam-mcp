@@ -151,6 +151,23 @@ describe("answerFromBoard evidence grounding", () => {
   });
 
   it.each([
+    ["What does the board say about refunds?", "Whiteboard session next week"],
+    ["What do the boards say about refunds?", "Whiteboards for next week's session"],
+  ])("abstains without calling the provider for %s", async (question, whiteboardNote) => {
+    const data = evidenceBoard("MissingRefunds123", [
+      textNode("1:1", "Dashboard redesign planned"),
+      textNode("1:2", whiteboardNote),
+      textNode("1:3", "Checkout flow is slow"),
+    ]);
+    setBoard(data.boardId, data);
+    chatJsonMock.mockResolvedValueOnce({ kind: "unsupported", language: "en", answer: "", evidenceIds: [] });
+    const output = await answerFromBoard({ boardId: data.boardId, question });
+    expect(chatJsonMock).not.toHaveBeenCalled();
+    expect(output.answer).toContain("No excerpt matches a word of this question");
+    expect(output.citations).toEqual([]);
+  });
+
+  it.each([
     ["Where is the quantum reactor?", "or read the board with get_board_context without parameters."],
     ["Wo ist der Quantenreaktor?", "oder lies das Board mit get_board_context ohne Parameter."],
   ])("suggests reading the board without sections: %s", async (question, ending) => {
@@ -528,7 +545,7 @@ describe("answerFromBoard evidence grounding", () => {
     it("are not marked as model interpretations in the prompt, the answer or the citations", async () => {
       const data = placeholderBoard();
       chatJsonMock.mockImplementationOnce((_models, messages) => ({ kind: "answer", language: "en", answer: "Two elements.", evidenceIds: [firstPromptId(messages)] }));
-      const output = await answerFromBoard({ boardId: data.boardId, question: "How many board elements does the cluster contain?" });
+      const output = await answerFromBoard({ boardId: data.boardId, question: "Summarize the board" });
       const excerpt = prompt().match(/<excerpt [^>]*>/)![0];
       expect(excerpt).toContain('source="GENERATED PLACEHOLDER, no model; verify against original"');
       expect(excerpt).not.toContain("MODEL INTERPRETATION");
@@ -540,7 +557,7 @@ describe("answerFromBoard evidence grounding", () => {
     it("are marked the same way in the excerpts of an answer without a usable reply", async () => {
       const data = placeholderBoard();
       chatJsonMock.mockImplementationOnce((_models, messages) => ({ kind: "unresolved_task", answer: "Unknown.", evidenceIds: [firstPromptId(messages)] }));
-      const output = await answerFromBoard({ boardId: data.boardId, question: "How many board elements does the cluster contain?" });
+      const output = await answerFromBoard({ boardId: data.boardId, question: "Summarize the board" });
       expect(output.answer).toContain("Matching source excerpts");
       expect(output.answer).toContain(`[Generated placeholder, no model] ${placeholder}`);
       expect(output.answer).not.toContain("[Model interpretation]");
@@ -548,10 +565,17 @@ describe("answerFromBoard evidence grounding", () => {
     it("tell the model that a placeholder is no interpretation", async () => {
       const data = placeholderBoard();
       chatJsonMock.mockResolvedValueOnce({ kind: "answer", answer: "x", evidenceIds: [] });
-      await answerFromBoard({ boardId: data.boardId, question: "How many board elements does the cluster contain?" });
+      await answerFromBoard({ boardId: data.boardId, question: "Summarize the board" });
       const system = (chatJsonMock.mock.calls[0]?.[1] as Array<{ role: string; content: string }>).find(item => item.role === "system")!.content;
       expect(system).toContain("A GENERATED PLACEHOLDER (no model ran)");
       expect(system).toContain("is not an interpretation and establishes nothing");
+    });
+    it("does not call the provider when a word occurs only in a generated placeholder", async () => {
+      const data = placeholderBoard();
+      chatJsonMock.mockResolvedValueOnce({ kind: "unsupported", language: "en", answer: "", evidenceIds: [] });
+      const output = await answerFromBoard({ boardId: data.boardId, question: "What element is there?" });
+      expect(chatJsonMock).not.toHaveBeenCalled();
+      expect(output.citations).toEqual([]);
     });
   });
 

@@ -554,7 +554,7 @@ describe("bounded lexical alternatives", () => {
     expect(retrieveEvidence(board, { query: "sensor" }).evidence.map((item) => item.nodeId)).toEqual(["target"]);
   });
 
-  it.each(["board", "project", "projekt", "thema"])("searches the content word %s", (word) => {
+  it.each(["project", "projekt", "thema"])("searches the content word %s", (word) => {
     expect(evidenceTokens(word)).toEqual([word]);
   });
 
