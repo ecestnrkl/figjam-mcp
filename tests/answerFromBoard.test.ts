@@ -888,3 +888,27 @@ describe("removeEvidenceIds", () => {
     expect(removeEvidenceIds(answer)).toBe(expected);
   });
 });
+
+it("identifies the text role for a model 404 during answer generation", async () => {
+  const data = evidenceBoard("Model404Test");
+  setBoard(data.boardId, data);
+  chatJsonMock.mockImplementation(async (_models, _messages, options) => {
+    if (options.modelRole !== "text") throw new Error("missing model role");
+    throw new Error("LLM request failed (HTTP 404): model missing/text. Check LLM_TEXT_MODELS.");
+  });
+  await expect(answerFromBoard({ boardId: data.boardId, question: "Payment retries?" }))
+    .rejects.toThrow("model missing/text. Check LLM_TEXT_MODELS");
+});
+
+it("uses the branch key and explains it when answering or reading context", async () => {
+  const data = evidenceBoard("Branch456");
+  const url = "https://www.figma.com/board/Parent123/branch/Branch456/Example";
+  setBoard(data.boardId, data);
+  const source = retrieveEvidence(data).evidence[0]!;
+  chatJsonMock.mockResolvedValueOnce({ kind: "answer", language: "en", answer: "Use an idempotency key.", evidenceIds: [source.evidenceId] });
+  const answer = await answerFromBoard({ boardId: url, question: "What is required for payment retries?" });
+  expect(answer.answer).toContain("The branch key is used as the file key.");
+  const { getBoardContext } = await import("../src/tools/getBoardContext.js");
+  const context = await getBoardContext({ boardId: url });
+  expect(context.text).toContain("The branch key is used as the file key.");
+});

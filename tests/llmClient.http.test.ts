@@ -307,6 +307,9 @@ describe("LLM requests through real local HTTP and the OpenAI SDK", () => {
       }
       expect(check.error).not.toContain(raw);
     }
+    expect(diagnosis.checks.map(check => check.error)).toEqual([
+      expect.stringContaining("LLM_TEXT_MODELS"), expect.stringContaining("LLM_FAST_TEXT_MODELS"), expect.stringContaining("LLM_VISION_MODELS"),
+    ]);
     expect(diagnosis.checks.map(check => check.attempts!.map(attempt => attempt.model))).toEqual([
       ["text/first", "text/second"], ["text/first", "text/second"], ["vision/only"]]);
     // Both text checks moved to the second candidate after the 404.
@@ -314,7 +317,7 @@ describe("LLM requests through real local HTTP and the OpenAI SDK", () => {
     const board = evidenceBoard("ProviderError123");
     setBoard(board.boardId, board);
     const answer = answerFromBoard({ boardId: board.boardId, question: "What is required for payment retries?" });
-    await expect(answer).rejects.toThrow("LLM request failed (HTTP 404). Check provider availability and configuration.");
+    await expect(answer).rejects.toThrow("LLM request failed (HTTP 404): model text/second was not found or has no available endpoint. Check LLM_TEXT_MODELS.");
     await expect(answer).rejects.not.toThrow(/Provider returned error|SyntheticProvider|synthetic detail|raw provider body/);
   });
 

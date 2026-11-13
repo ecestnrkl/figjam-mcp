@@ -278,3 +278,17 @@ describe("diffBoard", () => {
     expect(JSON.stringify(output)).not.toMatch(/hunter/);
   });
 });
+
+it("uses and explains a branch key when comparing snapshots", async () => {
+  readBoardHistoryMock.mockResolvedValue([
+    { cacheKey: "k1", nodeHash: "h1", createdAt: 1000 },
+    { cacheKey: "k2", nodeHash: "h2", createdAt: 2000 },
+  ]);
+  readCachedBoardMock.mockImplementation(async (key: string) => {
+    const data = snapshot(key === "k1" ? 1000 : 2000, key);
+    return { ...data, boardId: "Branch456", fileKey: "Branch456" };
+  });
+  const diff = await diffBoard({ boardId: "https://www.figma.com/board/Parent123/branch/Branch456/Example", compareTo: 1 });
+  expect(readBoardHistoryMock).toHaveBeenCalledWith("Branch456");
+  expect(diff.summaryText).toContain("The branch key is used as the file key.");
+});

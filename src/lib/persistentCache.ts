@@ -13,14 +13,15 @@ import { withCacheLock } from "./cacheLock.js";
 export const CACHE_SCHEMA_VERSION = 4;
 export const EXTRACTION_VERSION = 8;
 export const PROMPT_VERSION = 8;
+function nonBlank(value: string | undefined): string | undefined { return value?.trim() ? value : undefined; }
 function defaultCacheRoot(): string { return process.platform === "darwin"
   ? path.join(homedir(), "Library", "Caches", "figjam-context-mcp")
   : process.platform === "win32"
     ? path.join(process.env.LOCALAPPDATA ?? path.join(homedir(), "AppData", "Local"), "figjam-context-mcp")
-    : path.join(process.env.XDG_CACHE_HOME ?? path.join(homedir(), ".cache"), "figjam-context-mcp"); }
-function cacheRoot(): string { return expandHomePath(process.env.FIGJAM_MCP_CACHE_DIR ?? defaultCacheRoot()); }
+    : path.join(nonBlank(process.env.XDG_CACHE_HOME) ?? path.join(homedir(), ".cache"), "figjam-context-mcp"); }
+function cacheRoot(): string { return expandHomePath(nonBlank(process.env.FIGJAM_MCP_CACHE_DIR) ?? defaultCacheRoot()); }
 function cacheDirectory(): string { return path.join(cacheRoot(), "v4"); }
-function legacyRoot(): string { return expandHomePath(process.env.FIGJAM_MCP_CACHE_DIR ?? path.join(process.cwd(), ".cache", "figjam-mcp")); }
+function legacyRoot(): string { return expandHomePath(nonBlank(process.env.FIGJAM_MCP_CACHE_DIR) ?? path.join(process.cwd(), ".cache", "figjam-mcp")); }
 const HISTORY_LIMIT = 20;
 let mutationQueue: Promise<unknown> = Promise.resolve();
 const key = z.string().regex(/^[A-Za-z0-9_-]{1,128}$/);

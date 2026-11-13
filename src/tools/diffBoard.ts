@@ -1,5 +1,5 @@
 import type { DiffBoardInput, DiffBoardOutput } from "../schemas/diffBoard.js";
-import { parseBoardId } from "../schemas/common.js";
+import { figmaUrlNotices, parseBoardId } from "../schemas/common.js";
 import { assertBoardKeyCase, unknownBoardMessage } from "../lib/boardLookup.js";
 import { diffBoards } from "../lib/boardDiff.js";
 import { readBoardHistory, readCachedBoardState, readCachedBoard } from "../lib/persistentCache.js";
@@ -61,6 +61,7 @@ export async function diffBoard(rawInput: DiffBoardInput): Promise<DiffBoardOutp
   const diff = diffBoards(redactBoard(baseline), redactBoard(current));
 
   const [header, ...body] = diff.summaryText.split("\n\n");
+  const branchNotice = figmaUrlNotices(rawInput.boardId).find((notice) => notice.startsWith("The branch key"));
 
   return {
     ...diff,
@@ -76,6 +77,6 @@ export async function diffBoard(rawInput: DiffBoardInput): Promise<DiffBoardOutp
         ? `${header}\n\nNo changes since ${new Date(currentEntry.createdAt).toISOString()}: ` +
           `the last ingest at ${new Date(current.freshnessCheckedAt).toISOString()} found the board unchanged. ` +
           `The latest change follows.\n\n${body.join("\n\n")}`
-        : diff.summaryText),
+        : diff.summaryText) + (branchNotice ? `\n\n${branchNotice}` : ""),
   };
 }

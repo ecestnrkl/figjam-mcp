@@ -26,6 +26,12 @@ again to continue the image interpretation; finished clusters are reused, also
 with `forceFullIngest`. If a call timed out but was not cancelled, reconnect the
 server before retrying: ingests of the same board run one after another.
 
+## Connection and model errors
+
+A Figma connection failure names `api.figma.com` and its cause. Check DNS or the connection; if a proxy is configured, enable Node's environment proxy support with `NODE_USE_ENV_PROXY=1`. For certificate errors, try `NODE_USE_SYSTEM_CA=1`. The file request times out after 45 seconds by default; adjust `FIGMA_FILE_REQUEST_TIMEOUT_MS` and the client timeout together if necessary.
+
+A model HTTP 404 names the requested model and its setting (`LLM_TEXT_MODELS`, `LLM_FAST_TEXT_MODELS`, `LLM_VISION_MODELS`, or `LLM_MODEL_PRESET`). Check the model ID and its availability with the provider.
+
 ## Incomplete image interpretation
 
 `qualityReport.fallbackReasons` counts clusters without a vision summary by

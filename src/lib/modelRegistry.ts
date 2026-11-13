@@ -128,3 +128,12 @@ function withLegacyOverride(name: string, models: string[]): string[] {
 function unique(models: string[]): string[] {
   return [...new Set(models)];
 }
+
+/** The actual setting that contributed this candidate for a specific role. */
+export function modelSettingForRole(role: LlmRole, model: string): string {
+  const contains = (name: string) => process.env[name]?.split(",").some((item) => item.trim() === model);
+  const settings = role === "vision" ? ["LLM_VISION_MODEL", "LLM_VISION_MODELS"]
+    : role === "fastText" ? ["LLM_FAST_TEXT_MODELS", "LLM_TEXT_MODEL", "LLM_TEXT_MODELS"]
+    : ["LLM_TEXT_MODEL", "LLM_TEXT_MODELS"];
+  return settings.find(contains) ?? `LLM_MODEL_PRESET (${getModelConfig().preset})`;
+}

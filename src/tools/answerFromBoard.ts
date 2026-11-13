@@ -1,5 +1,5 @@
 import type { AnswerFromBoardInput, AnswerFromBoardOutput } from "../schemas/answerFromBoard.js";
-import { parseBoardId } from "../schemas/common.js";
+import { figmaUrlNotices, parseBoardId } from "../schemas/common.js";
 import { getBoardOrRestore, getBoardReadWarning } from "../lib/cache.js";
 import { assertBoardKeyCase, unknownBoardMessage } from "../lib/boardLookup.js";
 import { redactBoard } from "../lib/redact.js";
@@ -88,7 +88,7 @@ export async function answerFromBoard(
   if (!stored) throw new Error(await unknownBoardMessage(`Board "${input.boardId}" not found.`, input.boardId));
   // Snapshots cached before redaction existed must not reach the provider unredacted.
   const board = redactBoard(stored);
-  const warning = getBoardReadWarning(stored);
+  const warning = [getBoardReadWarning(stored), ...figmaUrlNotices(rawInput.boardId).filter((notice) => notice.startsWith("The branch key"))].filter(Boolean).join(" ");
   const withReadWarning = (output: AnswerFromBoardOutput): AnswerFromBoardOutput => warning
     ? { ...output, answer: `${warning}\n\n${output.answer}` } : output;
   const retrieved = retrieveEvidence(board, {
@@ -123,6 +123,7 @@ export async function answerFromBoard(
       { role: "system", content: ANSWER_SYSTEM_PROMPT },
       { role: "user", content: `${prefix}${context}${suffix}` },
     ], {
+      modelRole: "text",
       maxOutputTokens: getAnswerMaxOutputTokens(),
       reasoningEffort: getAnswerReasoningEffort(),
       requestTimeoutMs: getAnswerRequestTimeoutMs(),

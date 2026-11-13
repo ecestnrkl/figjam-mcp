@@ -1,6 +1,7 @@
+import { describeConnectionCause } from "./connectionErrors.js";
 import OpenAI from "openai";
 import { readIntEnv } from "./env.js";
-import { getModelConfig, getModelsForRole } from "./modelRegistry.js";
+import { getModelConfig, getModelsForRole, modelSettingForRole, type LlmRole } from "./modelRegistry.js";
 import { getLlmRequestTimeoutMs } from "./llmTimeouts.js";
 import { redactError, redactMessage, redactOutputSecrets, validateHeaderSecret } from "./secrets.js";
 import { missingEnvironmentHint } from "./envFile.js";
@@ -72,6 +73,7 @@ export class LlmInvalidJsonError extends LlmUnusableReplyError {
 }
 
 export interface ChatJsonOptions {
+  modelRole?: LlmRole;
   maxOutputTokens?: number;
   /** Explicit opt-in; omitted requests retain the selected model's reasoning default. */
   reasoningEffort?: LlmReasoningEffort;
@@ -255,8 +257,9 @@ export async function chatJson(
           throw abortReason(options.signal, error);
         }
         errors.push(error);
+        const normalized = normalizeLlmError(error, candidate, options.modelRole);
         options.onModelFailed?.(candidate, describeProviderError(error)
-          ?? withoutDiagnoseHint(errorMessage(normalizeLlmError(error))));
+          ?? withoutDiagnoseHint(errorMessage(normalized)));
         const recoverable = shouldTryNextModel(error) && remainingMs(requestOptions) >= MIN_REQUEST_TIMEOUT_MS;
         // A router picks a model per request, so one more request can reach a working one.
         // Rate limits have their own backoff in createCompletion.
@@ -270,7 +273,7 @@ export async function chatJson(
           );
           break;
         }
-        throw normalizeLlmError(error);
+        throw normalized;
       }
     }
   }
@@ -522,7 +525,14 @@ function withoutDiagnoseHint(message: string): string {
   return message.endsWith(` ${DIAGNOSE_HINT}`) ? message.slice(0, -DIAGNOSE_HINT.length - 1) : message;
 }
 
-function normalizeLlmError(error: unknown): unknown {
+function normalizeLlmError(error: unknown, model?: string, role?: LlmRole): unknown {
+  if (!(error instanceof LlmBaseUrlError) && role && model &&
+      (error instanceof OpenAI.APIError || error instanceof LlmRequestError) && error.status === 404) {
+    const message = redactMessage(`LLM request failed (HTTP 404): model ${model} was not found or has no available endpoint. Check ${modelSettingForRole(role, model)}. ${DIAGNOSE_HINT}`);
+    const result = new LlmRequestError(message, 404);
+    result.name = "LlmModelNotFoundError";
+    return result;
+  }
   if (!(error instanceof OpenAI.APIError)) return redactError(error);
   const { status } = error;
   const now = Date.now();
@@ -581,31 +591,6 @@ function hasErrorMessage(error: unknown): boolean {
 function baseUrlOrigin(): string {
   try { return new URL(process.env.LLM_BASE_URL!.trim()).origin; }
   catch { return "LLM_BASE_URL"; }
-}
-
-const TLS_CODES = /^(?:CERT_|DEPTH_ZERO_|SELF_SIGNED_|UNABLE_TO_|ERR_TLS_|ERR_SSL_|ERR_OSSL_|HOSTNAME_MISMATCH)/;
-
-function describeConnectionCause(error: unknown): string {
-  let code: string | undefined;
-  let text = "";
-  for (let current: unknown = error, depth = 0; current && typeof current === "object" && depth < 5; depth++) {
-    const link = current as { code?: unknown; message?: unknown; cause?: unknown; errors?: unknown };
-    if (!code && typeof link.code === "string") code = link.code;
-    if (!code && Array.isArray(link.errors)) {
-      const inner = link.errors.find((item: unknown) => typeof (item as { code?: unknown } | undefined)?.code === "string") as { code: string } | undefined;
-      code = inner?.code;
-    }
-    if (typeof link.message === "string") text += ` ${link.message}`;
-    current = link.cause;
-  }
-  if (code && /^(?:ENOTFOUND|EAI_AGAIN|EAI_NODATA|EAI_NONAME)$/.test(code)) return "host not found";
-  if (code === "ECONNREFUSED") return "connection refused";
-  if (code && /^(?:EHOSTUNREACH|ENETUNREACH|ENETDOWN|EHOSTDOWN)$/.test(code)) return "host unreachable";
-  if ((code && TLS_CODES.test(code)) || /\b(?:certificate|ssl|tls)\b/i.test(text)) {
-    return "TLS error; check the certificate and whether the URL should use http or https";
-  }
-  if (code && /^(?:ECONNRESET|EPIPE|UND_ERR_SOCKET)$/.test(code)) return "connection closed unexpectedly";
-  return "network error";
 }
 
 /**

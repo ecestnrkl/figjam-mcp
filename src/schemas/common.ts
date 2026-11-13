@@ -5,6 +5,7 @@ export const FIGMA_FILE_KEY_MIN_LENGTH = 6;
 export const FIGMA_FILE_KEY_MAX_LENGTH = 128;
 
 const FIGMA_FILE_KEY_PATTERN = /^[A-Za-z0-9]+$/;
+const FIGMA_BRANCH_PATH_PATTERN = /^\/(?:file|design|board)\/([A-Za-z0-9]+)\/branch\/([A-Za-z0-9]+)(?:\/[^/]+)?\/?$/;
 const FIGMA_FILE_PATH_PATTERN =
   /^\/(?:file|design|board|proto)\/([A-Za-z0-9]+)(?:\/[^/]+)?\/?$/;
 
@@ -34,11 +35,13 @@ export function parseFigmaUrl(value: string): FigmaUrlReference | undefined {
     return undefined;
   }
 
+  const authority = /^https:\/\/([^/?#]*)/i.exec(value.trim())?.[1];
   const hostname = url.hostname.toLowerCase();
   const isFigmaHost = hostname === "figma.com" || hostname.endsWith(".figma.com");
   if (
     url.protocol !== "https:" ||
     !isFigmaHost ||
+    authority?.includes("@") ||
     url.port !== "" ||
     url.username !== "" ||
     url.password !== ""
@@ -46,8 +49,10 @@ export function parseFigmaUrl(value: string): FigmaUrlReference | undefined {
     return undefined;
   }
 
+  const branch = FIGMA_BRANCH_PATH_PATTERN.exec(url.pathname);
   const match = FIGMA_FILE_PATH_PATTERN.exec(url.pathname);
-  const key = match?.[1];
+  if (branch && !figmaFileKeySchema.safeParse(branch[1]).success) return undefined;
+  const key = branch?.[2] ?? match?.[1];
   if (!key) {
     return undefined;
   }
@@ -56,6 +61,16 @@ export function parseFigmaUrl(value: string): FigmaUrlReference | undefined {
   if (!parsedKey.success) return undefined;
   const nodeId = url.searchParams.get("node-id")?.trim();
   return { fileKey: parsedKey.data, ...(nodeId ? { nodeId } : {}) };
+}
+
+/** Notices are shown only for trusted, validated URLs. */
+export function figmaUrlNotices(value: string): string[] {
+  if (!parseFigmaUrl(value)) return [];
+  const pathname = new URL(value.trim()).pathname;
+  const notices: string[] = [];
+  if (FIGMA_BRANCH_PATH_PATTERN.test(pathname)) notices.push("The branch key is used as the file key.");
+  if (/^\/(?:design|file|proto)\//.test(pathname)) notices.push("Clustering and reading order are designed for FigJam boards.");
+  return notices;
 }
 
 /** Returns the key only for canonical HTTPS Figma file URLs. */

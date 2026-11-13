@@ -286,6 +286,8 @@ support](https://forum.cursor.com/t/agent-acp-mcp-tools-call-times-out-at-60s-wi
 
 ## Using the tools
 
+Branch URLs use the branch key as the file key; design files can be ingested, but clustering and reading order are designed for FigJam boards.
+
 Then ask your assistant to ingest a board URL, for example *"Ingest
 https://www.figma.com/board/FILE_KEY/Name and list the open questions."*
 The `boardId` of every later call is the file key from that URL, or the URL

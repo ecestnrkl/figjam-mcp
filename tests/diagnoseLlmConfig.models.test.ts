@@ -65,3 +65,14 @@ describe("diagnostic model summary", () => {
     expect(result.textModels).toEqual(["unavailable", "actual-text"]);
   });
 });
+
+it("identifies the model role for each diagnostic 404", async () => {
+  chatJsonMock.mockImplementation(async (models, _messages, options) => {
+    const expected = options.schemaName === "diagnose_vision_json" ? "vision" : options.schemaName === "diagnose_fast_text_json" ? "fastText" : "text";
+    if (options.modelRole !== expected) throw new Error("missing model role");
+    options.onModelFailed(models[0], `HTTP 404 for ${models[0]} configured by ${expected}`);
+    throw new Error("HTTP 404");
+  });
+  const result = await diagnoseLlmConfig();
+  for (const role of ["vision", "fastText", "text"]) expect(result.summary).toContain(`configured by ${role}`);
+});

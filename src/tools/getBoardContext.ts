@@ -5,7 +5,7 @@ import {
   type GetBoardContextOutput,
   type ContextEvidence,
 } from "../schemas/getBoardContext.js";
-import { parseBoardId } from "../schemas/common.js";
+import { figmaUrlNotices, parseBoardId } from "../schemas/common.js";
 import { getBoardOrRestore, getBoardReadWarning } from "../lib/cache.js";
 import { assertBoardKeyCase, unknownBoardMessage } from "../lib/boardLookup.js";
 import { assertLinksOfBoard, conversionNotice, resolveNodeIds } from "../lib/nodeIds.js";
@@ -119,7 +119,7 @@ export async function getBoardContext(input: GetBoardContextInput, extra: { noti
   const hiddenSections = board.nodes.filter((node) => node.hiddenDescendantIds && options.nodeIds?.some(
     (id) => id === node.id || node.hiddenDescendantIds!.includes(id)));
   const hiddenNotice = hiddenSections.map((node) => `${sectionReference(node)}: ${hiddenSectionNotice(node.hiddenDescendantIds!.length)}.`).join(" ");
-  const notices = [readWarning, emptyNotice, hiddenNotice, conversionNotice(resolved?.conversions ?? []), ...(extra.notices ?? [])]
+  const notices = [readWarning, emptyNotice, hiddenNotice, ...figmaUrlNotices(parsed.boardId).filter((notice) => notice.startsWith("The branch key")), conversionNotice(resolved?.conversions ?? []), ...(extra.notices ?? [])]
     .filter((notice): notice is string => Boolean(notice));
   const retrieved = retrieveEvidence(board, {
     query: options.topic, nodeIds: options.nodeIds, outsideSections: options.outsideSections,

@@ -1943,3 +1943,25 @@ describe("protected credential table ingestion", () => {
     expect(board.clusters[0]).toMatchObject({ summarySource: "vision_llm", modelId: "vision-model" });
   });
 });
+
+it.each(["board", "design", "file"])("ingests the branch key of a %s URL and explains it once", async (kind) => {
+  const url = `https://www.figma.com/${kind}/Parent123/branch/Branch456/Example`;
+  const output = await ingestBoard({ figmaFileUrl: url, docStructureHint: "freeform", ingestMode: "max_speed" });
+  expect(output.boardId).toBe("Branch456");
+  expect(fetchFileTreeMock).toHaveBeenCalledWith("Branch456", expect.any(String), undefined);
+  expect(output.summary.match(/The branch key is used as the file key\./g)).toHaveLength(1);
+});
+
+it.each(["design", "file", "proto"])("explains the FigJam-specific clustering and reading order for %s files", async (kind) => {
+  const output = await ingestBoard({ figmaFileUrl: `https://www.figma.com/${kind}/AbC123/Fixture`, docStructureHint: "freeform", ingestMode: "max_speed" });
+  expect(output.summary).toContain("Clustering and reading order are designed for FigJam boards.");
+});
+
+it("reports the configured vision model when the provider returns a model 404", async () => {
+  const error = new LlmRequestError("LLM request failed (HTTP 404): model missing/vision was not found. Check LLM_VISION_MODELS.", 404);
+  error.name = "LlmModelNotFoundError";
+  refineClusterWithVisionMock.mockRejectedValue(error);
+  const output = await ingestBoard({ figmaFileUrl: "https://www.figma.com/board/AbC123/Fixture", docStructureHint: "freeform", ingestMode: "max_quality" });
+  expect(output.summary).toContain("missing/vision");
+  expect(output.summary).toContain("LLM_VISION_MODELS");
+});

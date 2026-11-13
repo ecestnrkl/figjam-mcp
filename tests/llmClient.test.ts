@@ -521,3 +521,21 @@ describe("chatJson", () => {
     expect(createMock).toHaveBeenCalledTimes(2);
   });
 });
+
+it.each([
+  ["text", "LLM_TEXT_MODELS", "text-missing"],
+  ["fastText", "LLM_FAST_TEXT_MODELS", "fast-missing"],
+  ["fastText", "LLM_TEXT_MODELS", "inherited-missing"],
+  ["vision", "LLM_VISION_MODELS", "vision-missing"],
+  ["text", "LLM_MODEL_PRESET", "openrouter/free"],
+] as const)("names the missing %s model and its %s setting", async (role, setting, model) => {
+  for (const name of ["LLM_TEXT_MODEL", "LLM_VISION_MODEL", "LLM_TEXT_MODELS", "LLM_FAST_TEXT_MODELS", "LLM_VISION_MODELS"]) vi.stubEnv(name, "");
+  if (setting !== "LLM_MODEL_PRESET") vi.stubEnv(setting, model);
+  else vi.stubEnv("LLM_MODEL_PRESET", "student-free");
+  createMock.mockRejectedValue(providerError(404, "Model not found"));
+  const onModelFailed = vi.fn();
+  const error = await chatJson(model, MESSAGES, { modelRole: role, onModelFailed }).catch((err: Error) => err);
+  expect(error).toMatchObject({ status: 404, message: expect.stringContaining(model) });
+  expect((error as Error).message).toContain(setting);
+  expect(onModelFailed).toHaveBeenCalled();
+});

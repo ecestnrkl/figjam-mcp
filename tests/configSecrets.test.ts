@@ -128,7 +128,9 @@ describe("configured secrets at external error boundaries", () => {
   it("sanitizes unexpected Figma fetch errors with argument and configured secrets", async () => {
     fetchMock.mockRejectedValue(new Error(`Failure ${argumentKey}, ${apiKey}, ${figmaKey}.`));
     const { fetchFileTree } = await import("../src/lib/figmaApi.js");
-    await expect(fetchFileTree("SyntheticSecrets", argumentKey)).rejects.toThrow("Failure [redacted], [redacted], [redacted].");
+    const error = await fetchFileTree("SyntheticSecrets", argumentKey).then(() => { throw new Error("Expected failure"); }, (cause: Error) => cause);
+    expect(error.message).toContain("api.figma.com");
+    for (const secret of [argumentKey, apiKey, figmaKey]) expect(error.message).not.toContain(secret);
   });
 
   it("keeps SDK debug diagnostics on stderr with configured secrets redacted", async () => {

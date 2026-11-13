@@ -1,7 +1,7 @@
 import { withoutHiddenSectionArtifacts } from "../lib/hiddenSections.js";
 import type { IngestBoardInput, IngestBoardOutput } from "../schemas/ingestBoard.js";
 import { setImmediate as yieldToRequests } from "node:timers/promises";
-import { extractFigmaFileKeyFromUrl, FIGMA_URL_HINT } from "../schemas/common.js";
+import { extractFigmaFileKeyFromUrl, figmaUrlNotices, FIGMA_URL_HINT } from "../schemas/common.js";
 import type { Cluster, IngestFocusReport, IngestMode, IngestQualityReport, NormalizedNode, RefinedCluster, BoardData, OperationOptions } from "../types.js";
 import { fetchFileTree, fetchRenderUrls, downloadRenders, fetchImageRefs, downloadOriginals, FigmaApiError, FigmaDownloadBudgetError,
   FigmaRenderUnavailableError, FigmaTimeoutError, IMAGE_MAX_BYTES, INGEST_IMAGE_MAX_BYTES, type OriginalImage, type RenderUrls } from "../lib/figmaApi.js";
@@ -118,7 +118,7 @@ async function performIngest(input: IngestBoardInput, options: OperationOptions)
   const minVisionSlotMs = ingestMode === "max_speed" ? 0 : readIntEnv("INGEST_BOARD_MIN_VISION_SLOT_MS", 10000, 0);
   // Validate the mode's configuration before spending a Figma file request,
   // even when the downloaded board would contain no vision clusters.
-  readIntEnv("FIGMA_FILE_REQUEST_TIMEOUT_MS", 60000, 1000);
+  readIntEnv("FIGMA_FILE_REQUEST_TIMEOUT_MS", 45000, 1000);
   if (ingestMode !== "max_speed") {
     getVisionMaxOutputTokens();
     getVisionRequestTimeoutMs();
@@ -151,7 +151,7 @@ async function performIngest(input: IngestBoardInput, options: OperationOptions)
   const knownIds = new Set(nodes.map(node => node.id));
   const focusIds = input.focusNodeIds
     ? resolveNodeIds(input.focusNodeIds, fileKey, "focusNodeIds", "figmaFileUrl", id => knownIds.has(id)) : undefined;
-  const conversionNote = conversionNotice(focusIds?.conversions ?? []);
+  const conversionNote = [conversionNotice(focusIds?.conversions ?? []), ...figmaUrlNotices(input.figmaFileUrl)].filter(Boolean).join(" ");
   const figmaLastModified = extractFigmaLastModified(rawTree);
   const version = (rawTree as { version?: unknown } | null)?.version;
   const figmaVersion = typeof version === "string" ? version : undefined;
@@ -256,6 +256,7 @@ async function performIngest(input: IngestBoardInput, options: OperationOptions)
   // Successful durations of this ingest: a whole cluster, and its model step alone.
   const clusterDurations: number[] = [];
   const modelDurations: number[] = [];
+  const modelFailures = new Set<string>();
   const renderRequests: Array<Promise<RenderUrls>> = [];
   // Render requests are shared by several clusters, so they end with the vision
   // phase or the ingest rather than with one cluster's work.
@@ -436,6 +437,7 @@ async function performIngest(input: IngestBoardInput, options: OperationOptions)
         clusterDurations.push(finishedAt - clusterStartedAt);
       } catch (error) {
         signal?.throwIfAborted();
+        if (error instanceof LlmRequestError && error.name === "LlmModelNotFoundError") modelFailures.add(error.message);
         const reason = classifyVisionFailure(error, stage);
         const retryDelay = reason !== "payment" && (error instanceof FigmaApiError || error instanceof LlmRequestError) ? error.retryAfter : undefined;
         const retryAt = reason !== "payment" && (error instanceof FigmaApiError || error instanceof LlmRequestError) ? error.retryAt : undefined;
@@ -468,7 +470,7 @@ async function performIngest(input: IngestBoardInput, options: OperationOptions)
   await progress("persist", 4);
   const historyReset = await publishBoard(board, signal);
   await complete();
-  return ingestResult(board, contentChanged, historyReset, conversionNote);
+  return ingestResult(board, contentChanged, historyReset, [conversionNote, ...modelFailures].filter(Boolean).join(" "));
 }
 async function publishBoard(board: BoardData, signal?: AbortSignal): Promise<boolean> {
   signal?.throwIfAborted();
