@@ -113,3 +113,54 @@ describe("hidden board content", () => {
     expect(buildClusterRelations(extractConnectorEdges(hidden), partitionedBoardClusters(hidden))).toEqual([]);
   });
 });
+
+const hiddenContents = () => [
+  sticky("secret-note", "HIDDENZEPHYR synthetic notes", 2000),
+  image("secret-image", 2200),
+  { id: "secret-table", name: "Table", type: "TABLE", children: [
+    { id: "Tsecret-table;row-1;col-1", name: "Cell", type: "TABLE_CELL", characters: "HIDDENZEPHYR synthetic cell" },
+  ] },
+  { id: "secret-arrow", name: "Arrow", type: "CONNECTOR", characters: "HIDDENZEPHYR synthetic arrow", connectorStart: { endpointNodeId: "secret-note" }, connectorEnd: { endpointNodeId: "public" } },
+  { id: "nested", name: "Nested", type: "SECTION", children: [sticky("nested-note", "HIDDENZEPHYR nested notes")] },
+];
+const section = (hidden: boolean) => ({ id: "section", name: "Private section", type: "SECTION", sectionContentsHidden: hidden, children: hiddenContents() });
+
+it("keeps hidden section contents and URL passwords out of the full ingest and read pipeline", async () => {
+  fileTree.mockResolvedValue(tree([sticky("public", "postgres://admin:synthetic-value@db.test/plan"), section(true)]));
+  const result = await ingestBoard(input);
+  const context = await getBoardContext({ boardId: fileKey });
+  const direct = await Promise.all(["section", "secret-note", "Tsecret-table;row-1;col-1", "nested-note"].map(id => getBoardContext({ boardId: fileKey, nodeIds: [id] })));
+  const board = await readLatestBoard(fileKey);
+  expect(board?.nodes.map(node => node.id)).toEqual(["page", "public", "section"]);
+  expect(result.summary).toContain("Contents hidden in FigJam; 7 elements not read");
+  expect(context.text).toContain("Contents hidden in FigJam; 7 elements not read");
+  for (const output of direct) expect(output.text).toContain("Contents hidden in FigJam; 7 elements not read");
+  expect(JSON.stringify(chatJson.mock.calls)).toContain("postgres://admin:[redacted]@db.test");
+  expect(imageFills).not.toHaveBeenCalled();
+  expect(renders.mock.calls.flatMap(call => call[1] as string[])).toEqual(["public"]);
+  const outputs = JSON.stringify({ result, context, direct, board, provider: chatJson.mock.calls });
+  expect(outputs).not.toMatch(/HIDDENZEPHYR|synthetic-value/);
+  for (const file of await readdir(cacheDirectory, { recursive: true })) {
+    if (file.endsWith(".json")) expect(await readFile(path.join(cacheDirectory, file), "utf8")).not.toMatch(/HIDDENZEPHYR|synthetic-value/);
+  }
+  const { flattenNodeTree } = await import("../src/lib/nodeTree.js");
+  const changed = section(true);
+  changed.children[0] = sticky("secret-note", "A different hidden value");
+  expect(flattenNodeTree(tree([section(true)]))).toEqual(flattenNodeTree(tree([changed])));
+});
+
+it.each([true, false])("reports a section visibility transition (hidden=%s) without reporting its children", async (hidden) => {
+  const { diffBoard } = await import("../src/tools/diffBoard.js");
+  fileTree.mockResolvedValueOnce(tree([sticky("public", "Public planning notes"), section(!hidden)]));
+  await ingestBoard({ ...input, ingestMode: "max_speed" });
+  fileTree.mockResolvedValue(tree([sticky("public", "Public planning notes"), section(hidden)]));
+  await ingestBoard({ ...input, ingestMode: "max_speed" });
+  const output = await diffBoard({ boardId: fileKey, compareTo: 1 });
+  expect(output.summaryText).toContain(`Section section: contents ${hidden ? "hidden" : "shown"} in FigJam`);
+  expect(JSON.stringify(output)).not.toMatch(/HIDDENZEPHYR|secret-note|secret-table|secret-arrow/);
+  if (hidden) {
+    await ingestBoard({ ...input, ingestMode: "max_speed" });
+    const latest = await readLatestBoard(fileKey);
+    expect(JSON.stringify(latest)).not.toContain("HIDDENZEPHYR");
+  }
+});

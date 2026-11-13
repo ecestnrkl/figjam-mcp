@@ -59,7 +59,7 @@ describe("pre-0.12 snapshot compatibility with real persistence", () => {
       figmaFileUrl: `https://www.figma.com/board/${fixture.fileKey}/Fixture`,
       docStructureHint: "freeform", ingestMode: "max_speed",
     });
-    expect((await readLatestBoard(fixture.fileKey))?.extractionVersion).toBe(7);
+    expect((await readLatestBoard(fixture.fileKey))?.extractionVersion).toBe(8);
     const history = await readBoardHistory(fixture.fileKey);
     expect(history).toHaveLength(2);
     expect(history[0]?.snapshotId).not.toBe(result.snapshotId);
@@ -83,7 +83,7 @@ describe("pre-0.12 snapshot compatibility with real persistence", () => {
     });
     await persistBoard({ ...legacy, cacheKey: "rewritten", createdAt: Date.now() });
     const written = (await readLatestBoard(fixture.fileKey))!;
-    expect(written.extractionVersion).toBe(7);
+    expect(written.extractionVersion).toBe(8);
     expect(written.nodeHash).toBe(hashNormalizedNodes(written.nodes));
     expect(written.nodeHash).not.toBe(legacy.nodeHash);
     expect(console.error).not.toHaveBeenCalled();

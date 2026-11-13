@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { evidenceBoard, textNode } from "./fixtures/retrieval.js";
 import { flattenNodeTree } from "../src/lib/nodeTree.js";
-import { hasProtectedTableValue, redactBoard, redactCredentials, redactTableCells } from "../src/lib/redact.js";
+import { hasProtectedTableValue, redactBoard, redactCredentials, redactMessageCredentials, redactTableCells } from "../src/lib/redact.js";
 
 const { chatJsonMock, readBoardHistoryMock, readCachedBoardMock } = vi.hoisted(() => ({
   chatJsonMock: vi.fn(), readBoardHistoryMock: vi.fn(), readCachedBoardMock: vi.fn(),
@@ -419,5 +419,36 @@ describe("protected credential table snapshots", () => {
     const diff = await diffBoard({ boardId, compareTo: 1 });
     expect(diff.newClusters).toHaveLength(1);
     for (const result of [secured, context, full, prompt, answer, diff]) expect(JSON.stringify(result)).not.toContain(secret);
+  });
+});
+
+
+describe("URL credential redaction", () => {
+  it.each([
+    "https://ece@host", "alice@example.test", "postgres://u:${DB_PASS}@host", "postgres://u:{{secret}}@host",
+    "postgres://u:<password>@host", "postgres://u:***@host", "postgres://u:xxx@host",
+    "postgres://u:password@host", "postgres://u:TBD@host",
+  ])("redacts URL passwords in both paths and preserves %s", (unchanged) => {
+    const input = `postgres://admin:synthetic-value@db.test/a redis://:synthetic-value@host ${unchanged}`;
+    const expected = `postgres://admin:[redacted]@db.test/a redis://:[redacted]@host ${unchanged}`;
+    expect(redactCredentials(input)).toBe(expected);
+    expect(redactMessageCredentials(input)).toBe(expected);
+  });
+
+  it("handles long URL-like input without excessive backtracking", () => {
+    const input = "a".repeat(100_000) + "://user:synthetic-value@host";
+    expect(redactCredentials(input)).toContain("://user:[redacted]@host");
+    expect(redactMessageCredentials(input)).toContain("://user:[redacted]@host");
+  });
+
+  it("redacts a stored model summary and label when read", async () => {
+    const board = evidenceBoard("UrlLegacy123", [textNode("1:1", "Public text")]);
+    board.clusters[0]!.label = "postgres://admin:synthetic-value@db.test";
+    board.clusters[0]!.summary = "The URL is postgres://admin:synthetic-value@db.test.";
+    board.clusters[0]!.summarySource = "vision_llm";
+    setBoard("UrlLegacy123", board);
+    const output = await getBoardContext({ boardId: "UrlLegacy123" });
+    expect(JSON.stringify(output)).toContain("postgres://admin:[redacted]@db.test");
+    expect(JSON.stringify(output)).not.toContain("synthetic-value");
   });
 });

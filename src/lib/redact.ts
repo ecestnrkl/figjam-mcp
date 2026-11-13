@@ -31,6 +31,36 @@ const KEY_FORMATS = [
   /(?<![A-Za-z0-9_])xox[abprs]-[A-Za-z0-9-]{10,}/g,
 ];
 
+// Scan authorities once instead of backtracking over arbitrarily long URL-like text.
+function redactUrlPasswords(text: string): string {
+  let result = "";
+  let copied = 0;
+  let position = 0;
+  while (true) {
+    const separator = text.indexOf("://", position);
+    if (separator < 0) break;
+    let start = separator;
+    while (start > copied && /[A-Za-z0-9+.-]/.test(text[start - 1]!)) start--;
+    const scheme = text.slice(start, separator);
+    let end = separator + 3;
+    while (end < text.length && !/[\s/?#"']/.test(text[end]!)) end++;
+    const authority = text.slice(separator + 3, end);
+    const at = authority.lastIndexOf("@");
+    const colon = authority.indexOf(":");
+    if (/^[A-Za-z][A-Za-z0-9+.-]*$/.test(scheme) && colon >= 0 && at > colon && at < authority.length - 1) {
+      const password = authority.slice(colon + 1, at);
+      const placeholder = /^(?:\$\{[^}]*\}|\{\{[^}]*\}\}|<[^>]*>|\*\*\*|xxx|password|TBD|\[redacted\])$/i.test(password);
+      if (password && !placeholder) {
+        const passwordStart = separator + 3 + colon + 1;
+        result += text.slice(copied, passwordStart) + REDACTED;
+        copied = separator + 3 + at;
+      }
+    }
+    position = Math.max(end, separator + 3);
+  }
+  return result + text.slice(copied);
+}
+
 const redactedBoards = new WeakMap<BoardData, BoardData>();
 
 export function isCredentialRedactionEnabled(): boolean {
@@ -40,7 +70,7 @@ export function isCredentialRedactionEnabled(): boolean {
 /** Redacts explicit credential values, preserving already-redacted summaries. */
 export function redactCredentials(text: string): string {
   if (!text || !isCredentialRedactionEnabled()) return text;
-  let result = text.replace(PRIVATE_KEY_BLOCK, REDACTED);
+  let result = redactUrlPasswords(text).replace(PRIVATE_KEY_BLOCK, REDACTED);
   // Keep line separators and indentation while checking the next non-empty line.
   const lines = result.split(/(\r\n|\r|\n)/);
   for (let i = 0; i < lines.length; i += 2) {
@@ -62,7 +92,7 @@ export function redactCredentials(text: string): string {
 /** Preserve the pre-existing credential filtering at external error boundaries. */
 export function redactMessageCredentials(text: string): string {
   if (!text || !isCredentialRedactionEnabled()) return text;
-  let result = text.replace(PRIVATE_KEY_BLOCK, REDACTED);
+  let result = redactUrlPasswords(text).replace(PRIVATE_KEY_BLOCK, REDACTED);
   for (const pattern of KEY_FORMATS) result = result.replace(pattern, REDACTED);
   return result.replace(MESSAGE_LABELED_VALUE, `$1${REDACTED}`);
 }

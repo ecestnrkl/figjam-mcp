@@ -126,6 +126,24 @@ const READABLE_TYPES: Record<string, string> = {
 };
 
 export function diffBoards(baseline: BoardData, current: BoardData): BoardDiffResult {
+  const previousSections = new Map(baseline.nodes.filter((node) => node.type === "SECTION").map((node) => [node.id, node]));
+  const currentSections = new Map(current.nodes.filter((node) => node.type === "SECTION").map((node) => [node.id, node]));
+  const visibilityChanges = [...currentSections.values()].flatMap((node) => {
+    const previous = previousSections.get(node.id);
+    if (!previous || Boolean(previous.hiddenDescendantIds) === Boolean(node.hiddenDescendantIds)) return [];
+    return [{ id: node.id, hidden: Boolean(node.hiddenDescendantIds) }];
+  });
+  if (visibilityChanges.length) {
+    const changed = new Set(visibilityChanges.map((change) => change.id));
+    const filter = (board: BoardData): BoardData => {
+      const removed = new Set(board.nodes.filter((node) => node.sectionIds?.some((id) => changed.has(id) && id !== node.id)).map((node) => node.id));
+      const clusters = board.clusters.filter((cluster) => !cluster.nodeIds.some((id) => removed.has(id)));
+      return { ...board, nodes: board.nodes.filter((node) => !removed.has(node.id)), clusters,
+        connectorEdges: board.connectorEdges?.filter((edge) => !removed.has(edge.connectorId) && !removed.has(edge.fromNodeId) && !removed.has(edge.toNodeId)) };
+    };
+    baseline = filter(baseline);
+    current = filter(current);
+  }
   // Fingerprint algorithms change with extraction rules. Compare stored evidence
   // across versions without treating the algorithm change as a visual edit.
   if ((baseline.extractionVersion ?? 4) !== (current.extractionVersion ?? 4)) {
@@ -169,7 +187,8 @@ export function diffBoards(baseline: BoardData, current: BoardData): BoardDiffRe
     modifiedClusters: clusterDiff.modifiedClusters.slice(0, CLUSTER_LIMIT),
     addedConnections: connectionDiff.added.slice(0, CONNECTION_LIMIT),
     removedConnections: connectionDiff.removed.slice(0, CONNECTION_LIMIT),
-    summaryText: buildSummaryText(baseline, current, stats, clusterDiff, connectionDiff, nodeDiff, tableCellChanges),
+    summaryText: buildSummaryText(baseline, current, stats, clusterDiff, connectionDiff, nodeDiff, tableCellChanges) +
+      visibilityChanges.map((change) => `\n\nSection ${change.id}: contents ${change.hidden ? "hidden" : "shown"} in FigJam.`).join(""),
     tableCellChanges: tableCellChanges.slice(0, TABLE_CELL_LIMIT).map((change) => {
       const [previousText, currentText] = textExcerpts(collapseWhitespace(change.previousText), collapseWhitespace(change.currentText));
       return { ...change, previousText, currentText };

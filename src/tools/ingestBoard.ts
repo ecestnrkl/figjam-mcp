@@ -25,7 +25,7 @@ import { getVisionMaxOutputTokens } from "../lib/llmOutputBudgets.js";
 import { getVisionRequestTimeoutMs } from "../lib/llmTimeouts.js";
 import { describeModelConfig } from "../lib/modelRegistry.js";
 import { assertLinksOfBoard, conversionNotice, resolveNodeIds } from "../lib/nodeIds.js";
-import { sectionGuide } from "../lib/sections.js";
+import { hiddenSectionNotice, sectionGuide } from "../lib/sections.js";
 import { enclosingIdsLookup, retrieveEvidence } from "../lib/evidence.js";
 import {
   buildBoardCacheKey,
@@ -939,6 +939,7 @@ function buildSummary(board: BoardData, qualityReport: IngestQualityReport, cont
       (outsideSections ? ` ${outsideSections} excerpt${outsideSections === 1 ? " lies" : "s lie"} outside sections; read ` +
         `${outsideSections === 1 ? "it" : "them"} with get_board_context and outsideSections: true.` : "")
     : `${clusters.length} cluster${clusters.length === 1 ? "" : "s"} - ${shownLabels} ${settings}.`;
+  const hiddenNote = board.nodes.filter((node) => node.hiddenDescendantIds).map((node) => ` Section ${node.id}: ${hiddenSectionNotice(node.hiddenDescendantIds!.length)}.`).join("");
   const fallbackNote =
     qualityReport.fallbackCount > 0
       ? ` Visual interpretation is incomplete for ${qualityReport.fallbackCount} cluster${qualityReport.fallbackCount === 1 ? "" : "s"}: ${describeFallbackReasons(qualityReport.fallbackReasons)}.`
@@ -960,7 +961,7 @@ function buildSummary(board: BoardData, qualityReport: IngestQualityReport, cont
       + ` ${requests.renders} render request${requests.renders === 1 ? "" : "s"} (Tier 1).` : "";
   const focusNote = qualityReport.focus ? describeFocus(qualityReport.focus, ingestMode) : "";
   return (
-    `Ingested board ${fileKey} (snapshot ${snapshotId}): ${overview}${changeNote}${cacheNote}${reuseNote}`
+    `Ingested board ${fileKey} (snapshot ${snapshotId}): ${overview}${hiddenNote}${changeNote}${cacheNote}${reuseNote}`
     + ` ${qualityReport.visionClusters} visually interpreted; ${qualityReport.deterministicClusters} ${qualityReport.deterministicClusters === 1 ? "uses" : "use"} extracted text.${requestNote}${focusNote}${fallbackNote}`
     + (board.persistenceWarning ? ` ${board.persistenceWarning}` : "")
   );
