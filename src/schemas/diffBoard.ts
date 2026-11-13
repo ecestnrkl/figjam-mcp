@@ -25,6 +25,7 @@ export const diffBoardInputSchema = z.object(diffBoardInputShape);
 export type DiffBoardInput = z.infer<typeof diffBoardInputSchema>;
 
 const clusterSectionSchema = z.string().optional().describe("Name of the innermost section around the cluster; absent outside sections");
+const regroupedSchema = z.literal(true).optional().describe("All members exist in both snapshots");
 
 export const diffBoardOutputShape = {
   boardId: figmaFileKeySchema,
@@ -37,6 +38,7 @@ export const diffBoardOutputShape = {
     addedNodes: z.number().int().nonnegative(),
     removedNodes: z.number().int().nonnegative(),
     editedNodes: z.number().int().nonnegative(),
+    movedNodes: z.number().int().nonnegative().describe("All nodes that changed section or page, including edited nodes"),
     newClusters: z.number().int().nonnegative(),
     removedClusters: z.number().int().nonnegative(),
     modifiedClusters: z.number().int().nonnegative(),
@@ -44,8 +46,8 @@ export const diffBoardOutputShape = {
     addedConnections: z.number().int().nonnegative(),
     removedConnections: z.number().int().nonnegative(),
   }),
-  newClusters: z.array(z.object({ label: z.string(), summary: z.string(), section: clusterSectionSchema })),
-  removedClusters: z.array(z.object({ label: z.string(), summary: z.string(), section: clusterSectionSchema })),
+  newClusters: z.array(z.object({ label: z.string(), summary: z.string(), section: clusterSectionSchema, regrouped: regroupedSchema })),
+  removedClusters: z.array(z.object({ label: z.string(), summary: z.string(), section: clusterSectionSchema, regrouped: regroupedSchema })),
   modifiedClusters: z.array(
     z.object({
       label: z.string(),
@@ -74,17 +76,22 @@ export const diffBoardOutputShape = {
   })).optional(),
   nodeChanges: z.array(z.object({
     nodeId: z.string(),
-    changeType: z.enum(["added", "removed", "edited"]),
+    changeType: z.enum(["added", "removed", "edited", "moved"]),
     nodeType: z.string(),
     name: z.string().optional(),
     previousName: z.string().optional(),
     sectionId: z.string().optional().describe("Innermost section; absent outside sections"),
     section: z.string().optional(),
+    previousSectionId: z.string().optional().describe("Origin section ID for a moved node"),
+    previousSection: z.string().optional().describe("Origin section name for a moved node"),
+    previousPageId: z.string().optional().describe("Origin page ID when the page changes"),
+    pageId: z.string().optional().describe("Destination page ID when the page changes"),
     previousText: z.string().optional().describe("Whitespace-collapsed; only the changed part of a long text"),
     currentText: z.string().optional().describe("Whitespace-collapsed; only the changed part of a long text"),
     url: z.string(),
-    changes: z.array(z.enum(["text", "name", "image", "rotation", "type", "appearance"])).optional(),
-  })).optional().describe("Edited, added, then removed nodes in reading order; read whole texts with get_board_context and nodeIds"),
+    changes: z.array(z.enum(["text", "name", "image", "rotation", "type", "appearance", "size", "moved"])).optional()
+      .describe("Size means the node was resized; its appearance may also have changed"),
+  })).optional().describe("Edited, moved, added, then removed nodes in reading order; read whole texts with get_board_context and nodeIds"),
   nodeChangesOmitted: z.number().int().positive().optional().describe("Changed nodes beyond the first 100"),
   newClustersOmitted: z.number().int().positive().optional().describe("New clusters beyond the first 20"),
   removedClustersOmitted: z.number().int().positive().optional().describe("Removed clusters beyond the first 20"),
