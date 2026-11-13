@@ -13,6 +13,8 @@ It also verifies the package on exactly Node 22.12.0 and evaluates the synthetic
 retrieval/change fixtures offline on Linux/Node 24. Provider evaluations remain
 explicit opt-in and require separate review of the generated answers.
 
+The weekly published-package smoke test checks fresh production dependencies; if it fails, identify the dependency cause, open an issue and prepare a patch release.
+
 `python3 scripts/generate-pipeline-gif.py` regenerates `docs/pipeline.gif`
 (needs Python 3 with Pillow and the DejaVu fonts).
 
