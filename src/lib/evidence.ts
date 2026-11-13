@@ -490,13 +490,45 @@ function tableUnits(entries: IndexedEvidence[]): IndexedEvidence[][] {
   return units;
 }
 
+/** Ranks for independent single-scope reads, grouped in one pass over the evidence index. */
+export function scopeEvidenceRanks(board: BoardData, scopeIds: ReadonlySet<string>): Map<string, Map<string, number>> {
+  if (!scopeIds.size) return new Map();
+  const groups = new Map<string, IndexedEvidence[]>([...scopeIds].map((id) => [id, []]));
+  const containers = new Set(readableContainerIds(board, [...scopeIds]));
+  const { enclosing } = boardLookups(board);
+  const readInOrder = createReadingOrder(board);
+  for (const entry of getIndex(board).entries) {
+    const { evidence, cellIds } = entry;
+    const add = (id: string) => {
+      const group = groups.get(id);
+      if (group && group.at(-1) !== entry) group.push(entry);
+    };
+    add(evidence.nodeId);
+    if (evidence.renderNodeId) add(evidence.renderNodeId);
+    for (const id of cellIds ?? []) add(id);
+    for (const id of enclosing(evidence.renderNodeId ?? evidence.nodeId)) {
+      if (containers.has(id)) add(id);
+    }
+  }
+  // Sort each scope independently. Removing nodes from a page-wide sort can
+  // change which items overlap in a row band or break ties in cluster order.
+  return new Map([...groups].map(([id, group]) => {
+    const ordered = containers.has(id) ? contentFirst(readInOrder(group), (entry) => entry.evidence) : group;
+    return [id, new Map(ordered.map(({ evidence }, index) => [evidence.evidenceId, index]))];
+  }));
+}
+
 /** Read groups and their source nodes by position; a node's rows and chunks keep their index order. */
 function readingOrder(board: BoardData, entries: IndexedEvidence[]): IndexedEvidence[] {
   if (entries.length < 2) return entries;
+  return createReadingOrder(board)(entries);
+}
+
+function createReadingOrder(board: BoardData): (entries: IndexedEvidence[]) => IndexedEvidence[] {
   const clustersById = new Map(board.clusters.map((cluster) => [cluster.id, cluster]));
   const nodesById = new Map(board.nodes.map((node) => [node.id, node]));
   const pages = pagePositions(board.nodes);
-  return inClusterReadingOrder(entries, ({ evidence }) => {
+  return (entries) => inClusterReadingOrder(entries, ({ evidence }) => {
     const nodeId = evidence.renderNodeId ?? evidence.nodeId;
     return {
       nodeId, bounds: nodesById.get(nodeId) ?? nodesById.get(evidence.nodeId),

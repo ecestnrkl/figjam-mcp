@@ -93,7 +93,8 @@ export const questionSchema = z
   .string()
   .trim()
   .min(1, "question must not be empty")
-  .max(2000, "question must be at most 2000 characters");
+  .max(2000, "question must be at most 2000 characters")
+  .describe("One specific question using the board's words and language (1–2000 characters after trimming)");
 
 export const topicSchema = z
   .string()

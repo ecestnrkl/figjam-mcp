@@ -13,8 +13,8 @@ import { readBoardHistory } from "../lib/persistentCache.js";
 import { redactBoard } from "../lib/redact.js";
 import {
   boundedText, connectionsForEvidence, countConnectionsForEvidence, enclosingIdsLookup, isGeneratedPlaceholder,
-  formatEvidenceConnection, MAX_CONTEXT_RESPONSE_BYTES, readableContainerIds,
-  evidenceTokens, similarBoardWords, firstTableRow, knownNodeIds, retrieveEvidence, snapshotIdForBoard, tableCellPositions, unknownNodeIds, type Evidence,
+  formatEvidenceConnection, MAX_CONTEXT_RESPONSE_BYTES, readableContainerIds, scopeEvidenceRanks,
+  evidenceTokens, similarBoardWords, firstTableRow, knownNodeIds, retrieveEvidence, snapshotIdForBoard, tableCellPositions, type Evidence, type EvidenceResult,
 } from "../lib/evidence.js";
 import { sectionReference, hiddenSectionNotice, SectionIndex } from "../lib/sections.js";
 import { inReadingOrder } from "../lib/readingOrder.js";
@@ -77,6 +77,34 @@ export interface BoardContextResult {
   structuredContent: GetBoardContextOutput;
 }
 
+interface OverviewGroup {
+  name: string;
+  id: string;
+  ancestors: Array<{ name: string; id: string }>;
+  page?: { name: string; id: string };
+  ranks?: Map<string, number>;
+}
+
+interface OverviewLayout {
+  groups: Map<string, OverviewGroup>;
+  groupOf: Map<string, string>;
+  sectionOrder: Map<string, number>;
+  ownerByEvidence: Map<string, number>;
+  normalized: Map<string, string>;
+}
+
+interface BoardReadIndex {
+  nodesById: Map<string, BoardData["nodes"][number]>;
+  clustersById: Map<string, RefinedCluster>;
+  hiddenSections: BoardData["nodes"];
+  knownIds?: Set<string>;
+  page?: { id: string; retrieved: EvidenceResult; fingerprint: string; layout?: OverviewLayout };
+}
+
+// Snapshot objects are immutable. Keep only the last page read per board so
+// cursor calls can reuse its order without retaining a result for every scope.
+const boardReadIndexes = new WeakMap<BoardData, BoardReadIndex>();
+
 /** Shortest prefix of an excerpt that is still worth returning instead of an error. */
 const MIN_SHORTENED_EXCERPT_CHARS = 100;
 /** Beyond this many remaining pages, reading sections by ID beats paging. */
@@ -109,24 +137,38 @@ export async function getBoardContext(input: GetBoardContextInput, extra: { noti
   if (!stored) throw new Error(await unknownBoardMessage(`Board "${boardId}" not found.`, boardId));
   // Snapshots cached before redaction existed are redacted here too.
   const board = redactBoard(stored);
+  let readIndex = boardReadIndexes.get(board);
+  if (!readIndex) {
+    readIndex = {
+      nodesById: new Map(board.nodes.map((node) => [node.id, node])),
+      clustersById: new Map(board.clusters.map((cluster) => [cluster.id, cluster])),
+      hiddenSections: board.nodes.filter((node) => node.hiddenDescendantIds),
+    };
+    boardReadIndexes.set(board, readIndex);
+  }
+  const { nodesById, clustersById } = readIndex;
   // IDs in link form are read as the IDs they stand for; a link of the board names its node.
   const requestedIds = requested.nodeIds ?? (linkNodeId && !requested.topic && !requested.outsideSections ? [linkNodeId] : undefined);
-  const knownIds = requestedIds ? knownNodeIds(board) : undefined;
+  const knownIds = requestedIds ? (readIndex.knownIds ??= knownNodeIds(board)) : undefined;
   const resolved = requestedIds ? resolveNodeIds(requestedIds, boardId, "nodeIds", "boardId", (id) => knownIds!.has(id)) : undefined;
   const options = { ...requested, ...(resolved ? { nodeIds: resolved.ids } : {}) };
   const readWarning = getBoardReadWarning(stored);
   const emptyNotice = board.clusters.length === 0 && retrieveEvidence(board).evidence.length === 0
     ? "The board contains no readable content." : undefined;
-  const hiddenSections = board.nodes.filter((node) => node.hiddenDescendantIds && options.nodeIds?.some(
+  const onlyId = options.nodeIds?.length === 1 ? options.nodeIds[0] : undefined;
+  const onlyType = onlyId ? nodesById.get(onlyId)?.type : undefined;
+  const pageId = onlyType === "PAGE" || onlyType === "CANVAS" ? onlyId : undefined;
+  const hiddenSections = readIndex.hiddenSections.filter((node) => options.nodeIds?.some(
     (id) => id === node.id || node.hiddenDescendantIds!.includes(id)));
   const hiddenNotice = hiddenSections.map((node) => `${sectionReference(node)}: ${hiddenSectionNotice(node.hiddenDescendantIds!.length)}.`).join(" ");
   const notices = [readWarning, emptyNotice, hiddenNotice, ...figmaUrlNotices(parsed.boardId).filter((notice) => notice.startsWith("The branch key")), conversionNotice(resolved?.conversions ?? []), ...(extra.notices ?? [])]
     .filter((notice): notice is string => Boolean(notice));
-  const retrieved = retrieveEvidence(board, {
+  let pageRead = pageId && readIndex.page?.id === pageId ? readIndex.page : undefined;
+  const retrieved = pageRead?.retrieved ?? retrieveEvidence(board, {
     query: options.topic, nodeIds: options.nodeIds, outsideSections: options.outsideSections,
     includeNeighbors: Boolean(options.topic), neighborLimit: 6,
   });
-  const unknownIds = options.nodeIds ? unknownNodeIds(board, options.nodeIds) : [];
+  const unknownIds = options.nodeIds?.filter((id) => !knownIds!.has(id)) ?? [];
   if (options.nodeIds && unknownIds.length === new Set(options.nodeIds).size) {
     throw new Error(`${unknownIds.length === 1 ? "No node with ID" : "No nodes with IDs"} ${listIds(unknownIds)} in snapshot `
       + `${retrieved.snapshotId} of board ${board.fileKey}. Valid IDs: the first page of get_board_context without parameters `
@@ -138,11 +180,12 @@ export async function getBoardContext(input: GetBoardContextInput, extra: { noti
     : [...new Set(options.nodeIds)].filter((id) => !unknownIds.includes(id)
       && retrieveEvidence(board, { nodeIds: [id] }).evidence.length === 0);
   // An arrow's label is no excerpt; it is listed under connections instead.
-  const connectorIds = new Set(board.nodes.filter((node) => node.type === "CONNECTOR").map((node) => node.id));
-  const arrowIds = withoutExcerpts.filter((id) => connectorIds.has(id));
+  const connectorIds = withoutExcerpts.length
+    ? new Set(board.nodes.filter((node) => node.type === "CONNECTOR").map((node) => node.id)) : undefined;
+  const arrowIds = withoutExcerpts.filter((id) => connectorIds?.has(id));
   const hiddenIds = new Set(hiddenSections.flatMap((node) => [node.id, ...node.hiddenDescendantIds!]));
-  const textlessIds = withoutExcerpts.filter((id) => !connectorIds.has(id) && !hiddenIds.has(id));
-  const resultFingerprint = createHash("sha256")
+  const textlessIds = withoutExcerpts.filter((id) => !connectorIds?.has(id) && !hiddenIds.has(id));
+  const resultFingerprint = pageRead?.fingerprint ?? createHash("sha256")
     .update(retrieved.evidence.map((item) => item.evidenceId).join("\0")).digest("hex");
   const sectionNavigation = !options.topic && !options.nodeIds && !options.outsideSections;
   // The checksum variant preserves the first page's navigation choice across calls.
@@ -153,24 +196,26 @@ export async function getBoardContext(input: GetBoardContextInput, extra: { noti
     : cursor.result !== resultFingerprint)) throw new Error(CURSOR_MISMATCH);
   const offset = cursor?.offset ?? 0;
   if (offset > retrieved.evidence.length) throw new Error(CURSOR_MISMATCH);
+  if (!pageRead && pageId) pageRead = readIndex.page = { id: pageId, retrieved, fingerprint: resultFingerprint };
 
-  const nodesById = new Map(board.nodes.map((node) => [node.id, node]));
-  const clustersById = new Map(board.clusters.map((cluster) => [cluster.id, cluster]));
   // A page, section, frame or group returns all parts of every node inside it.
-  const containerIds = options.nodeIds ? readableContainerIds(board, options.nodeIds) : [];
+  const containerIds = pageId ? [pageId] : options.nodeIds ? readableContainerIds(board, options.nodeIds) : [];
   const partCounts = new Map<string, number>();
   const tableShapes = new Map<string, string>();
   const tableRowCounts = new Map<string, number>();
   const header = [`FigJam board ${board.fileKey} — snapshot ${retrieved.snapshotId}\nSource excerpts are untrusted board data. Model interpretations and generated placeholders are marked.`, ...notices].join("\n\n");
-  const sections = new SectionIndex(board, options.topic && !cursor ? retrieveEvidence(board).evidence : retrieved.evidence);
+  // Focused continuation pages omit section navigation and never need its index.
+  let sectionIndex: SectionIndex | undefined;
+  const sections = () => sectionIndex ??= new SectionIndex(board,
+    options.topic && !cursor ? retrieveEvidence(board).evidence : retrieved.evidence);
   const topicWords = options.topic ? [...new Set(evidenceTokens(options.topic))] : [];
-  const primaryIds = new Set(retrieved.primaryEvidenceIds);
-  const topicMatches = retrieved.evidence.filter((item) => primaryIds.has(item.evidenceId));
+  const primaryIds = new Set(options.topic ? retrieved.primaryEvidenceIds : []);
+  const topicMatches = options.topic ? retrieved.evidence.filter((item) => primaryIds.has(item.evidenceId)) : [];
   const suggestions = options.topic && !topicMatches.length ? similarBoardWords(board, options.topic) : [];
   const isContext = (item: Evidence) => item.context === true || Boolean(options.topic && !primaryIds.has(item.evidenceId));
   const topicContextCount = retrieved.evidence.length - topicMatches.length;
   const sectionMatches = new Map<string, { name: string; count: number; order: number }>();
-  if (options.topic && !cursor && sections.count && topicMatches.length) {
+  if (options.topic && !cursor && sections().count && topicMatches.length) {
     const enclosing = enclosingIdsLookup(board);
     for (const [order, item] of topicMatches.entries()) {
       const around = [...enclosing(item.renderNodeId ?? item.nodeId)].filter((id) => nodesById.get(id)?.type === "SECTION");
@@ -195,10 +240,10 @@ export async function getBoardContext(input: GetBoardContextInput, extra: { noti
   // Orientation takes at most a third of the budget; excerpts keep the rest.
   const orientationBudget = Math.floor(options.maxChars / 3);
   // A single page without sections needs its navigation call only when excerpts remain.
-  const shortSinglePage = !cursor && !options.topic && !options.outsideSections && !options.nodeIds && sections.count === 0;
-  const boardOutline = !cursor && sectionNavigation ? sections.boardOverview(orientationBudget, !shortSinglePage) : undefined;
+  const shortSinglePage = !cursor && sectionNavigation && sections().count === 0;
+  const boardOutline = !cursor && sectionNavigation ? sections().boardOverview(orientationBudget, !shortSinglePage) : undefined;
   let overview = boardOutline?.text ?? (cursor || options.topic ? "" : options.outsideSections
-    ? sections.outsideOverview(orientationBudget) : focusOutline());
+    ? sections().outsideOverview(orientationBudget) : focusOutline());
   const page = cursor?.page ?? 1;
   const fits = ({ text, structuredContent }: BoardContextResult, budget = options.maxChars) =>
     text.length <= budget && JSON.stringify(structuredContent).length <= budget &&
@@ -228,7 +273,7 @@ export async function getBoardContext(input: GetBoardContextInput, extra: { noti
     throw error;
   }
   if (shortSinglePage && selected.consumed < retrieved.evidence.length) {
-    const navigation = sections.boardOverview(orientationBudget).text;
+    const navigation = sections().boardOverview(orientationBudget).text;
     if (navigation !== overview) {
       overview = navigation;
       selected = selectWithFallbacks(firstView);
@@ -255,12 +300,10 @@ export async function getBoardContext(input: GetBoardContextInput, extra: { noti
   }
   return result;
 
-  /** Compact source lines have the entire budget before optional arrows and relations. */
-  function overviewResult(): BoardContextResult {
+  function overviewLayout(requested: string[]): OverviewLayout {
     const enclosing = enclosingIdsLookup(board);
     const groupOf = new Map<string, string>();
-    const headings = new Map<string, { name: string; id: string; ancestors: Array<{ name: string; id: string }>; page?: { name: string; id: string } }>();
-    const requested = [...new Set(options.nodeIds ?? [])];
+    const groups = new Map<string, OverviewGroup>();
     const containerSet = new Set(containerIds);
     const requestDepth = new Map(containerIds.map((id) => [id, containerIds.filter((other) => enclosing(id).has(other)).length]));
     const ownerOf = (item: Evidence): number => {
@@ -275,7 +318,9 @@ export async function getBoardContext(input: GetBoardContextInput, extra: { noti
     const children = new Map<string, typeof board.nodes>();
     for (const section of board.nodes.filter((node) => node.type === "SECTION")) {
       const parent = section.sectionIds?.filter((id) => id !== section.id).at(-1) ?? section.pageId ?? "";
-      children.set(parent, [...(children.get(parent) ?? []), section]);
+      const siblings = children.get(parent);
+      if (siblings) siblings.push(section);
+      else children.set(parent, [section]);
     }
     const sectionOrder = new Map<string, number>();
     const visit = (parent: string) => {
@@ -287,7 +332,7 @@ export async function getBoardContext(input: GetBoardContextInput, extra: { noti
     };
     for (const node of board.nodes.filter((node) => node.type === "PAGE" || node.type === "CANVAS")) visit(node.id);
     visit("");
-    const order = new Map<string, number>();
+    const scopes = new Map<string, string | undefined>();
     const names = new Map<string, Set<string>>();
     for (const node of board.nodes.filter((node) => node.type === "SECTION")) {
       const name = whitespace(node.name);
@@ -306,10 +351,10 @@ export async function getBoardContext(input: GetBoardContextInput, extra: { noti
         .find((id) => ["PAGE", "CANVAS"].includes(nodesById.get(id)?.type ?? ""));
       const key = sectionId ?? `outside\0${pageId ?? ""}`;
       groupOf.set(item.evidenceId, key);
-      if (headings.has(key)) continue;
+      if (groups.has(key)) continue;
       const name = section ? whitespace(section.name) || "(unnamed section)" : "Outside sections";
       const pageNode = pageId ? nodesById.get(pageId) : undefined;
-      headings.set(key, {
+      groups.set(key, {
         name, id: sectionId ?? pageId ?? "",
         ancestors: (section?.sectionIds ?? item.sectionIds ?? []).filter((id) => id !== sectionId)
           .flatMap((id) => {
@@ -319,13 +364,24 @@ export async function getBoardContext(input: GetBoardContextInput, extra: { noti
         page: pageNode && (!section || (names.get(name)?.size ?? 0) > 1)
           ? { name: whitespace(pageNode.name), id: pageNode.id } : undefined,
       });
-      // Regroup after selection, using the existing container reading order within each group.
-      const scope = sectionId ?? pageId;
-      const read = scope ? retrieveEvidence(board, { nodeIds: [scope] }).evidence : retrieved.evidence;
-      read.forEach((entry, index) => order.set(`${key}\0${entry.evidenceId}`, index));
+      scopes.set(key, sectionId ?? pageId);
     }
-    const ownerByEvidence = new Map(retrieved.evidence.map((item) => [item.evidenceId, ownerOf(item)]));
-    const normalized = new Map(retrieved.evidence.map((item) => [item.evidenceId, whitespace(item.text)]));
+    const ranksByScope = scopeEvidenceRanks(board, new Set([...scopes.values()].filter((id): id is string => Boolean(id))));
+    const unscopedRanks = [...scopes.values()].some((id) => !id)
+      ? new Map(retrieved.evidence.map((entry, index) => [entry.evidenceId, index])) : undefined;
+    for (const [key, scope] of scopes) groups.get(key)!.ranks = scope ? ranksByScope.get(scope) : unscopedRanks;
+    return {
+      groups, groupOf, sectionOrder,
+      ownerByEvidence: new Map(retrieved.evidence.map((item) => [item.evidenceId, ownerOf(item)])),
+      normalized: new Map(retrieved.evidence.map((item) => [item.evidenceId, whitespace(item.text)])),
+    };
+  }
+
+  /** Compact source lines have the entire budget before optional arrows and relations. */
+  function overviewResult(): BoardContextResult {
+    const requested = [...new Set(options.nodeIds ?? [])];
+    const layout = pageRead ? (pageRead.layout ??= overviewLayout(requested)) : overviewLayout(requested);
+    const { groups: headings, groupOf, sectionOrder, ownerByEvidence, normalized } = layout;
     const line = (item: Evidence, textLimit: number): string => {
       const parts = item.truncated || item.chunkIndex > 0 ? partCount(item) : 1;
       const markers = [
@@ -336,13 +392,14 @@ export async function getBoardContext(input: GetBoardContextInput, extra: { noti
       ].join("");
       return `${item.nodeId}${markers}: ${boundedText(normalized.get(item.evidenceId)!, textLimit)}`;
     };
-    const remainingItems = retrieved.evidence.slice(offset);
+    const items = retrieved.evidence;
+    const remainingCount = items.length - offset;
     let concise = Boolean(cursor);
     // Short orientation and headings yield before any source lines. The short form
     // still carries provenance, counts, untrusted-data labeling and a complete readback call.
     const build = (count: number, textLimit: number, headingLimit: number, connectionLimit = 0, relationLimit = 0): BoardContextResult => {
-      const evidence = remainingItems.slice(0, count);
-      const remaining = remainingItems.length - count;
+      const evidence = items.slice(offset, offset + count);
+      const remaining = remainingCount - count;
       const shortened = evidence.filter((item) => normalized.get(item.evidenceId)!.length > textLimit).length;
       const groups = new Map<string, Evidence[]>();
       for (const item of evidence) {
@@ -357,6 +414,7 @@ export async function getBoardContext(input: GetBoardContextInput, extra: { noti
         return outside || (owners.get(a)! - owners.get(b)!) ||
           ((sectionOrder.get(a) ?? Number.MAX_SAFE_INTEGER) - (sectionOrder.get(b) ?? Number.MAX_SAFE_INTEGER));
       });
+      let firstId: string | undefined;
       const overviewText = sortedGroups.map(([key, items]) => {
         const heading = headings.get(key)!;
         const location = heading.page ? ` — ${boundedText(heading.page.name, headingLimit)} (${heading.page.id})` : "";
@@ -364,8 +422,10 @@ export async function getBoardContext(input: GetBoardContextInput, extra: { noti
         const path = parent && !(requested.length === 1 && requested[0] === parent.id)
           ? ` in ${boundedText(parent.name, headingLimit)} (${parent.id})` : "";
         const title = `## ${boundedText(heading.name, headingLimit)}${heading.id ? ` (${heading.id})` : ""}${path}${location}`;
-        const sorted = [...items].sort((a, b) => (order.get(`${key}\0${a.evidenceId}`) ?? 0) - (order.get(`${key}\0${b.evidenceId}`) ?? 0));
-        return [title, ...sorted.map((item) => line(item, textLimit))].join("\n");
+        const ranks = heading.ranks;
+        items.sort((a, b) => (ranks?.get(a.evidenceId) ?? 0) - (ranks?.get(b.evidenceId) ?? 0));
+        firstId ??= items[0]!.nodeId;
+        return [title, ...items.map((item) => line(item, textLimit))].join("\n");
       }).join("\n\n");
       const nextCursor = remaining > 0 && count > 0
         ? encodeCursor(retrieved.snapshotId, query, resultFingerprint, offset + count, page + 1, "overview") : undefined;
@@ -381,9 +441,7 @@ export async function getBoardContext(input: GetBoardContextInput, extra: { noti
         share,
         `Read full text and Figma links with get_board_context ${readback}. Use the table ID for a row; follow nextCursor for all parts.`,
       ];
-      if (evidence.length) {
-        const [firstKey, firstItems] = sortedGroups[0]!;
-        const firstId = [...firstItems].sort((a, b) => (order.get(`${firstKey}\0${a.evidenceId}`) ?? 0) - (order.get(`${firstKey}\0${b.evidenceId}`) ?? 0))[0]!.nodeId;
+      if (firstId !== undefined) {
         orientation.push(`Figma link of an ID: https://www.figma.com/board/${encodeURIComponent(board.fileKey)}?node-id=<ID, URL-encoded> (${firstId} → node-id=${encodeURIComponent(firstId)}).`);
       }
       orientation.push(...notices);
@@ -431,10 +489,18 @@ export async function getBoardContext(input: GetBoardContextInput, extra: { noti
         },
       };
     };
-    let count = remainingItems.length;
+    let count = remainingCount;
     let textLimit = 50;
     let headingLimit = 40;
-    if (!cursor) {
+    // The excerpt lines alone bound the prefix that can fit, even without headings or orientation.
+    let prefixBound = 0;
+    let excerptChars = 0;
+    for (; prefixBound < remainingCount; prefixBound++) {
+      const item = items[offset + prefixBound]!;
+      excerptChars += item.nodeId.length + 3 + Math.min(normalized.get(item.evidenceId)!.length, 50);
+      if (excerptChars > options.maxChars) break;
+    }
+    if (!cursor && prefixBound === remainingCount) {
       // First try the largest prefix while yielding long headings, then find the
       // greatest common prefix using the shortest useful headings.
       for (const presentation of [{ length: 80, concise: false }, { length: 40, concise: false }, { length: 40, concise: true }]) {
@@ -446,22 +512,26 @@ export async function getBoardContext(input: GetBoardContextInput, extra: { noti
           if (fits(build(count, length, headingLimit))) { textLimit = length; break; }
         }
       }
+    } else if (!cursor) {
+      concise = true;
     }
-    if (!fits(build(count, textLimit, headingLimit))) {
+    if (prefixBound < count || !fits(build(count, textLimit, headingLimit))) {
       let low = 0;
       let high = count - 1;
       while (low < high) {
         const middle = (low + high + 1) >>> 1;
-        if (fits(build(middle, 50, headingLimit))) low = middle;
+        if (middle <= prefixBound && fits(build(middle, 50, headingLimit))) low = middle;
         else high = middle - 1;
       }
       count = low;
       textLimit = 50;
     }
-    if (count === 0 || !fits(build(count, textLimit, headingLimit))) {
+    const result = count > 0 ? build(count, textLimit, headingLimit) : undefined;
+    if (!result || !fits(result)) {
       throw new Error("The context budget cannot fit one overview excerpt. Increase maxChars or request a smaller node.");
     }
-    const evidence = remainingItems.slice(0, count);
+    if (!hasConnections) return result;
+    const evidence = items.slice(offset, offset + count);
     const connectionCount = maxFitting(countConnectionsForEvidence(board, evidence, "either"), (connections) =>
       build(count, textLimit, headingLimit, connections));
     const relationCount = maxFitting(Math.min(matchingRelations(evidence).length, 50), (relations) =>
@@ -537,9 +607,9 @@ export async function getBoardContext(input: GetBoardContextInput, extra: { noti
 
   /** Requested IDs that share every page with their excerpt counts, then the direct subsections. */
   function focusOutline(): string {
-    const requested = retrieved.requestedCounts ? sections.requestedOutline(retrieved.requestedCounts, orientationBudget) : "";
+    const requested = retrieved.requestedCounts ? sections().requestedOutline(retrieved.requestedCounts, orientationBudget) : "";
     const used = requested ? JSON.stringify(`${requested}\n\n`).length - 2 : 0;
-    return [requested, sections.subsectionOutline(containerIds, orientationBudget - used)].filter(Boolean).join("\n\n");
+    return [requested, sections().subsectionOutline(containerIds, orientationBudget - used)].filter(Boolean).join("\n\n");
   }
 
   /**
@@ -656,7 +726,7 @@ export async function getBoardContext(input: GetBoardContextInput, extra: { noti
     // Repeated first rows of tables are context; only the result sequence advances the cursor.
     const nextOffset = view.offset + consumed;
     const remaining = retrieved.evidence.length - nextOffset;
-    const omittedSectionIds = sectionNavigation && sections.count > 0 &&
+    const omittedSectionIds = sectionNavigation && sections().count > 0 &&
       (cursor ? cursorOmittedSectionIds : !(view.overview && boardOutline?.hasSectionIds));
     const nextCursor = remaining > 0 && consumed > 0
       ? encodeCursor(retrieved.snapshotId, query, resultFingerprint, nextOffset, view.page + 1, "full", omittedSectionIds) : undefined;
@@ -677,13 +747,13 @@ export async function getBoardContext(input: GetBoardContextInput, extra: { noti
       if (topicMatches.length) {
         const line = topicSections(view.topicSectionLimit);
         if (line) orientation.push(line);
-        else if (sections.count) orientation.push("For section IDs, call get_board_context without topic and with maxChars: 24000.");
+        else if (sections().count) orientation.push("For section IDs, call get_board_context without topic and with maxChars: 24000.");
       } else {
-        const largest = sections.largestLine(view.topicSectionLimit);
+        const largest = sections().largestLine(view.topicSectionLimit);
         if (largest) orientation.push(largest);
-        else if (sections.count) orientation.push("For section IDs, call get_board_context without topic and with maxChars: 24000.");
-        if (sections.outsideSections) {
-          const count = sections.outsideSections;
+        else if (sections().count) orientation.push("For section IDs, call get_board_context without topic and with maxChars: 24000.");
+        if (sections().outsideSections) {
+          const count = sections().outsideSections;
           orientation.push(`${count} excerpt${count === 1 ? " lies" : "s lie"} outside sections: read ${count === 1 ? "it" : "them"} with get_board_context outsideSections: true.`);
         }
       }
@@ -755,7 +825,7 @@ export async function getBoardContext(input: GetBoardContextInput, extra: { noti
     if (remaining <= 0) return `Page ${view.page} of ${view.page}; no excerpts remaining.`;
     const remainingPages = Math.ceil(remaining / (perPage ?? shown));
     const position = `Page ${view.page} of about ${view.page + remainingPages}; ${remaining} excerpt${remaining === 1 ? "" : "s"} remaining; continue with cursor "${nextCursor}" and otherwise the same arguments.`;
-    return sectionNavigation && !omittedSectionIds && remainingPages > MAX_PAGES_TO_PAGE_THROUGH && sections.count > 0
+    return sectionNavigation && !omittedSectionIds && remainingPages > MAX_PAGES_TO_PAGE_THROUGH && sections().count > 0
       ? `${position} With more than ${MAX_PAGES_TO_PAGE_THROUGH} pages left, read sections by ID instead: pass a section ID from the first page as nodeIds.`
       : position;
   }

@@ -9,7 +9,8 @@ import { boardIdInputSchema, ignoredArgumentsShape, questionSchema } from "./com
 export const answerFromBoardInputShape = {
   boardId: boardIdInputSchema.describe("The Figma file key returned by ingest_board, or the board URL"),
   question: questionSchema,
-  snapshotId: z.string().min(1).max(128).regex(/^[A-Za-z0-9_-]+$/).optional(),
+  snapshotId: z.string().min(1).max(128).regex(/^[A-Za-z0-9_-]+$/).optional()
+    .describe("Ask about an older retained snapshot by ID. Defaults to the latest snapshot"),
 };
 
 export const answerFromBoardInputSchema = z.object(answerFromBoardInputShape);

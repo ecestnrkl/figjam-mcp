@@ -40,7 +40,9 @@ export class SectionIndex {
       // The nearest enclosing section, else the page, is the parent in the tree.
       const parent = section.sectionIds?.filter((id) => id !== section.id).at(-1) ??
         (section.pageId && this.pages.some((page) => page.id === section.pageId) ? section.pageId : "");
-      this.children.set(parent, [...(this.children.get(parent) ?? []), section]);
+      const siblings = this.children.get(parent);
+      if (siblings) siblings.push(section);
+      else this.children.set(parent, [section]);
     }
     for (const [parent, siblings] of this.children) this.children.set(parent, inReadingOrder(siblings, (section) => section));
     const inSection = inSectionLookup(board);

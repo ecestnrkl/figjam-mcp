@@ -1,6 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { createHash } from "node:crypto";
+import { describe, expect, it, vi } from "vitest";
 import { setBoard } from "../src/lib/cache.js";
-import { retrieveEvidence } from "../src/lib/evidence.js";
+import * as evidence from "../src/lib/evidence.js";
 import { getBoardContextInputSchema, getBoardContextOutputSchema, evidenceSchema } from "../src/schemas/getBoardContext.js";
 import { getBoardContext } from "../src/tools/getBoardContext.js";
 import { largeBoard } from "./fixtures/largeBoard.js";
@@ -26,7 +27,7 @@ describe("context representation contract", () => {
     expect(item).not.toHaveProperty("modelDerived");
     expect(item).not.toHaveProperty("truncated");
     expect(getBoardContextOutputSchema.parse(output).evidence[0]).toEqual(item);
-    const internal = retrieveEvidence(data).evidence[0]!;
+    const internal = evidence.retrieveEvidence(data).evidence[0]!;
     expect(internal).toMatchObject({ snapshotId: output.snapshotId, chunkIndex: 0, modelDerived: false, truncated: false });
     for (const required of ["evidenceId", "nodeId", "text", "sourceType", "url"]) {
       const incomplete = { ...item } as Record<string, unknown>;
@@ -56,6 +57,75 @@ describe("context representation contract", () => {
     expect(getBoardContextOutputSchema.parse(output).overview).toEqual(output.overview);
     for (const invalid of [{ textLimit: 49 }, { textLimit: 121 }, { shownEvidence: -1 }, { shortenedEvidence: 0.5 }]) {
       expect(getBoardContextOutputSchema.safeParse({ ...output, overview: { ...output.overview, ...invalid } }).success).toBe(false);
+    }
+  });
+});
+
+/** Both pages have nested sections and a table and notes outside sections. */
+function twoPageBoard() {
+  const first = largeBoard("PagedSections123", 32, 13, 5, { subsections: 2, outsideClusters: 2 });
+  const second = structuredClone(first);
+  const secondId = (id: string) => id.replace(/^(\d+):/, (_, prefix: string) => `${prefix}0:`);
+  for (const node of second.nodes) {
+    node.id = secondId(node.id);
+    if (node.pageId) node.pageId = secondId(node.pageId);
+    if (node.parentId) node.parentId = secondId(node.parentId);
+    if (node.sectionIds) node.sectionIds = node.sectionIds.map(secondId);
+    if (node.renderNodeId) node.renderNodeId = secondId(node.renderNodeId);
+    for (const cell of node.table?.cells ?? []) cell.id = cell.id.replace(/^T8:0;/, "T80:0;");
+  }
+  second.nodes[0]!.name = "Follow-up workshop";
+  for (const cluster of second.clusters) {
+    cluster.id = `followup_${cluster.id}`;
+    cluster.nodeIds = cluster.nodeIds.map(secondId);
+    cluster.confirmedNodeIds = cluster.confirmedNodeIds?.map(secondId);
+  }
+  first.nodes.push(...second.nodes);
+  first.clusters.push(...second.clusters);
+  return first;
+}
+
+describe("whole-page reads", () => {
+  it.each([
+    ["full", 12000, "1b2b77902186ecfef21af36c604b00bf86a01aa4f8bc1c4f7dbde615d9cf291e"],
+    ["full", 24000, "d47964105deee745fb8ed746788ecf3ac436d8a3af5e6758b63f5372557b93d5"],
+    ["auto", 12000, "1921fc8765bfe8fd8367cc4b7c4fca0c761e942338e690b280cb7c792e1510aa"],
+    ["auto", 24000, "f3c3e342fe7cec8801f7296104ce23539de9d82d239d9e059e2d153ffba77cc3"],
+  ] as const)("preserves the response bytes through the last cursor in %s with maxChars %i", async (detail, maxChars, expected) => {
+    const data = twoPageBoard();
+    setBoard(data.boardId, data);
+    // Captured on c03489b. Hash one JSON line per response, in cursor order, for both pages.
+    const hash = createHash("sha256");
+    for (const pageId of ["0:1", "00:1"]) {
+      const request = { boardId: data.boardId, snapshotId: data.snapshotId, nodeIds: [pageId], detail, maxChars };
+      let cursor: string | undefined;
+      let pages = 0;
+      do {
+        const result = await getBoardContext({ ...request, cursor });
+        hash.update(JSON.stringify(result)).update("\n");
+        cursor = result.structuredContent.nextCursor;
+        expect(++pages).toBeLessThan(100);
+      } while (cursor);
+      expect(pages).toBeGreaterThan(1);
+    }
+    expect(hash.digest("hex")).toBe(expected);
+  });
+
+  it("reuses the page retrieval and reads no sections individually through the next cursor", async () => {
+    const data = largeBoard("SectionRetrieval123", 8, 12, 4, { subsections: 2, outsideClusters: 2 });
+    setBoard(data.boardId, data);
+    const sectionIds = new Set(data.nodes.filter((node) => node.type === "SECTION").map((node) => node.id));
+    const retrieve = vi.spyOn(evidence, "retrieveEvidence");
+    try {
+      const request = { boardId: data.boardId, nodeIds: ["0:1"], maxChars: 4000 };
+      const result = await getBoardContext(request);
+      const cursor = result.structuredContent.nextCursor;
+      expect(cursor).toMatch(/^v2\.o\./);
+      await getBoardContext({ ...request, cursor });
+      const scopes = retrieve.mock.calls.flatMap(([, query]) => query?.nodeIds ?? []);
+      expect(scopes.filter((id) => id === "0:1" || sectionIds.has(id))).toEqual(["0:1"]);
+    } finally {
+      retrieve.mockRestore();
     }
   });
 });

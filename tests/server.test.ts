@@ -30,6 +30,23 @@ beforeEach(async () => {
 afterEach(async () => { vi.unstubAllEnvs(); await client.close(); await server.close(); });
 
 describe("MCP wire contract", () => {
+  it("returns host guidance in the initialize result", () => {
+    const instructions = client.getInstructions();
+    expect(instructions).toMatch(/ingest_board.*get_board_context.*nodeIds.*answer_from_board.*diff_board.*diagnose_llm_config.*Figma link/s);
+    expect(instructions!.length).toBeLessThanOrEqual(900);
+  });
+
+  it("describes every advertised tool parameter", async () => {
+    const { tools } = await client.listTools();
+    const undescribed = tools.flatMap((tool) => Object.entries(tool.inputSchema.properties ?? {})
+      .filter(([, property]) => {
+        const description = property && typeof property === "object" && "description" in property ? property.description : undefined;
+        return typeof description !== "string" || !description.trim();
+      })
+      .map(([key]) => `${tool.name}.${key}`));
+    expect(undescribed).toEqual([]);
+  });
+
   it("hides configured and argument secrets in every tool error even with board redaction disabled", async () => {
     const llmKey = "random-llm-credential-93762";
     const figmaKey = "random-figma-credential-73591";

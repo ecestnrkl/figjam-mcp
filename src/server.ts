@@ -79,6 +79,13 @@ export function createServer(): McpServer {
   const server = new McpServer({
     name: packageMetadata.name,
     version: packageMetadata.version,
+  }, {
+    instructions: [
+      "Start with ingest_board. Use its boardId with get_board_context and leave the optional arguments unset for an overview. Read sections by passing their IDs in nodeIds and follow nextCursor with the same arguments.",
+      "Reserve answer_from_board for a concrete question. After ingesting the board again, use diff_board to compare snapshots.",
+      "Ingest can send board text and images to the configured LLM provider in balanced or max_quality mode. Answering can send the question and selected excerpts. diagnose_llm_config sends synthetic data only. Context reads and diffs are local.",
+      "For each claim about the board, include the source node ID or Figma link.",
+    ].join(" "),
   });
 
   server.registerTool(
@@ -86,7 +93,7 @@ export function createServer(): McpServer {
     {
       title: "Ingest FigJam Board",
       description:
-        "Read a FigJam/Figma URL with the configured Figma token and persist a local snapshot for get_board_context, answer_from_board and diff_board; the summary names the largest sections to read next and how many excerpts lie outside sections. Leaves the Figma file unchanged. Every call downloads the board from Figma (one Tier 1 request); get_board_context and answer_from_board read the saved snapshot without a new request. Balanced/quality modes may send board text and images to the configured LLM provider and incur charges; max_speed skips vision. Re-ingest to refresh stale content and continue pending image interpretation; focusNodeIds with section IDs from the summary or the first page of get_board_context interprets their images first. Local history is bounded. Supports framework phases or customPhases.",
+        "Read a FigJam/Figma URL with the configured Figma token and persist a local snapshot for get_board_context, answer_from_board and diff_board. The response includes boardId and snapshotId, and its summary names the largest sections when present, counts excerpts outside them and points to get_board_context for the next read. Leaves the Figma file unchanged. Every call downloads the board from Figma (one Tier 1 request); get_board_context and answer_from_board read the saved snapshot without a new request. Balanced/quality modes may send board text and images to the configured LLM provider and incur charges; max_speed skips vision. Re-ingest to refresh stale content and continue pending image interpretation; focusNodeIds with section IDs from the summary or the first page of get_board_context interprets their images first. Local history is bounded. Supports framework phases or customPhases.",
       annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
       inputSchema: guardToolInput("ingest_board", ingestBoardInputSchema),
       outputSchema: z.object(ingestBoardOutputShape),
@@ -144,7 +151,7 @@ export function createServer(): McpServer {
     {
       title: "Diff Board Snapshots",
       description:
-        "Compare retained local snapshots of the same board, reporting cluster, node and connector changes. Names each changed node with its section and its old and new text, and each changed table cell with its row and column. Needs two ingests; when the board did not change in between, it reports no changes since the first. compareTo=1 selects the previous snapshot, 2 selects two states back. No network or LLM calls; ingest_board must capture the current Figma state first.",
+        "Compare retained local snapshots of the same board, reporting cluster, node and connector changes. Names each changed node with its section and its old and new text, and each changed table cell with its row and column. Reports moves with their origin and destination sections or pages, identifies resizes, and marks added or removed clusters made up of existing nodes as regrouped. Needs two ingests; when the board did not change in between, it reports no changes since the first. compareTo=1 selects the previous snapshot, 2 selects two states back. No network or LLM calls; ingest_board must capture the current Figma state first.",
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       inputSchema: guardToolInput("diff_board", diffBoardInputSchema),
       outputSchema: z.object(diffBoardOutputShape),
