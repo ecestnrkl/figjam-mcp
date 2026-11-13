@@ -17,6 +17,7 @@ import {
   evidenceTokens, similarBoardWords, firstTableRow, knownNodeIds, retrieveEvidence, snapshotIdForBoard, tableCellPositions, unknownNodeIds, type Evidence,
 } from "../lib/evidence.js";
 import { sectionReference, hiddenSectionNotice, SectionIndex } from "../lib/sections.js";
+import { inReadingOrder } from "../lib/readingOrder.js";
 import type { BoardData, RefinedCluster } from "../types.js";
 
 /**
@@ -271,16 +272,14 @@ export async function getBoardContext(input: GetBoardContextInput, extra: { noti
     };
     // Match the board outline: pages in board order, then each section's children
     // in spatial reading order, before moving on to the next sibling.
-    const nodesOrder = new Map(board.nodes.map((node, index) => [node.id, index]));
     const children = new Map<string, typeof board.nodes>();
     for (const section of board.nodes.filter((node) => node.type === "SECTION")) {
       const parent = section.sectionIds?.filter((id) => id !== section.id).at(-1) ?? section.pageId ?? "";
       children.set(parent, [...(children.get(parent) ?? []), section]);
     }
-    for (const siblings of children.values()) siblings.sort((a, b) => a.y - b.y || a.x - b.x || nodesOrder.get(a.id)! - nodesOrder.get(b.id)!);
     const sectionOrder = new Map<string, number>();
     const visit = (parent: string) => {
-      for (const section of children.get(parent) ?? []) {
+      for (const section of inReadingOrder(children.get(parent) ?? [], (node) => node)) {
         if (sectionOrder.has(section.id)) continue;
         sectionOrder.set(section.id, sectionOrder.size);
         visit(section.id);

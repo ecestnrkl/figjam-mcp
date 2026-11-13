@@ -1632,6 +1632,24 @@ async function followNavigation(call: GetBoardContextInput): Promise<{ ids: Set<
 }
 
 describe("bounded navigation follow-up reads", () => {
+  it.each(["board overview", "focused overview"] as const)("reads slightly offset sections left to right in the %s", async (view) => {
+    const data = navigationBoard("ReadingOrderSections", [{ id: "0:1", name: "Workshop", type: "CANVAS",
+      children: [7, 3, 0].map((y, i) => ({
+        id: `1:${i}`, name: ["A", "B", "C"][i]!, type: "SECTION", ...navigationBox(i * 700, y, 600, 300),
+        children: [navigationNote(`2:${i}`, `Note ${i}`, i * 700, y)],
+      })),
+    }]);
+    setBoard(data.boardId, data);
+    const result = await getBoardContext({
+      boardId: data.boardId, snapshotId: data.snapshotId,
+      ...(view === "focused overview" ? { nodeIds: ["0:1"], limit: 1 } : {}),
+    });
+    const ids = view === "focused overview"
+      ? [...(result.structuredContent.overview?.text ?? "").matchAll(/^## [ABC] \((1:\d)\)$/gm)]
+      : [...result.structuredContent.contextText.matchAll(/^  - (1:\d) [ABC] — /gm)];
+    expect(ids.map((match) => match[1])).toEqual(["1:0", "1:1", "1:2"]);
+  });
+
   it.each([
     ...[1, 2, 12, 14, 25, 40, 60, 80].flatMap((n) => [12000, 24000].map((maxChars) => ({ n, maxChars }))),
     ...[1, 2].map((n) => ({ n, maxChars: 2000 })),

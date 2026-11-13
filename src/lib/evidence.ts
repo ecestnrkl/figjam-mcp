@@ -3,6 +3,7 @@ import { tableCellPositions } from "./tableCells.js";
 export { tableCellPositions } from "./tableCells.js";
 import { connectorArrow } from "./connectorGraph.js";
 import { isGenericNodeName } from "./nodeTree.js";
+import { inClusterReadingOrder, pagePositions } from "./readingOrder.js";
 import type { BoardData, ConnectorEdge, NormalizedNode, RefinedCluster, TableCell } from "../types.js";
 
 export const EVIDENCE_CHUNK_CHARS = 1200;
@@ -489,28 +490,20 @@ function tableUnits(entries: IndexedEvidence[]): IndexedEvidence[][] {
   return units;
 }
 
-/** Cluster by cluster: page, then bounding box top to bottom, left to right. Order within a cluster is kept. */
+/** Read groups and their source nodes by position; a node's rows and chunks keep their index order. */
 function readingOrder(board: BoardData, entries: IndexedEvidence[]): IndexedEvidence[] {
+  if (entries.length < 2) return entries;
   const clustersById = new Map(board.clusters.map((cluster) => [cluster.id, cluster]));
   const nodesById = new Map(board.nodes.map((node) => [node.id, node]));
-  const pageOrder = new Map(board.nodes.filter((node) => node.type === "CANVAS" || node.type === "PAGE")
-    .map((node, position) => [node.id, position]));
-  const groups = new Map<string, { entries: IndexedEvidence[]; page: number; x: number; y: number; first: number }>();
-  entries.forEach((entry, position) => {
-    const { evidence } = entry;
-    const key = evidence.clusterId ?? `node\0${evidence.renderNodeId ?? evidence.nodeId}`;
-    let group = groups.get(key);
-    if (!group) {
-      const node = nodesById.get(evidence.renderNodeId ?? evidence.nodeId);
-      const box = (evidence.clusterId ? clustersById.get(evidence.clusterId)?.boundingBox : undefined) ?? node;
-      group = { entries: [], page: pageOrder.get(evidence.pageId ?? "") ?? -1, x: box?.x ?? 0, y: box?.y ?? 0, first: position };
-      groups.set(key, group);
-    }
-    group.entries.push(entry);
+  const pages = pagePositions(board.nodes);
+  return inClusterReadingOrder(entries, ({ evidence }) => {
+    const nodeId = evidence.renderNodeId ?? evidence.nodeId;
+    return {
+      nodeId, bounds: nodesById.get(nodeId) ?? nodesById.get(evidence.nodeId),
+      page: pages.get(evidence.pageId ?? "") ?? -1,
+      cluster: evidence.clusterId ? clustersById.get(evidence.clusterId) : undefined,
+    };
   });
-  return [...groups.values()]
-    .sort((a, b) => a.page - b.page || a.y - b.y || a.x - b.x || a.first - b.first)
-    .flatMap((group) => group.entries);
 }
 
 /**
