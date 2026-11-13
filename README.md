@@ -286,18 +286,20 @@ support](https://forum.cursor.com/t/agent-acp-mcp-tools-call-times-out-at-60s-wi
 
 ## Using the tools
 
-Branch URLs use the branch key as the file key; design files can be ingested, but clustering and reading order are designed for FigJam boards.
-
 Then ask your assistant to ingest a board URL, for example *"Ingest
 https://www.figma.com/board/FILE_KEY/Name and list the open questions."*
 The `boardId` of every later call is the file key from that URL, or the URL
 itself; a URL with a `node-id` and without `nodeIds`, `topic` and
-`outsideSections` makes `get_board_context` read that node. To summarize
-a board, the assistant calls `ingest_board`, then `get_board_context` without
-parameters, whose first page names the largest sections and includes a bounded
-page/section overview with IDs within the page's size limit. This is not a
-guaranteed complete section directory; empty sections may be omitted and unlisted
-pages are counted. The footer gives one reusable read call for the listed page IDs. Read each
+`outsideSections` makes `get_board_context` read that node.
+
+Branch URLs use the branch key as the file key; design files can be ingested, but
+clustering and reading order are designed for FigJam boards.
+
+To summarize a board, the assistant calls `ingest_board`, then
+`get_board_context` without parameters, whose first page names the largest
+sections and includes a bounded page/section overview with IDs within the
+page's size limit. The section directory may omit empty sections and counts
+unlisted pages. The footer gives one reusable read call for the listed page IDs. Read each
 page separately with `nodeIds: [pageId]`, `detail: "auto"` and `maxChars: 24000`,
 following `nextCursor` with unchanged arguments. Page reads already include
 content outside sections, so `outsideSections: true` is only needed for a
@@ -350,15 +352,16 @@ only in case.
    40-second image budget (20–35 on a board with about 300 clusters, measured
    with 3 parallel requests); the next ingest continues, each costs a Tier 1 file
    download, and `focusNodeIds` sets the order.
-5. **Serve.** The snapshot is saved to a private local cache. Search favors
-   excerpts containing more of the question’s words.
+5. **Serve.** The snapshot is saved to a private local cache. Search gives more
+   weight to excerpts containing the question’s exact words.
    `get_board_context` searches it (BM25 over original text, table rows and
    names, arrow labels and table headings), `answer_from_board` answers with
    citations and `diff_board` compares snapshots. Topic and question searches
    match whole words ignoring case and accents (words of five or more letters
-   also match compounds that begin with them), but not other word forms,
-   synonyms or translations. Use the board's words and language; an empty search
-   does not prove the board lacks the topic. Paging, overviews and the `detail`
+   also match some word forms and compounds), but not synonyms or translations.
+   An empty search may suggest similar words from the board; these are not
+   matches. Use the board's words and language; an empty search does not prove
+   the board lacks the topic. Paging, overviews and the `detail`
    setting are described in [Using the tools](#using-the-tools). Full-view excerpt
    text is quoted with `> ` on every line, and model-generated cluster labels are
    marked as model labels.
@@ -425,7 +428,8 @@ larger ones are scaled down locally.
   no partial result.
 - Free models are best effort. Citations show where an answer comes from, not
   that its conclusion is right.
-- Search is lexical; synonyms without shared words do not match.
+- Search is lexical; some word forms and compounds match, but synonyms and
+  translations do not.
 - Local stdio only; no hosted or multi-user mode.
 
 Measured results: [evaluation](https://github.com/ecestnrkl/figjam-mcp/blob/main/docs/evaluation.md).

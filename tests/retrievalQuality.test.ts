@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { evidenceTokens, retrieveEvidence } from "../src/lib/evidence.js";
-import { longQueryFixtures, retrievalFixtures, retrievalLimitations } from "./fixtures/retrieval.js";
+import { longQueryFixtures, retrievalFixtures, wordFormFixtures } from "./fixtures/retrieval.js";
 import { changeFixtures } from "./fixtures/changes.js";
 import { diffBoards } from "../src/lib/boardDiff.js";
 
@@ -39,11 +39,7 @@ describe("long-question retrieval", () => {
     expect(retrieveEvidence(board, { query, limit: 6 }).evidence.map((item) => item.nodeId)).toContain(expectedNodeId);
   });
 
-  it.each(retrievalLimitations)("records the known word-form boundary: $name", ({ board, query }) => {
-    // This is a lexical boundary, not a failed answerable case or a recall gate.
-    expect(evidenceTokens(query)).toEqual(["sensors"]);
-    expect(evidenceTokens(board.nodes[0]!.text!)).toEqual(["sensor"]);
-  });
+
 });
 
 describe("synthetic revision quality gate (27 paired boards)", () => {
@@ -57,5 +53,13 @@ describe("synthetic revision quality gate (27 paired boards)", () => {
     expect(result.stats).toMatchObject(stats);
     expect(result.tableCellChanges).toHaveLength(tableCellChanges);
     if (changedCellId) expect(result.tableCellChanges[0]).toMatchObject({ cellId: changedCellId, changeType: "modified" });
+  });
+});
+
+
+describe("word forms and compound evaluation", () => {
+  it.each(wordFormFixtures)("$name", ({ board, query, expectedNodeId }) => {
+    const evidence = retrieveEvidence(board, { query }).evidence;
+    expect(evidence.map((item) => item.nodeId)).toEqual(expectedNodeId ? [expectedNodeId] : []);
   });
 });

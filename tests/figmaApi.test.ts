@@ -330,3 +330,12 @@ it.each([false, true])("explains a Figma timeout with the proxy enabled=%s", asy
   expect(error.message).not.toContain("synthetic-secret");
   vi.unstubAllEnvs();
 });
+
+it.each(["https_proxy", "http_proxy"])("explains the lowercase %s proxy", async (variable) => {
+  for (const key of ["HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy", "NODE_USE_ENV_PROXY"]) vi.stubEnv(key, undefined);
+  vi.stubEnv(variable, "http://proxy.invalid:8080");
+  vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new TypeError("fetch failed")));
+  const { fetchFileTree } = await import("../src/lib/figmaApi.js");
+  expect((await failure(fetchFileTree("AbC123", "synthetic-token"))).message).toContain("NODE_USE_ENV_PROXY=1");
+  vi.unstubAllEnvs();
+});

@@ -299,7 +299,7 @@ describe("source evidence", () => {
   it("uses Unicode word boundaries rather than substring matching", () => {
     expect(evidenceTokens("Kündigungsfrist ＰＡＹＭＥＮＴ")).toEqual(["kundigungsfrist", "payment"]);
     const board = evidenceBoard("Word123", [textNode("1:1", "A pineapple delivery")]);
-    expect(retrieveEvidence(board, { query: "apple" }).evidence).toEqual([]);
+    expect(retrieveEvidence(board, { query: "pple" }).evidence).toEqual([]);
   });
 
   it.each([
@@ -492,5 +492,31 @@ describe("table rows", () => {
     expect(both.map((item) => item.row).sort((a, b) => a! - b!)).toEqual([0, 1, 2, 3, 4]);
     expect(retrieveEvidence(board, { query: "Budget", includeNeighbors: true, tableNeighborLimit: 0 }).evidence.map((item) => item.row)).toEqual([3]);
     expect(retrieveEvidence(board, { query: "Budget" }).evidence.map((item) => item.row)).toEqual([3]);
+  });
+});
+
+describe("bounded lexical alternatives", () => {
+  it.each(["e", "n", "s", "en", "er", "es", "em", "ed"])("matches the ending %s", (ending) => {
+    const board = evidenceBoard("Forms", [textNode("target", `sensor${ending}`)]);
+    expect(retrieveEvidence(board, { query: "sensor" }).evidence.map((item) => item.nodeId)).toEqual(["target"]);
+  });
+
+  it.each(["board", "project", "projekt", "thema"])("searches the content word %s", (word) => {
+    expect(evidenceTokens(word)).toEqual([word]);
+  });
+
+  it("does not add an alternative from text when the exact query matches the same excerpt's section", () => {
+    const section = { ...textNode("section", ""), name: "Feedback", type: "SECTION", sectionIds: [] };
+    const board = evidenceBoard("ExactAcrossFields", [textNode("a", "unrelated"), textNode("b", "kundenfeedback"), section]);
+    board.nodes[0]!.sectionIds = ["section"];
+    board.nodes[1]!.sectionIds = ["section"];
+    expect(retrieveEvidence(board, { query: "feedback" }).evidence.map((item) => item.nodeId).filter((id) => id !== "section")).toEqual(["a", "b"]);
+  });
+
+  it("does not let alternatives amplify an exact match in the same excerpt", () => {
+    const exact = evidenceBoard("Exact", [textNode("a", "feedback"), textNode("b", "feedback kundenfeedback")]);
+    const without = evidenceBoard("Exact", [textNode("a", "feedback"), textNode("b", "feedback unrelated")]);
+    expect(retrieveEvidence(exact, { query: "feedback" }).evidence.map((item) => item.nodeId))
+      .toEqual(retrieveEvidence(without, { query: "feedback" }).evidence.map((item) => item.nodeId));
   });
 });

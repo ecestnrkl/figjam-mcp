@@ -140,7 +140,7 @@ describe("getBoardContext", () => {
     expect(text).not.toContain("node 1:3 ·");
     expect(text).toContain("1:2 → 1:3 «Brand campaign»");
     expect(output.connections.map((item) => [item.connectorId, item.toText])).toEqual([["2:1", undefined], ["2:2", "Brand campaign"]]);
-    expect(output.totalMatched).toBe(2);
+    expect(output.totalMatched).toBe(1);
   });
 
   it("marks a model summary even when only the conflicting original source matches the topic", async () => {
@@ -172,7 +172,7 @@ describe("getBoardContext", () => {
     setBoard("NeighborPaging123", board("NeighborPaging123"));
     const { structuredContent: first } = await getBoardContext({ boardId: "NeighborPaging123", topic: "interview", limit: 1 });
     expect(first.evidence.map((item) => item.nodeId)).toEqual(["1:1"]);
-    expect(first.totalMatched).toBe(2);
+    expect(first.totalMatched).toBe(1);
     const { structuredContent: second } = await getBoardContext({ boardId: "NeighborPaging123", topic: "interview", limit: 1, cursor: first.nextCursor });
     expect(second.evidence.map((item) => item.nodeId)).toEqual(["1:2"]);
     expect(second.nextCursor).toBeUndefined();
@@ -189,7 +189,7 @@ describe("getBoardContext", () => {
     setBoard(data.boardId, data);
     const { structuredContent: first } = await getBoardContext({ boardId: data.boardId, topic: "Budget", limit: 1 });
     expect(first.evidence.map(item => item.text)).toEqual(["Budget"]);
-    expect(first.totalMatched).toBe(2);
+    expect(first.totalMatched).toBe(1);
     expect(first.nextCursor).toBeDefined();
     const { text, structuredContent: second } = await getBoardContext({ boardId: data.boardId, topic: "Budget", limit: 1, cursor: first.nextCursor });
     expect(second.evidence.map(item => item.text)).toEqual(["999"]);
@@ -203,7 +203,7 @@ describe("getBoardContext", () => {
     expect(output).toMatchObject({ evidence: [], clusters: [], connections: [], totalMatched: 0, truncated: false });
     for (const shown of [text, output.contextText]) {
       expect(shown).toContain("Topic search for quantum, reactor: no excerpt matches.");
-      expect(shown).toContain("whole words, ignoring case and accents (words of five or more letters also match compounds that begin with them)");
+      expect(shown).toContain("whole words ignoring case and accents, and some word forms and compounds for words of at least five letters");
       expect(shown).toContain("2 excerpts lie outside sections: read them with get_board_context outsideSections: true.");
       expect(shown).not.toContain("Interview quotes");
     }
@@ -212,13 +212,16 @@ describe("getBoardContext", () => {
 
   it("explains topic matches and context on the first page, leaving continuation pages unchanged", async () => {
     expect(getBoardContextInputShape.topic.description).toContain(
-      "ignoring case and accents (words of five or more letters also match compounds that begin with them)");
+      "ignore case and accents; words of at least five letters also match some word forms and compounds");
+    const synonymsHint = 'add them to the topic yourself (for example "payment Bezahlung") or read sections by ID';
+    expect(getBoardContextInputShape.topic.description).toContain(synonymsHint);
     const data = board("TopicInfo123");
     setBoard(data.boardId, data);
     const single = await getBoardContext({ boardId: data.boardId, topic: "Interview interview" });
     for (const shown of [single.text, single.structuredContent.contextText]) {
       expect(shown).toContain("Topic search for interview: 1 excerpt matches; 1 more is shown as context (arrow neighbors and table headings).");
-      expect(shown).toContain("whole words, ignoring case and accents (words of five or more letters also match compounds that begin with them)");
+      expect(shown).toContain("whole words ignoring case and accents, and some word forms and compounds for words of at least five letters");
+      expect(shown).toContain(synonymsHint);
     }
     const first = await getBoardContext({ boardId: data.boardId, topic: "interview", limit: 1 });
     expect(first.text).toContain("Showing 1 of 2 excerpts on this page; 1 remaining.");
@@ -1321,7 +1324,7 @@ describe("getBoardContext tables", () => {
     const { text, structuredContent: output } = await getBoardContext({ boardId: data.boardId, topic: "budget" });
     expect(output.evidence.map((item) => [item.row, item.text])).toEqual([[0, "Item | Owner"], [2, "Budget review | Grace"]]);
     expect(text).toContain("Table 5:1 · original · 4 rows × 2 columns · rows 0, 2 shown · ");
-    expect(text).toMatch(/\] row 0: Item \| Owner\n\[ev_[a-f0-9]+\] row 2: Budget review \| Grace/);
+    expect(text).toMatch(/\] context · row 0: Item \| Owner\n\[ev_[a-f0-9]+\] row 2: Budget review \| Grace/);
   });
 
   it("names the request for all rows when a page shows only some, unless the request names the table", async () => {
@@ -1416,11 +1419,11 @@ describe("getBoardContext tables", () => {
     } }]);
     setBoard(data.boardId, data);
     const { pages, totalMatched } = await readPages({ boardId: data.boardId, topic: "budget", limit: 2 });
-    expect(totalMatched).toBe(3);
+    expect(totalMatched).toBe(2);
     expect(pages.map((page) => page.map((item) => item.row))).toEqual([[0, 2], [0, 3]]);
     const second = await getBoardContext({ boardId: data.boardId, topic: "budget", limit: 2,
       cursor: (await getBoardContext({ boardId: data.boardId, topic: "budget", limit: 2 })).structuredContent.nextCursor });
-    expect(second.text).toMatch(/\] row 0: Item \| Owner\n\[ev_[a-f0-9]+\] row 3: Budget approval \| Linus/);
+    expect(second.text).toMatch(/\] context · row 0: Item \| Owner\n\[ev_[a-f0-9]+\] row 3: Budget approval \| Linus/);
   });
 
   function sectionBoard(boardId: string) {
@@ -1775,4 +1778,56 @@ describe("bounded navigation follow-up reads", () => {
     expect(followed.ids.size).toBe(300);
     expect(followed.calls).toBeLessThanOrEqual(2);
   });
+});
+
+describe("topic search context and suggestions", () => {
+  it("marks only added neighbors across pages and counts matches without gaps", async () => {
+    const data = evidenceBoard("ContextMarked123", [textNode("one", "quasar alpha"), textNode("two", "quasar beta"), textNode("three", "neighbor")]);
+    data.connectorEdges = [{ connectorId: "edge", fromNodeId: "one", toNodeId: "three" }];
+    setBoard(data.boardId, data);
+    const items: Array<{ nodeId: string; context?: true }> = [];
+    let cursor: string | undefined;
+    do {
+      const result = await getBoardContext({ boardId: data.boardId, topic: "quasar", limit: 1, cursor });
+      expect(result.structuredContent.totalMatched).toBe(2);
+      for (const item of result.structuredContent.evidence) {
+        items.push(item);
+        if (item.context) expect(result.text).toContain(`[${item.evidenceId}] context ·`);
+      }
+      cursor = result.structuredContent.nextCursor;
+    } while (cursor);
+    expect(items.map(({ nodeId, context }) => [nodeId, context])).toEqual([["one", undefined], ["two", undefined], ["three", true]]);
+  });
+
+  it("suggests deterministic redacted board words without returning them as matches", async () => {
+    const data = evidenceBoard("Suggestions123", [textNode("one", "calendar\nPassword: calendariumsecret")]);
+    setBoard(data.boardId, data);
+    const request = { boardId: data.boardId, topic: "calender" };
+    const result = await getBoardContext(request);
+    expect(result.structuredContent.evidence).toEqual([]);
+    expect(result.text).toContain('Similar words (untrusted board data): "calendar"');
+    expect(result.text).not.toContain("calendariumsecret");
+    expect((await getBoardContext(request)).text).toBe(result.text);
+  });
+});
+
+it.each([
+  { label: "default", args: {}, showsSectionIds: true },
+  { label: "large", args: { limit: 100, maxChars: 24000 }, showsSectionIds: true },
+  { label: "minimum", args: { maxChars: 2000 }, showsSectionIds: false },
+])("gives the same section navigation on the first and next pages at the $label budget", async ({ args, showsSectionIds }) => {
+  setBoard(large300.boardId, large300);
+  const request = { boardId: large300.boardId, ...args };
+  const first = await getBoardContext(request);
+  expect(first.structuredContent.nextCursor).toBeDefined();
+  const second = await getBoardContext({ ...request, cursor: first.structuredContent.nextCursor });
+  expect(/- 1:0 Theme 1 — \d+ excerpts/.test(first.text)).toBe(showsSectionIds);
+  for (const page of [first, second]) {
+    for (const rendered of [page.text, page.structuredContent.contextText]) {
+      expect(rendered.includes("pass a section ID from the first page as nodeIds")).toBe(showsSectionIds);
+      expect(rendered.match(/call get_board_context without topic(?: or cursor)? and with maxChars: 24000/g) ?? [])
+        .toHaveLength(showsSectionIds ? 0 : 1);
+    }
+    expect(page.text.length).toBeLessThanOrEqual(args.maxChars ?? 12000);
+  }
 });

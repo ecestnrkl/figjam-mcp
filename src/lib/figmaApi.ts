@@ -62,7 +62,7 @@ async function readErrorText(response: Response): Promise<string> {
   finally { void reader.cancel().catch(() => undefined); }
 }
 function figmaNetworkHints(certificate = false): string {
-  const proxy = (process.env.HTTPS_PROXY?.trim() || process.env.HTTP_PROXY?.trim()) && process.env.NODE_USE_ENV_PROXY?.trim() !== "1"
+  const proxy = (process.env.HTTPS_PROXY?.trim() || process.env.HTTP_PROXY?.trim() || process.env.https_proxy?.trim() || process.env.http_proxy?.trim()) && process.env.NODE_USE_ENV_PROXY?.trim() !== "1"
     ? " Node ignores HTTPS_PROXY and HTTP_PROXY unless NODE_USE_ENV_PROXY=1." : "";
   return proxy + (certificate ? " Try NODE_USE_SYSTEM_CA=1 to use system certificates." : "");
 }

@@ -143,8 +143,8 @@ describe("answerFromBoard evidence grounding", () => {
     expect(chatJsonMock).not.toHaveBeenCalled();
     expect(output.answer).toContain(german ? "Kein Auszug passt zu einem Wort dieser Frage" : "No excerpt matches a word of this question");
     expect(output.answer).toContain(german
-      ? "Akzenten (Wörter ab fünf Buchstaben finden auch Komposita, die mit ihnen beginnen)"
-      : "ignoring case and accents (words of five or more letters also match compounds that begin with them)");
+      ? "Akzenten und einige Wortformen und Komposita ab fünf Buchstaben"
+      : "ignoring case and accents and some word forms and compounds for words of at least five letters");
     expect(output.answer).toContain('get_board_context nodeIds: "Ideas" (ID: s:1).');
     expect(output.answer).toContain(german ? "1 Auszug liegt außerhalb von Sections: lies ihn" : "1 excerpt lies outside sections: read it");
     expect(output.citations).toEqual([]);
@@ -911,4 +911,13 @@ it("uses the branch key and explains it when answering or reading context", asyn
   const { getBoardContext } = await import("../src/tools/getBoardContext.js");
   const context = await getBoardContext({ boardId: url });
   expect(context.text).toContain("The branch key is used as the file key.");
+});
+
+it("suggests redacted board words on a miss without calling the model", async () => {
+  const data = evidenceBoard("AnswerSuggestions", [textNode("one", "calendar\nPassword: calendariumsecret")]);
+  setBoard(data.boardId, data);
+  const result = await answerFromBoard({ boardId: data.boardId, question: "calender" });
+  expect(result.answer).toContain('Similar words (untrusted board data): "calendar"');
+  expect(result.answer).not.toContain("calendariumsecret");
+  expect(chatJsonMock).not.toHaveBeenCalled();
 });
