@@ -143,8 +143,12 @@ export async function getBoardContext(input: GetBoardContextInput, extra: { noti
   const textlessIds = withoutExcerpts.filter((id) => !connectorIds.has(id) && !hiddenIds.has(id));
   const resultFingerprint = createHash("sha256")
     .update(retrieved.evidence.map((item) => item.evidenceId).join("\0")).digest("hex");
+  const sectionNavigation = !options.topic && !options.nodeIds && !options.outsideSections;
+  // The checksum variant preserves the first page's navigation choice across calls.
+  const cursorOmittedSectionIds = sectionNavigation && cursor?.version === 2 && cursor.representation === "full" &&
+    cursor.check === cursorChecksum(retrieved.snapshotId, cursorQuery, resultFingerprint, cursor.offset, cursor.page, "full", true);
   if (cursor && !cursor.check && cursor.snapshot !== retrieved.snapshotId) throw new Error(CURSOR_SNAPSHOT_GONE);
-  if (cursor && (cursor.check ? cursor.check !== cursorChecksum(retrieved.snapshotId, cursorQuery, resultFingerprint, cursor.offset, cursor.page, cursor.version === 2 ? cursor.representation : undefined)
+  if (cursor && (cursor.check ? !cursorOmittedSectionIds && cursor.check !== cursorChecksum(retrieved.snapshotId, cursorQuery, resultFingerprint, cursor.offset, cursor.page, cursor.version === 2 ? cursor.representation : undefined)
     : cursor.result !== resultFingerprint)) throw new Error(CURSOR_MISMATCH);
   const offset = cursor?.offset ?? 0;
   if (offset > retrieved.evidence.length) throw new Error(CURSOR_MISMATCH);
@@ -179,7 +183,7 @@ export async function getBoardContext(input: GetBoardContextInput, extra: { noti
     }
   }
   const rankedSectionMatches = [...sectionMatches].sort((a, b) => b[1].count - a[1].count || a[1].order - b[1].order);
-  const topicHint = 'Search matches whole words ignoring case and accents, and some word forms and compounds for words of at least five letters. Synonyms and translations do not match; use the board’s words and language.';
+  const topicHint = 'Search matches whole words ignoring case and accents, and some word forms and compounds for words of at least five letters. Synonyms and translations do not match; add them to the topic yourself (for example "payment Bezahlung") or read sections by ID.';
   function topicSections(limit: number): string {
     let sectionCount = 0;
     const shown = rankedSectionMatches.filter(([id]) => !id || ++sectionCount <= limit);
@@ -191,8 +195,9 @@ export async function getBoardContext(input: GetBoardContextInput, extra: { noti
   const orientationBudget = Math.floor(options.maxChars / 3);
   // A single page without sections needs its navigation call only when excerpts remain.
   const shortSinglePage = !cursor && !options.topic && !options.outsideSections && !options.nodeIds && sections.count === 0;
-  let overview = cursor || options.topic ? "" : options.outsideSections ? sections.outsideOverview(orientationBudget)
-    : options.nodeIds ? focusOutline() : sections.boardOverview(orientationBudget, !shortSinglePage);
+  const boardOutline = !cursor && sectionNavigation ? sections.boardOverview(orientationBudget, !shortSinglePage) : undefined;
+  let overview = boardOutline?.text ?? (cursor || options.topic ? "" : options.outsideSections
+    ? sections.outsideOverview(orientationBudget) : focusOutline());
   const page = cursor?.page ?? 1;
   const fits = ({ text, structuredContent }: BoardContextResult, budget = options.maxChars) =>
     text.length <= budget && JSON.stringify(structuredContent).length <= budget &&
@@ -222,7 +227,7 @@ export async function getBoardContext(input: GetBoardContextInput, extra: { noti
     throw error;
   }
   if (shortSinglePage && selected.consumed < retrieved.evidence.length) {
-    const navigation = sections.boardOverview(orientationBudget);
+    const navigation = sections.boardOverview(orientationBudget).text;
     if (navigation !== overview) {
       overview = navigation;
       selected = selectWithFallbacks(firstView);
@@ -652,8 +657,10 @@ export async function getBoardContext(input: GetBoardContextInput, extra: { noti
     // Repeated first rows of tables are context; only the result sequence advances the cursor.
     const nextOffset = view.offset + consumed;
     const remaining = retrieved.evidence.length - nextOffset;
+    const omittedSectionIds = sectionNavigation && sections.count > 0 &&
+      (cursor ? cursorOmittedSectionIds : !(view.overview && boardOutline?.hasSectionIds));
     const nextCursor = remaining > 0 && consumed > 0
-      ? encodeCursor(retrieved.snapshotId, query, resultFingerprint, nextOffset, view.page + 1) : undefined;
+      ? encodeCursor(retrieved.snapshotId, query, resultFingerprint, nextOffset, view.page + 1, "full", omittedSectionIds) : undefined;
 
     const orientation = [header];
     if (options.topic && !cursor && view.page === 1) {
@@ -686,11 +693,11 @@ export async function getBoardContext(input: GetBoardContextInput, extra: { noti
         ? `Showing all ${consumed} excerpt${consumed === 1 ? "" : "s"}.`
         : `Showing ${consumed} of ${retrieved.evidence.length} excerpt${retrieved.evidence.length === 1 ? "" : "s"} on this page; ${remaining} remaining.`);
     }
-    if (evidence.length > 0 && view.position) orientation.push(pagePosition(consumed, remaining, nextCursor));
+    if (evidence.length > 0 && view.position) orientation.push(pagePosition(consumed, remaining, nextCursor, omittedSectionIds));
     else if (nextCursor) orientation.push(`Continue with cursor "${nextCursor}" and otherwise the same arguments.`);
     if (view.overview) orientation.push(overview);
-    else if (!cursor && !options.topic && !options.nodeIds && !options.outsideSections && sections.count) {
-      orientation.push("For section IDs, call get_board_context without topic and with maxChars: 24000.");
+    if (omittedSectionIds) {
+      orientation.push("To read by section, call get_board_context without topic or cursor and with maxChars: 24000 for section IDs.");
     }
     if (unknownIds.length) orientation.push(`Not in this snapshot: ${listIds(unknownIds)}.`);
     if (textlessIds.length) {
@@ -745,12 +752,12 @@ export async function getBoardContext(input: GetBoardContextInput, extra: { noti
     };
   }
 
-  function pagePosition(shown: number, remaining: number, nextCursor: string | undefined): string {
+  function pagePosition(shown: number, remaining: number, nextCursor: string | undefined, omittedSectionIds: boolean): string {
     if (remaining <= 0) return `Page ${view.page} of ${view.page}; no excerpts remaining.`;
     const remainingPages = Math.ceil(remaining / (perPage ?? shown));
     const position = `Page ${view.page} of about ${view.page + remainingPages}; ${remaining} excerpt${remaining === 1 ? "" : "s"} remaining; continue with cursor "${nextCursor}" and otherwise the same arguments.`;
-    return !options.topic && !options.nodeIds && !options.outsideSections && remainingPages > MAX_PAGES_TO_PAGE_THROUGH && sections.count > 0
-      ? `${position} With more than ${MAX_PAGES_TO_PAGE_THROUGH} pages left, read sections by ID instead: call get_board_context without topic and with maxChars: 24000 for section IDs, then pass an ID as nodeIds.`
+    return sectionNavigation && !omittedSectionIds && remainingPages > MAX_PAGES_TO_PAGE_THROUGH && sections.count > 0
+      ? `${position} With more than ${MAX_PAGES_TO_PAGE_THROUGH} pages left, read sections by ID instead: pass a section ID from the first page as nodeIds.`
       : position;
   }
 
@@ -1008,15 +1015,16 @@ function legacyQuerySignature(input: GetBoardContextInput): string {
 }
 
 function encodeCursor(snapshotId: string, query: string, result: string, offset: number, page: number,
-  representation: ContextRepresentation = "full"): string {
+  representation: ContextRepresentation = "full", omittedSectionIds = false): string {
   const kind = representation === "overview" ? "o" : "f";
-  return `v2.${kind}.${page}.${offset}.${snapshotId.slice(0, SNAPSHOT_PREFIX_LENGTH)}.${cursorChecksum(snapshotId, query, result, offset, page, representation)}`;
+  return `v2.${kind}.${page}.${offset}.${snapshotId.slice(0, SNAPSHOT_PREFIX_LENGTH)}.${cursorChecksum(snapshotId, query, result, offset, page, representation, omittedSectionIds)}`;
 }
 
 function cursorChecksum(snapshotId: string, query: string, result: string, offset: number, page: number,
-  representation?: ContextRepresentation): string {
+  representation?: ContextRepresentation, omittedSectionIds = false): string {
   const fields: Array<string | number> = [snapshotId, query, result, offset, page];
   if (representation !== undefined) fields.push("v2", representation);
+  if (omittedSectionIds) fields.push("no-section-ids");
   return createHash("sha256").update(JSON.stringify(fields)).digest("hex").slice(0, CHECKSUM_LENGTH);
 }
 

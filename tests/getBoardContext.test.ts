@@ -213,12 +213,15 @@ describe("getBoardContext", () => {
   it("explains topic matches and context on the first page, leaving continuation pages unchanged", async () => {
     expect(getBoardContextInputShape.topic.description).toContain(
       "ignore case and accents; words of at least five letters also match some word forms and compounds");
+    const synonymsHint = 'add them to the topic yourself (for example "payment Bezahlung") or read sections by ID';
+    expect(getBoardContextInputShape.topic.description).toContain(synonymsHint);
     const data = board("TopicInfo123");
     setBoard(data.boardId, data);
     const single = await getBoardContext({ boardId: data.boardId, topic: "Interview interview" });
     for (const shown of [single.text, single.structuredContent.contextText]) {
       expect(shown).toContain("Topic search for interview: 1 excerpt matches; 1 more is shown as context (arrow neighbors and table headings).");
       expect(shown).toContain("whole words ignoring case and accents, and some word forms and compounds for words of at least five letters");
+      expect(shown).toContain(synonymsHint);
     }
     const first = await getBoardContext({ boardId: data.boardId, topic: "interview", limit: 1 });
     expect(first.text).toContain("Showing 1 of 2 excerpts on this page; 1 remaining.");
@@ -1808,11 +1811,23 @@ describe("topic search context and suggestions", () => {
   });
 });
 
-it("gives a usable section lookup when the minimum budget omits the overview", async () => {
-  const data = largeBoard("SmallNavigation123", 30, 10, 12);
-  setBoard(data.boardId, data);
-  const result = await getBoardContext({ boardId: data.boardId, maxChars: 2000 });
-  expect(result.text).not.toContain("section ID from the first page");
-  expect(result.text).toContain("call get_board_context without topic and with maxChars: 24000 for section IDs");
-  expect(result.text.length).toBeLessThanOrEqual(2000);
+it.each([
+  { label: "default", args: {}, showsSectionIds: true },
+  { label: "large", args: { limit: 100, maxChars: 24000 }, showsSectionIds: true },
+  { label: "minimum", args: { maxChars: 2000 }, showsSectionIds: false },
+])("gives the same section navigation on the first and next pages at the $label budget", async ({ args, showsSectionIds }) => {
+  setBoard(large300.boardId, large300);
+  const request = { boardId: large300.boardId, ...args };
+  const first = await getBoardContext(request);
+  expect(first.structuredContent.nextCursor).toBeDefined();
+  const second = await getBoardContext({ ...request, cursor: first.structuredContent.nextCursor });
+  expect(/- 1:0 Theme 1 — \d+ excerpts/.test(first.text)).toBe(showsSectionIds);
+  for (const page of [first, second]) {
+    for (const rendered of [page.text, page.structuredContent.contextText]) {
+      expect(rendered.includes("pass a section ID from the first page as nodeIds")).toBe(showsSectionIds);
+      expect(rendered.match(/call get_board_context without topic(?: or cursor)? and with maxChars: 24000/g) ?? [])
+        .toHaveLength(showsSectionIds ? 0 : 1);
+    }
+    expect(page.text.length).toBeLessThanOrEqual(args.maxChars ?? 12000);
+  }
 });

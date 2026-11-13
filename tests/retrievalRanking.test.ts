@@ -5,6 +5,41 @@ import { evidenceBoard, textNode } from "./fixtures/retrieval.js";
 const autoNamed = (id: string, text: string) => ({ ...textNode(id, text), name: text.replace(/\s+/g, " ") });
 
 describe("field-aware source ranking", () => {
+  it.each(["Terminen", "Terminebuchung", "Buchungstermine"])(
+    "keeps all frequent exact matches ahead of the rare alternative %s", (alternative) => {
+      const board = evidenceBoard("ExactBeforeForm", [
+        textNode("form", alternative),
+        ...Array.from({ length: 30 }, (_, i) => textNode(`exact:${i}`, `Termine ${i}`)),
+      ]);
+      const ids = retrieveEvidence(board, { query: "Termine" }).evidence.map((item) => item.nodeId);
+      expect(ids).toHaveLength(31);
+      expect(ids.at(-1)).toBe("form");
+    },
+  );
+
+  it("keeps a node-name match ahead of an alternative in source text", () => {
+    const board = evidenceBoard("ExactMetadata", [
+      { ...textNode("exact", ""), name: "Termine", type: "FRAME" },
+      textNode("form", "Terminen"),
+    ]);
+    board.clusters.shift();
+    const result = retrieveEvidence(board, { query: "Termine" }).evidence;
+    expect(result[0]).toMatchObject({ nodeId: "exact", sourceType: "board_metadata" });
+    expect(result.at(-1)?.nodeId).toBe("form");
+  });
+
+  it("ranks coverage of two frequent exact words above coverage inflated by a rare word form", () => {
+    const board = evidenceBoard("ExactCoverage", [
+      textNode("target", "Kalender Protokoll"),
+      ...Array.from({ length: 3 }, (_, i) => textNode(`form:${i}`, `Kalender Terminen ${i}`)),
+      ...Array.from({ length: 30 }, (_, i) => textNode(`calendar:${i}`, `Kalender ${i}`)),
+      ...Array.from({ length: 30 }, (_, i) => textNode(`protocol:${i}`, `Protokoll ${i}`)),
+    ]);
+    const ids = retrieveEvidence(board, { query: "Kalender Protokoll Termine" }).evidence.map((item) => item.nodeId);
+    expect(ids[0]).toBe("target");
+    expect(ids).toContain("form:0");
+  });
+
   it.each(["text", "node", "section", "page", "cluster"])("uses the weaker length penalty in %s", (field) => {
     const values = ["anchorword", "anchorword anchorword detail detail detail detail", "background ".repeat(10)];
     const board = evidenceBoard("LengthPenalty", values.map((value, i) => textNode(`n:${i}`, field === "text" ? `common ${value}` : "common")));

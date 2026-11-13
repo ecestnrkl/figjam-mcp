@@ -228,6 +228,7 @@ export function nodeLink(board: BoardData, nodeId: string): string {
 export function retrieveEvidence(board: BoardData, options: EvidenceQuery = {}): EvidenceResult {
   const index = getIndex(board);
   let matches: IndexedEvidence[];
+  let singleWordExactIds: Set<string> | undefined;
   let requestedCounts: EvidenceResult["requestedCounts"];
   if (options.nodeIds) {
     const requested = new Set(options.nodeIds);
@@ -261,14 +262,24 @@ export function retrieveEvidence(board: BoardData, options: EvidenceQuery = {}):
     }
     // Page and derived cluster labels can help rank an original match, never create one.
     const matched = new Set(scores.keys());
+    if (queryTerms.length === 1) {
+      const exact = exactEntries.get(queryTerms[0]!)!;
+      if (exact.size > 0 && exact.size < matched.size) {
+        singleWordExactIds = new Set(Array.from(exact, (entry) => index.entries[entry]!.evidence.evidenceId));
+      }
+    }
     addFieldScores(index, "page", queryTerms, alternatives, exactEntries, scores, matched);
     addFieldScores(index, "cluster", queryTerms, alternatives, exactEntries, scores, matched);
     for (const [entry, score] of scores) {
-      scores.set(entry, score * ((coveredTerms.get(entry)?.size ?? 0) / queryTerms.length) ** 2);
+      let coverage = 0;
+      for (const term of coveredTerms.get(entry) ?? []) {
+        coverage += exactEntries.get(term)!.has(entry) ? 1 : ALTERNATIVE_COVERAGE_WEIGHT;
+      }
+      scores.set(entry, score * (coverage / queryTerms.length) ** 2);
     }
     matches = contentFirst([...scores.entries()]
       .sort(([a, aScore], [b, bScore]) => bScore - aScore || a - b)
-      .map(([entry]) => index.entries[entry]!), (entry) => entry.evidence);
+      .map(([entry]) => index.entries[entry]!), (entry) => entry.evidence, singleWordExactIds);
   } else {
     // A board overview covers different areas before spending its budget on another
     // paragraph from the same large cluster. Order remains stable for pagination.
@@ -294,7 +305,8 @@ export function retrieveEvidence(board: BoardData, options: EvidenceQuery = {}):
   }
   return {
     snapshotId: index.snapshotId,
-    evidence: options.nodeIds ? selected : contentFirst(selected, (item) => item),
+    // The ranked tiers are already ordered; leave added table headings in front of their rows.
+    evidence: options.nodeIds || singleWordExactIds ? selected : contentFirst(selected, (item) => item),
     primaryEvidenceIds: primary.map((item) => item.evidenceId),
     connections: connectionsForEvidence(board, selected),
     totalMatched,
@@ -503,9 +515,14 @@ function readingOrder(board: BoardData, entries: IndexedEvidence[]): IndexedEvid
 
 /**
  * Names without text (frames, links, shapes) rank high on short BM25 fields and
- * would crowd out board text; they follow all content in a stable order.
+ * would crowd out board text; they follow content within each match tier.
  */
-function contentFirst<T>(items: T[], evidenceOf: (item: T) => Evidence): T[] {
+function contentFirst<T>(items: T[], evidenceOf: (item: T) => Evidence, exactIds?: ReadonlySet<string>): T[] {
+  if (exactIds?.size) {
+    const exact = (item: T) => exactIds.has(evidenceOf(item).evidenceId);
+    // Even a rare alternative in body text must follow an exact single-word match in metadata.
+    return [...contentFirst(items.filter(exact), evidenceOf), ...contentFirst(items.filter((item) => !exact(item)), evidenceOf)];
+  }
   const isMetadata = (item: T) => evidenceOf(item).sourceType === "board_metadata";
   return [...items.filter((item) => !isMetadata(item)), ...items.filter(isMetadata)];
 }
@@ -610,6 +627,8 @@ function addFieldScores(
   }
 }
 
+// Alternatives help with recall, but rare forms should not outweigh coverage by exact terms.
+const ALTERNATIVE_COVERAGE_WEIGHT = 0.3;
 const WORD_ENDINGS = ["e", "n", "s", "en", "er", "es", "em", "ern", "nen", "ed", "ing"];
 const latinWord = (word: string) => /^[\p{Script=Latin}\p{M}]+$/u.test(word);
 const reverseWord = (word: string) => [...word].reverse().join("");

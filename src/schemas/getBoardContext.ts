@@ -29,7 +29,7 @@ export type ClusterContext = z.infer<typeof clusterContextSchema>;
 
 export const getBoardContextInputShape = {
   boardId: boardIdInputSchema.describe("The Figma file key returned by ingest_board, or the board URL. A URL with a node-id, without nodeIds, topic and outsideSections, reads that node"),
-  topic: topicSchema.optional().describe("Words to search in excerpt text, node or section names, arrow labels and table headings. Whole words ignore case and accents; words of at least five letters also match some word forms and compounds. Synonyms and translations do not match. No matches may suggest similar board words. Context excerpts are marked. Cannot be combined with nodeIds or outsideSections."),
+  topic: topicSchema.optional().describe('Words to search in excerpt text, node or section names, arrow labels and table headings. Whole words ignore case and accents; words of at least five letters also match some word forms and compounds. Synonyms and translations do not match; add them to the topic yourself (for example "payment Bezahlung") or read sections by ID. No matches may suggest similar board words. Context excerpts are marked. Cannot be combined with nodeIds or outsideSections.'),
   nodeIds: z.array(z.string().trim().min(1).max(200)).min(1).max(50).optional()
     .describe("Read exact source nodes, all rows of a table or the row of a table cell, or every excerpt inside a page, section, frame or group by its ID (nested sections included, in reading order); several IDs in one call share every page in request order; cannot be combined with topic"),
   outsideSections: z.boolean().optional()
