@@ -126,7 +126,7 @@ const hiddenContents = () => [
 const section = (hidden: boolean) => ({ id: "section", name: "Private section", type: "SECTION", sectionContentsHidden: hidden, children: hiddenContents() });
 
 it("keeps hidden section contents and URL passwords out of the full ingest and read pipeline", async () => {
-  fileTree.mockResolvedValue(tree([sticky("public", "postgres://admin:synthetic-value@db.test/plan"), section(true)]));
+  fileTree.mockResolvedValue(tree([sticky("public", "postgres://admin:ab/synthetic-value@db.test/plan"), section(true)]));
   const result = await ingestBoard(input);
   const context = await getBoardContext({ boardId: fileKey });
   const direct = await Promise.all(["section", "secret-note", "Tsecret-table;row-1;col-1", "nested-note"].map(id => getBoardContext({ boardId: fileKey, nodeIds: [id] })));
@@ -156,11 +156,68 @@ it.each([true, false])("reports a section visibility transition (hidden=%s) with
   fileTree.mockResolvedValue(tree([sticky("public", "Public planning notes"), section(hidden)]));
   await ingestBoard({ ...input, ingestMode: "max_speed" });
   const output = await diffBoard({ boardId: fileKey, compareTo: 1 });
-  expect(output.summaryText).toContain(`Section section: contents ${hidden ? "hidden" : "shown"} in FigJam`);
+  expect(output.summaryText).toContain(`Section section Private section: contents ${hidden ? "hidden" : "shown"} in FigJam`);
   expect(JSON.stringify(output)).not.toMatch(/HIDDENZEPHYR|secret-note|secret-table|secret-arrow/);
   if (hidden) {
     await ingestBoard({ ...input, ingestMode: "max_speed" });
     const latest = await readLatestBoard(fileKey);
     expect(JSON.stringify(latest)).not.toContain("HIDDENZEPHYR");
   }
+});
+
+it("never renders, interprets or counts a hidden section in balanced mode", async () => {
+  fileTree.mockResolvedValue(tree([{ ...section(true), absoluteBoundingBox: box,
+    characters: "Section-only text", fills: [{ type: "IMAGE", imageRef: "section-fill" }] }]));
+  const result = await ingestBoard({ ...input, ingestMode: "balanced" });
+  const board = await readLatestBoard(fileKey);
+  const context = await getBoardContext({ boardId: fileKey });
+  expect(board?.clusters).toEqual([]);
+  expect(renders).not.toHaveBeenCalled();
+  expect(imageFills).not.toHaveBeenCalled();
+  expect(chatJson).not.toHaveBeenCalled();
+  expect(context.structuredContent.totalMatched).toBe(0);
+  expect(JSON.stringify({ result, context })).not.toMatch(/GENERATED PLACEHOLDER|Section-only text/);
+  // Simulate a refinement written by the previous PR head, with a section cluster.
+  const { persistBoard } = await import("../src/lib/persistentCache.js");
+  await persistBoard({ ...board!, clusters: [{ id: "stale", nodeIds: ["section"], confirmedNodeIds: ["section"],
+    boundingBox: box, label: "Old section", summary: "Old section placeholder", summarySource: "deterministic" }] });
+  const restored = await getBoardContext({ boardId: fileKey });
+  expect(restored.structuredContent.totalMatched).toBe(0);
+  expect(JSON.stringify(restored)).not.toContain("Old section placeholder");
+  // A second ordinary ingest must not restore artifacts from a cached refinement.
+  await ingestBoard({ ...input, ingestMode: "balanced" });
+  expect((await readLatestBoard(fileKey))?.clusters).toEqual([]);
+});
+
+it.each([true, false])("reports only visibility when an external connector crosses the section boundary (hidden=%s)", async (hidden) => {
+  const { diffBoard } = await import("../src/tools/diffBoard.js");
+  const makeTree = (isHidden: boolean) => tree([
+    sticky("public", "Public note"),
+    { id: "external-arrow", name: "Arrow", type: "CONNECTOR", characters: "Synthetic relation",
+      connectorStart: { endpointNodeId: "public" }, connectorEnd: { endpointNodeId: "secret-note" } },
+    { ...section(isHidden), absoluteBoundingBox: box },
+  ]);
+  fileTree.mockResolvedValueOnce(makeTree(!hidden));
+  await ingestBoard({ ...input, ingestMode: "max_speed" });
+  fileTree.mockResolvedValue(makeTree(hidden));
+  await ingestBoard({ ...input, ingestMode: "max_speed" });
+  if (hidden) expect((await readLatestBoard(fileKey))?.connectorEdges).toEqual([]);
+  const diff = await diffBoard({ boardId: fileKey, compareTo: 1 });
+  expect(diff.summaryText).toContain(`contents ${hidden ? "hidden" : "shown"} in FigJam`);
+  expect(diff.stats).toMatchObject({ addedNodes: 0, removedNodes: 0, editedNodes: 0,
+    newClusters: 0, removedClusters: 0, modifiedClusters: 0, addedConnections: 0, removedConnections: 0 });
+  expect(JSON.stringify(diff)).not.toMatch(/New clusters|Removed clusters|Connections:|Synthetic relation|No content, name or layout changes/);
+});
+
+it("names a hidden section in ingest, direct reads and visibility diffs", async () => {
+  const { diffBoard } = await import("../src/tools/diffBoard.js");
+  fileTree.mockResolvedValueOnce(tree([section(false)]));
+  await ingestBoard({ ...input, ingestMode: "max_speed" });
+  fileTree.mockResolvedValue(tree([section(true)]));
+  const result = await ingestBoard({ ...input, ingestMode: "max_speed" });
+  const read = await getBoardContext({ boardId: fileKey, nodeIds: ["secret-note"] });
+  const diff = await diffBoard({ boardId: fileKey, compareTo: 1 });
+  expect(result.summary).toContain("Section section Private section: Contents hidden");
+  expect(read.text).toContain("Section section Private section: Contents hidden");
+  expect(diff.summaryText).toContain("Section section Private section: contents hidden");
 });

@@ -16,7 +16,7 @@ import {
   formatEvidenceConnection, MAX_CONTEXT_RESPONSE_BYTES, readableContainerIds,
   evidenceTokens, firstTableRow, knownNodeIds, retrieveEvidence, snapshotIdForBoard, tableCellPositions, unknownNodeIds, type Evidence,
 } from "../lib/evidence.js";
-import { hiddenSectionNotice, SectionIndex } from "../lib/sections.js";
+import { sectionReference, hiddenSectionNotice, SectionIndex } from "../lib/sections.js";
 import type { BoardData, RefinedCluster } from "../types.js";
 
 /**
@@ -118,7 +118,7 @@ export async function getBoardContext(input: GetBoardContextInput, extra: { noti
     ? "The board contains no readable content." : undefined;
   const hiddenSections = board.nodes.filter((node) => node.hiddenDescendantIds && options.nodeIds?.some(
     (id) => id === node.id || node.hiddenDescendantIds!.includes(id)));
-  const hiddenNotice = hiddenSections.map((node) => `Section ${node.id}: ${hiddenSectionNotice(node.hiddenDescendantIds!.length)}.`).join(" ");
+  const hiddenNotice = hiddenSections.map((node) => `${sectionReference(node)}: ${hiddenSectionNotice(node.hiddenDescendantIds!.length)}.`).join(" ");
   const notices = [readWarning, emptyNotice, hiddenNotice, conversionNotice(resolved?.conversions ?? []), ...(extra.notices ?? [])]
     .filter((notice): notice is string => Boolean(notice));
   const retrieved = retrieveEvidence(board, {

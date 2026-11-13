@@ -1,3 +1,4 @@
+import { withoutHiddenSectionArtifacts } from "./hiddenSections.js";
 import { refineClusterFromText } from "./clusterText.js";
 import { readBoolEnv } from "./env.js";
 import { tableCellPositions } from "./tableCells.js";
@@ -43,11 +44,14 @@ function redactUrlPasswords(text: string): string {
     while (start > copied && /[A-Za-z0-9+.-]/.test(text[start - 1]!)) start--;
     const scheme = text.slice(start, separator);
     let end = separator + 3;
-    while (end < text.length && !/[\s/?#"']/.test(text[end]!)) end++;
+    while (end < text.length && !/[\s"']/.test(text[end]!)) end++;
     const authority = text.slice(separator + 3, end);
     const at = authority.lastIndexOf("@");
     const colon = authority.indexOf(":");
-    if (/^[A-Za-z][A-Za-z0-9+.-]*$/.test(scheme) && colon >= 0 && at > colon && at < authority.length - 1) {
+    const slash = authority.indexOf("/");
+    const colonBeforeSlash = colon >= 0 && (slash < 0 || colon < slash);
+    const port = slash >= 0 && colonBeforeSlash && /^\d+$/.test(authority.slice(colon + 1, slash));
+    if (/^[A-Za-z][A-Za-z0-9+.-]*$/.test(scheme) && colonBeforeSlash && !port && at > colon && at < authority.length - 1 && authority[at + 1] !== "/") {
       const password = authority.slice(colon + 1, at);
       const placeholder = /^(?:\$\{[^}]*\}|\{\{[^}]*\}\}|<[^>]*>|\*\*\*|xxx|password|TBD|\[redacted\])$/i.test(password);
       if (password && !placeholder) {
@@ -186,9 +190,11 @@ export function redactNodes(nodes: NormalizedNode[]): NormalizedNode[] {
  * evidence indexes stay cached.
  */
 export function redactBoard(board: BoardData): BoardData {
-  if (!isCredentialRedactionEnabled()) return board;
-  const existing = redactedBoards.get(board);
+  if (!isCredentialRedactionEnabled()) return withoutHiddenSectionArtifacts(board);
+  const original = board;
+  const existing = redactedBoards.get(original);
   if (existing) return existing;
+  board = withoutHiddenSectionArtifacts(board);
   const nodes = redactNodes(board.nodes);
   const nodesById = new Map(nodes.map((node) => [node.id, node]));
   const redacted: BoardData = {
@@ -207,6 +213,6 @@ export function redactBoard(board: BoardData): BoardData {
       ...relation, labels: relation.labels.map(redactCredentials),
     })),
   };
-  redactedBoards.set(board, redacted);
+  redactedBoards.set(original, redacted);
   return redacted;
 }

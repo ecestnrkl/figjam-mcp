@@ -739,6 +739,7 @@ function buildEvidence(board: BoardData, snapshotId: string): EvidenceSource[] {
   };
   const nodesById = new Map(board.nodes.map((node) => [node.id, node]));
   for (const node of board.nodes) {
+    if (node.hiddenDescendantIds !== undefined) continue;
     const cluster = clusterOf.get(node.id);
     const provenance = nodeProvenance(node, nodesById);
     const rows = node.table?.cells.length ? tableRows(node) : undefined;

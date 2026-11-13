@@ -452,3 +452,16 @@ describe("URL credential redaction", () => {
     expect(JSON.stringify(output)).not.toContain("synthetic-value");
   });
 });
+
+it.each([
+  "https://example.com:8080/a@b",
+  "https://x.io/a:b@c",
+  "https://ece@host",
+  "postgres://admin:password@db.test/path",
+  "postgres://admin:${SECRET}@db.test/path",
+])("masks slash-containing passwords in both paths while preserving %s", (unchanged) => {
+  const text = `postgres://admin:ab/cd123@db.test/app ${unchanged}`;
+  const expected = `postgres://admin:[redacted]@db.test/app ${unchanged}`;
+  expect(redactCredentials(text)).toBe(expected);
+  expect(redactMessageCredentials(text)).toBe(expected);
+});

@@ -1,3 +1,4 @@
+import { withoutHiddenSectionArtifacts } from "../lib/hiddenSections.js";
 import type { IngestBoardInput, IngestBoardOutput } from "../schemas/ingestBoard.js";
 import { setImmediate as yieldToRequests } from "node:timers/promises";
 import { extractFigmaFileKeyFromUrl, FIGMA_URL_HINT } from "../schemas/common.js";
@@ -25,7 +26,7 @@ import { getVisionMaxOutputTokens } from "../lib/llmOutputBudgets.js";
 import { getVisionRequestTimeoutMs } from "../lib/llmTimeouts.js";
 import { describeModelConfig } from "../lib/modelRegistry.js";
 import { assertLinksOfBoard, conversionNotice, resolveNodeIds } from "../lib/nodeIds.js";
-import { hiddenSectionNotice, sectionGuide } from "../lib/sections.js";
+import { sectionReference, hiddenSectionNotice, sectionGuide } from "../lib/sections.js";
 import { enclosingIdsLookup, retrieveEvidence } from "../lib/evidence.js";
 import {
   buildBoardCacheKey,
@@ -167,7 +168,8 @@ async function performIngest(input: IngestBoardInput, options: OperationOptions)
   const cacheKey = buildBoardCacheKey({ fileKey, nodeHash, docStructureHint: input.docStructureHint,
     customPhases: input.customPhases, ingestMode });
   const cacheCandidate = input.forceFullIngest ? undefined : await readCachedBoard(cacheKey, fileKey);
-  const cached = cacheCandidate?.extractionVersion === EXTRACTION_VERSION ? cacheCandidate : undefined;
+  const cached = cacheCandidate?.extractionVersion === EXTRACTION_VERSION && withoutHiddenSectionArtifacts(cacheCandidate) === cacheCandidate
+    ? cacheCandidate : undefined;
   if (cached && !cached.clusters.some(cluster => cluster.incomplete)) {
     await progress("cluster", 2);
     await progress("interpret", 3);
@@ -192,7 +194,7 @@ async function performIngest(input: IngestBoardInput, options: OperationOptions)
   await progress("cluster", 2);
   const reuseBoard = cached ?? previousBoard;
   const reuseIndex = reuseBoard?.extractionVersion !== EXTRACTION_VERSION || reuseBoard?.refinementSignature !== refinementSignature
-    ? new Map<string, RefinedCluster>() : buildReuseIndex(reuseBoard);
+    ? new Map<string, RefinedCluster>() : buildReuseIndex(withoutHiddenSectionArtifacts(reuseBoard));
   const clusters = partitionedBoardClusters(nodes);
   const clusterNodesByIndex = clusterMembers(clusters, nodes);
   const contentHashes = clusterContentHashes(clusters, nodes);
@@ -939,7 +941,7 @@ function buildSummary(board: BoardData, qualityReport: IngestQualityReport, cont
       (outsideSections ? ` ${outsideSections} excerpt${outsideSections === 1 ? " lies" : "s lie"} outside sections; read ` +
         `${outsideSections === 1 ? "it" : "them"} with get_board_context and outsideSections: true.` : "")
     : `${clusters.length} cluster${clusters.length === 1 ? "" : "s"} - ${shownLabels} ${settings}.`;
-  const hiddenNote = board.nodes.filter((node) => node.hiddenDescendantIds).map((node) => ` Section ${node.id}: ${hiddenSectionNotice(node.hiddenDescendantIds!.length)}.`).join("");
+  const hiddenNote = board.nodes.filter((node) => node.hiddenDescendantIds).map((node) => ` ${sectionReference(node)}: ${hiddenSectionNotice(node.hiddenDescendantIds!.length)}.`).join("");
   const fallbackNote =
     qualityReport.fallbackCount > 0
       ? ` Visual interpretation is incomplete for ${qualityReport.fallbackCount} cluster${qualityReport.fallbackCount === 1 ? "" : "s"}: ${describeFallbackReasons(qualityReport.fallbackReasons)}.`

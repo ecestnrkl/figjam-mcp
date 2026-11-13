@@ -267,3 +267,9 @@ function plural(count: number): string {
 export function hiddenSectionNotice(count: number): string {
   return `Contents hidden in FigJam; ${count} element${plural(count)} not read`;
 }
+
+/** Match the bounded section names used in the overview. */
+export function sectionReference(node: NormalizedNode): string {
+  const name = node.name.replace(/\s+/g, " ").trim();
+  return `Section ${node.id} ${name ? boundedText(name, 80) : "(unnamed section)"}`;
+}
