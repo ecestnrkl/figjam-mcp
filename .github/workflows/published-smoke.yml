@@ -23,15 +23,13 @@ jobs:
         include:
           - os: ubuntu-latest
             node-version: '22.12.0'
-    defaults:
-      run:
-        shell: bash
     steps:
       - uses: actions/setup-node@v7.1.0
         with:
           node-version: ${{ matrix.node-version }}
       - name: Resolve published version
         id: version
+        shell: bash
         run: |
           version=$(npm view figjam-context-mcp dist-tags.latest)
           [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
@@ -44,6 +42,7 @@ jobs:
       - run: npm run package:smoke
       - name: Summarize published dependencies
         if: always() && steps.version.outcome == 'success'
+        shell: bash
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
