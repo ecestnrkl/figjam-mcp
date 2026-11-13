@@ -96,6 +96,7 @@ interface OverviewLayout {
 interface BoardReadIndex {
   nodesById: Map<string, BoardData["nodes"][number]>;
   clustersById: Map<string, RefinedCluster>;
+  hiddenSections: BoardData["nodes"];
   knownIds?: Set<string>;
   page?: { id: string; retrieved: EvidenceResult; fingerprint: string; layout?: OverviewLayout };
 }
@@ -141,6 +142,7 @@ export async function getBoardContext(input: GetBoardContextInput, extra: { noti
     readIndex = {
       nodesById: new Map(board.nodes.map((node) => [node.id, node])),
       clustersById: new Map(board.clusters.map((cluster) => [cluster.id, cluster])),
+      hiddenSections: board.nodes.filter((node) => node.hiddenDescendantIds),
     };
     boardReadIndexes.set(board, readIndex);
   }
@@ -156,7 +158,7 @@ export async function getBoardContext(input: GetBoardContextInput, extra: { noti
   const onlyId = options.nodeIds?.length === 1 ? options.nodeIds[0] : undefined;
   const onlyType = onlyId ? nodesById.get(onlyId)?.type : undefined;
   const pageId = onlyType === "PAGE" || onlyType === "CANVAS" ? onlyId : undefined;
-  const hiddenSections = board.nodes.filter((node) => node.hiddenDescendantIds && options.nodeIds?.some(
+  const hiddenSections = readIndex.hiddenSections.filter((node) => options.nodeIds?.some(
     (id) => id === node.id || node.hiddenDescendantIds!.includes(id)));
   const hiddenNotice = hiddenSections.map((node) => `${sectionReference(node)}: ${hiddenSectionNotice(node.hiddenDescendantIds!.length)}.`).join(" ");
   const notices = [readWarning, emptyNotice, hiddenNotice, ...figmaUrlNotices(parsed.boardId).filter((notice) => notice.startsWith("The branch key")), conversionNotice(resolved?.conversions ?? []), ...(extra.notices ?? [])]
@@ -524,9 +526,11 @@ export async function getBoardContext(input: GetBoardContextInput, extra: { noti
       count = low;
       textLimit = 50;
     }
-    if (count === 0 || !fits(build(count, textLimit, headingLimit))) {
+    const result = count > 0 ? build(count, textLimit, headingLimit) : undefined;
+    if (!result || !fits(result)) {
       throw new Error("The context budget cannot fit one overview excerpt. Increase maxChars or request a smaller node.");
     }
+    if (!hasConnections) return result;
     const evidence = items.slice(offset, offset + count);
     const connectionCount = maxFitting(countConnectionsForEvidence(board, evidence, "either"), (connections) =>
       build(count, textLimit, headingLimit, connections));
