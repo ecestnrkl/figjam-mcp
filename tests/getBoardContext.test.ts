@@ -998,6 +998,36 @@ describe("getBoardContext by section", () => {
     ]);
   });
 
+  it.each([
+    ["page", "0:1"],
+    ["section", "1:0"],
+  ])("keeps derived excerpts with their clusters in a %s read with metadata", async (_scope, id) => {
+    const data = largeBoard("DerivedProbe123", 6, 4, 1, { imageClusters: 1 });
+    const image = data.nodes.find((node) => node.id === "4:0")!;
+    const imageCluster = data.clusters.at(-1)!;
+    Object.assign(image, { name: "Concept sketch", x: 600, y: 0 });
+    Object.assign(imageCluster.boundingBox, { x: image.x, y: image.y });
+    for (const cluster of data.clusters.slice(0, -1)) cluster.summarySource = "text_llm";
+    setBoard(data.boardId, data);
+
+    const selection = { nodeIds: [id] };
+    const { structuredContent } = await getBoardContext({ boardId: data.boardId, ...selection, detail: "full", limit: 5 });
+    expect(structuredContent.evidence.map(({ nodeId, sourceType }) => [nodeId, sourceType])).toEqual([
+      ["10:0", "board_text"], ["10:1", "board_text"], ["10:2", "board_text"], ["10:3", "board_text"],
+      ["10:100", "model_interpretation"],
+    ]);
+    expect(structuredContent.nextCursor).toBeDefined();
+
+    const { evidence } = retrieveEvidence(data, selection);
+    const placeholder = evidence.findIndex((item) => item.sourceType === "cluster_summary");
+    expect(evidence.slice(placeholder - 1, placeholder + 2).map(({ clusterId, sourceType }) => [clusterId, sourceType])).toEqual([
+      ["cluster_1", "model_interpretation"], [imageCluster.id, "cluster_summary"], ["cluster_2", "board_text"],
+    ]);
+    expect(evidence.slice(-2).map(({ nodeId, sourceType }) => [nodeId, sourceType])).toEqual([
+      ["10:102", "board_metadata"], [image.id, "board_metadata"],
+    ]);
+  });
+
   it("reads every excerpt inside a section, frame, group or page in reading order, nested sections included", async () => {
     const section = await getBoardContext({ boardId: "Sections123", nodeIds: ["1:1"] });
     expect(texts(section)).toEqual(["Alpha upper", "Alpha lower", "Nested note"]);

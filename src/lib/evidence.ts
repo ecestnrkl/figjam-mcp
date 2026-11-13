@@ -556,29 +556,31 @@ function contentFirst<T>(items: T[], evidenceOf: (item: T) => Evidence, exactIds
   return [...items.filter((item) => !isMetadata(item)), ...items.filter(isMetadata)];
 }
 
-/** Delay derived excerpts until the last original of their cluster, including metadata. */
+/** Place derived excerpts after their cluster's last original content excerpt. */
 function derivedLastInCluster(entries: IndexedEvidence[]): IndexedEvidence[] {
   if (!entries.some(({ evidence }) => evidence.modelDerived)) return entries;
-  const lastOriginal = new Map<string, number>();
-  entries.forEach(({ evidence }, index) => {
-    if (!evidence.modelDerived && evidence.clusterId !== undefined) lastOriginal.set(evidence.clusterId, index);
-  });
-  const deferred = new Map<number, IndexedEvidence[]>();
-  const ordered: IndexedEvidence[] = [];
-  entries.forEach((entry, index) => {
+  const lastOriginal = new Map<string, IndexedEvidence>();
+  for (const entry of entries) {
+    const { evidence } = entry;
+    if (!evidence.modelDerived && evidence.sourceType !== "board_metadata" && evidence.clusterId !== undefined) {
+      lastOriginal.set(evidence.clusterId, entry);
+    }
+  }
+  const derivedByOriginal = new Map<IndexedEvidence, IndexedEvidence[]>();
+  const ordered = entries.filter((entry) => {
     const { clusterId, modelDerived } = entry.evidence;
     const end = modelDerived && clusterId !== undefined ? lastOriginal.get(clusterId) : undefined;
-    if (end !== undefined && end > index) {
-      const tail = deferred.get(end);
-      if (tail) tail.push(entry);
-      else deferred.set(end, [entry]);
-    } else {
-      ordered.push(entry);
-      const tail = deferred.get(index);
-      if (tail) ordered.push(...tail);
-    }
+    if (end === undefined) return true;
+    const derived = derivedByOriginal.get(end);
+    if (derived) derived.push(entry);
+    else derivedByOriginal.set(end, [entry]);
+    return false;
   });
-  return ordered;
+  if (!derivedByOriginal.size) return entries;
+  return ordered.flatMap((entry) => {
+    const derived = derivedByOriginal.get(entry);
+    return derived ? [entry, ...derived] : [entry];
+  });
 }
 
 /** One excerpt per cluster and round; consecutive rows of one table count as one excerpt. */
