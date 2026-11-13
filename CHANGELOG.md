@@ -7,6 +7,7 @@
 - Hidden section contents are excluded from new snapshots and URL passwords are redacted; previously retained snapshots remain unchanged on disk, and the first ingest after this update reinterprets images (extraction version 8).
 - Read slightly offset rows from left to right in board context and diffs, including excerpts within clusters and sections in outlines.
 - `diff_board` names nodes that move between sections or pages, identifies resizes and regrouped clusters, and counts section moves separately from their contents.
+- Guide MCP hosts through the tools during initialization, clarify tool inputs and results, and speed up page reads on boards with many sections.
 
 ## 0.12.1 — 2026-11-11
 

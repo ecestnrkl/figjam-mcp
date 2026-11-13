@@ -21,7 +21,7 @@ export const ingestBoardInputShape = {
   docStructureHint: z
     .enum(["freeform", "double_diamond", "lean_canvas", "retro", "user_journey"])
     .default("freeform")
-    .describe("Built-in framework used to map clusters to phases"),
+    .describe("Built-in framework used to map clusters to phases. Assigned phases appear in structuredContent.clusters[].phase in full get_board_context results"),
   customPhases: z
     .array(
       z
@@ -50,7 +50,7 @@ export const ingestBoardInputShape = {
     })
     .optional()
     .describe(
-      "Free-form phase names to map clusters onto (e.g. [\"Ideen\", \"Feedback\", \"Offene Fragen\"]); overrides docStructureHint",
+      "Free-form phase names such as [\"Ideen\", \"Feedback\", \"Offene Fragen\"] that override docStructureHint. Assigned phases appear in structuredContent.clusters[].phase in full get_board_context results",
     ),
   ingestMode: z
     .enum(["balanced", "max_quality", "max_speed"])
