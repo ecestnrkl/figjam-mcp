@@ -1,4 +1,5 @@
 import { boundedText, enclosingIdsLookup, inSectionLookup, retrieveEvidence, snapshotIdForBoard, type Evidence } from "./evidence.js";
+import { inReadingOrder, pagePositions } from "./readingOrder.js";
 import type { BoardData, NormalizedNode } from "../types.js";
 
 /** The first page names this many of the largest sections before the section tree. */
@@ -32,9 +33,7 @@ export class SectionIndex {
   constructor(private readonly board: BoardData, private readonly evidence: Evidence[]) {
     this.nodesById = new Map(board.nodes.map((node) => [node.id, node]));
     this.enclosing = enclosingIdsLookup(board);
-    const order = new Map(board.nodes.map((node, position) => [node.id, position]));
-    const readingOrder = (a: NormalizedNode, b: NormalizedNode) => a.y - b.y || a.x - b.x || order.get(a.id)! - order.get(b.id)!;
-    this.sections = board.nodes.filter((node) => node.type === "SECTION").sort(readingOrder);
+    this.sections = board.nodes.filter((node) => node.type === "SECTION");
     this.pages = board.nodes.filter((node) => node.type === "CANVAS" || node.type === "PAGE");
     this.count = this.sections.length;
     for (const section of this.sections) {
@@ -43,6 +42,7 @@ export class SectionIndex {
         (section.pageId && this.pages.some((page) => page.id === section.pageId) ? section.pageId : "");
       this.children.set(parent, [...(this.children.get(parent) ?? []), section]);
     }
+    for (const [parent, siblings] of this.children) this.children.set(parent, inReadingOrder(siblings, (section) => section));
     const inSection = inSectionLookup(board);
     for (const item of evidence) {
       for (const id of this.enclosing(item.renderNodeId ?? item.nodeId)) this.excerpts.set(id, (this.excerpts.get(id) ?? 0) + 1);
@@ -102,7 +102,9 @@ export class SectionIndex {
    */
   largestSections(limit: number): Array<{ id: string; name: string; count: number }> {
     const depth = (section: NormalizedNode) => [...this.enclosing(section.id)].filter((id) => this.nodesById.get(id)?.type === "SECTION").length;
-    const ranked = this.sections.filter((section) => this.excerpts.has(section.id))
+    const pages = pagePositions(this.pages);
+    const ranked = inReadingOrder(this.sections.filter((section) => this.excerpts.has(section.id)),
+      (section) => section, (section) => pages.get(section.pageId ?? "") ?? -1)
       .sort((a, b) => this.excerpts.get(b.id)! - this.excerpts.get(a.id)! || depth(a) - depth(b));
     const largest: NormalizedNode[] = [];
     for (const section of ranked) {
@@ -147,7 +149,7 @@ export class SectionIndex {
       if (!direct.length) continue;
       const container = this.nodesById.get(containerId)!;
       lines.push({ depth: 0, section: false, text: `- In ${containerId} ${this.name(container)}:` });
-      for (const section of direct) {
+      for (const section of inReadingOrder(direct, (node) => node)) {
         lines.push({ depth: 1, section: true, parentId: containerId, text: `  - ${section.id} ${this.name(section)} — ${this.excerptCount(section.id)}` });
       }
     }

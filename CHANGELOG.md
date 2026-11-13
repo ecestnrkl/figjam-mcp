@@ -5,6 +5,7 @@
 - Find common word forms and compounds without crowding out exact search matches, mark contextual excerpts, and suggest similar board words when search finds no matches.
 - Improve Figma connection and model errors, first-run configuration, and branch and design file handling.
 - Hidden section contents are excluded from new snapshots and URL passwords are redacted; previously retained snapshots remain unchanged on disk, and the first ingest after this update reinterprets images (extraction version 8).
+- Read slightly offset rows from left to right in board context and diffs, including excerpts within clusters and sections in outlines.
 
 ## 0.12.1 — 2026-11-11
 

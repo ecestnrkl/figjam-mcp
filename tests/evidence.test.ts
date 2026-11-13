@@ -380,6 +380,41 @@ describe("source evidence", () => {
   });
 });
 
+describe("reading a page", () => {
+  it.each([
+    { name: "a grid in mixed file order", notes: [
+      ["r1c1", 120, 150], ["r0c0", 0, 0], ["r1c2", 240, 150],
+      ["r0c1", 120, 0], ["r1c0", 0, 150], ["r0c2", 240, 0],
+    ], order: ["r0c0", "r0c1", "r0c2", "r1c0", "r1c1", "r1c2"], clustered: true },
+    { name: "a row with a 15 px offset", notes: [
+      ["End", 360, 0], ["Beta", 240, 15], ["Alpha", 120, 15], ["Start", 0, 0],
+    ], order: ["Start", "Alpha", "Beta", "End"] },
+    { name: "six notes descending 15 px at a time from right to left", notes:
+      Array.from({ length: 6 }, (_, i): [string, number, number] => [`note ${5 - i}`, (5 - i) * 120, i * 15]),
+    order: Array.from({ length: 6 }, (_, i) => `note ${i}`) },
+    { name: "a column with gaps", notes: [
+      ["Bottom", 0, 300], ["Middle", 0, 150], ["Top", 0, 0],
+    ], order: ["Top", "Middle", "Bottom"], clustered: true },
+    { name: "a tall note beside two stacked notes", notes: [
+      ["Right bottom", 140, 140], ["Right top", 160, 0], ["Left", 0, 10, 180],
+    ], order: ["Left", "Right top", "Right bottom"] },
+    { name: "two rows with a clear gap", notes: [
+      ["Bottom right", 150, 150], ["Bottom left", 0, 160], ["Top right", 150, 0], ["Top left", 0, 10],
+    ], order: ["Top left", "Top right", "Bottom left", "Bottom right"] },
+  ] satisfies Array<{ name: string; notes: Array<[string, number, number, number?]>; order: string[]; clustered?: boolean }>)(
+    "reads $name in spatial order", ({ notes, order, clustered }) => {
+      const page = { ...textNode("0:1", ""), type: "CANVAS" };
+      const nodes = notes.map(([name, x, y, height = 100], i) => ({ ...textNode(`1:${i}`, name), x, y, height }));
+      const board = evidenceBoard("SpatialRead", nodes);
+      board.nodes = [page, ...nodes];
+      board.clusters = clustered
+        ? [{ ...board.clusters[0]!, nodeIds: nodes.map((node) => node.id), confirmedNodeIds: nodes.map((node) => node.id) }]
+        : [];
+      expect(retrieveEvidence(board, { nodeIds: [page.id] }).evidence.map((item) => item.text)).toEqual(order);
+    },
+  );
+});
+
 describe("table rows", () => {
   const table = (cells: TableCell[], id = "5:1"): NormalizedNode => ({ ...textNode(id, ""), name: "Table 1", type: "TABLE", table: { cells } });
   /** Cell IDs in the REST API form T<table ID>;<row ID>;<column ID>, row by row. */
@@ -448,6 +483,24 @@ describe("table rows", () => {
     const board = evidenceBoard("TableLookup123", [table(grid([["Metric", "Value"], ["Alpha", "1"], ["Beta", "2"]]))]);
     expect(retrieveEvidence(board, { nodeIds: ["T5:1;6:2;7:1"] }).evidence.map((item) => [item.row, item.text])).toEqual([[2, "Beta | 2"]]);
     expect(retrieveEvidence(board, { nodeIds: ["5:1"] }).evidence.map((item) => item.row)).toEqual([0, 1, 2]);
+  });
+
+  it("places the table by its node inside a cluster, with its rows together in row order", () => {
+    const page = { ...textNode("0:1", ""), type: "CANVAS" };
+    const cells = grid([["Metric", "Value"], ["Alpha", "1"], ["Beta", "2"]])
+      .map((cell, i) => ({ ...cell, row: Math.floor(i / 2), column: i % 2 })).reverse();
+    const rows = { ...table(cells), x: 150 };
+    const nodes = [
+      { ...textNode("1:1", "After"), x: 300 },
+      { ...textNode("1:2", ""), name: "Named shape", x: -150 },
+      rows, textNode("1:3", "Before"),
+    ];
+    const board = evidenceBoard("SpatialTable", nodes);
+    board.nodes = [page, ...nodes];
+    const nodeIds = nodes.map((node) => node.id);
+    board.clusters = [{ ...board.clusters[0]!, nodeIds, confirmedNodeIds: nodeIds }];
+    expect(retrieveEvidence(board, { nodeIds: [page.id] }).evidence.map((item) => item.text))
+      .toEqual(["Before", "Metric | Value", "Alpha | 1", "Beta | 2", "After", "Named shape"]);
   });
 
   it("keeps the rows of a table together in the unfocused order while other clusters still take turns", () => {

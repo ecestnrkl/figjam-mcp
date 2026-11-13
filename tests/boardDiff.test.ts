@@ -45,6 +45,20 @@ function board(nodes: NormalizedNode[], clusters: RefinedCluster[], createdAt: n
 }
 
 describe("diffBoards", () => {
+  it("lists changed nodes in reading order across and within clusters", () => {
+    const nodes = [
+      node("c", "Right cluster", { x: 700 }),
+      node("b", "Right note", { x: 150, y: 7 }),
+      node("a", "Left note", { y: 15 }),
+    ];
+    const clusters = [
+      { ...cluster("left", "Left cluster", ["b", "a"]), boundingBox: { x: 0, y: 7, width: 250, height: 108 } },
+      { ...cluster("right", "Right cluster", ["c"]), boundingBox: { x: 700, y: 0, width: 100, height: 100 } },
+    ];
+    const diff = diffBoards(board([], [], 1), board(nodes, clusters, 2));
+    expect(diff.nodeChanges.map((change) => change.nodeId)).toEqual(["a", "b", "c"]);
+  });
+
   it("caps every list while retaining complete counts and bounded cell excerpts", () => {
     const [baseline, current] = largeDiffBoards();
     expect(baseline.nodes).toHaveLength(4700);

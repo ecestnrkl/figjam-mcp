@@ -4,6 +4,7 @@ import { hashClusterNodes } from "./persistentCache.js";
 import { sectionReference } from "./sections.js";
 import { connectorArrow } from "./connectorGraph.js";
 import { boundedText, nodeLink, snapshotIdForBoard, tableCellPositions } from "./evidence.js";
+import { inClusterReadingOrder, pagePositions } from "./readingOrder.js";
 
 /**
  * Compares two ingest snapshots of the same board — "what changed since the
@@ -348,24 +349,17 @@ function boundedName(name: string): string {
   return boundedText(collapseWhitespace(name) ?? "", NAME_CHARS);
 }
 
-/** Cluster by cluster, as get_board_context reads: page, then top to bottom, left to right; snapshot order within. */
+/** Read changed nodes cluster by cluster, as get_board_context reads. */
 function readingOrder(board: BoardData, ids: string[]): string[] {
-  const position = new Map(board.nodes.map((node, index) => [node.id, index]));
+  if (ids.length < 2) return ids;
   const nodes = new Map(board.nodes.map((node) => [node.id, node]));
-  const pages = new Map(board.nodes.filter((node) => node.type === "CANVAS" || node.type === "PAGE")
-    .map((node, index) => [node.id, index]));
+  const pages = pagePositions(board.nodes);
   const owner = new Map<string, RefinedCluster>();
   for (const cluster of board.clusters) for (const id of cluster.nodeIds) if (!owner.has(id)) owner.set(id, cluster);
-  const keyed = ids.map((id) => {
+  return inClusterReadingOrder(ids, (id) => {
     const node = nodes.get(id)!;
-    const cluster = owner.get(id);
-    const box = cluster?.boundingBox ?? node;
-    return { id, group: cluster?.id ?? `node\0${id}`, page: pages.get(node.pageId ?? "") ?? -1, x: box.x, y: box.y, at: position.get(id)! };
+    return { nodeId: id, bounds: node, page: pages.get(node.pageId ?? "") ?? -1, cluster: owner.get(id) };
   });
-  const first = new Map<string, number>();
-  for (const key of keyed) first.set(key.group, Math.min(first.get(key.group) ?? Infinity, key.at));
-  return keyed.sort((a, b) => a.page - b.page || a.y - b.y || a.x - b.x ||
-    first.get(a.group)! - first.get(b.group)! || a.at - b.at).map((key) => key.id);
 }
 
 function collapseWhitespace(text: string | undefined): string | undefined {
