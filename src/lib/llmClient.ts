@@ -531,7 +531,7 @@ function describeProviderError(error: unknown): string | undefined {
 }
 
 /** OpenRouter's wording for a request whose maximum output costs more than the balance covers. */
-const AFFORDABLE_TOKENS = /\brequested up to (\d{1,12}) tokens, but can only afford (\d{1,12})(?=$|[\s,]|[.!?](?=\s|$))/;
+const AFFORDABLE_TOKENS = /\brequested up to (\d{1,12}) tokens, but can only afford (\d{1,12})(?!,\d)(?=$|[\s,]|[.!?](?=\s|$))/;
 
 /**
  * A payment error in diagnose_llm_config: the fixed guidance and, from the provider's text, at most the two token
@@ -655,7 +655,8 @@ export function llmPaymentMessage(source?: OpenRouterPaymentLimit, retryAt?: num
 }
 
 function rateLimitMessage(retryAt: number | undefined): string {
-  const when = retryAt === undefined ? "" : `; it accepts requests again at about ${utcTime(retryAt)}`;
+  const time = retryAt === undefined ? undefined : utcTime(retryAt);
+  const when = time === undefined ? "" : `; it accepts requests again at about ${time}`;
   return `LLM request failed (HTTP 429): the model provider's request limit is reached${when}. `
     + `Wait, or use another model or API key. ${DIAGNOSE_HINT}`;
 }
@@ -868,7 +869,7 @@ function rateLimitTiming(headers: Headers | null | undefined, body: unknown, now
   if (retryAfter !== undefined) return { waitMs: retryAfter, retryAt: now + retryAfter };
   const remaining = headerValue("x-ratelimit-remaining", headers, body)?.trim();
   const reset = Number(headerValue("x-ratelimit-reset", headers, body)?.trim() || NaN);
-  if (!remaining || Number(remaining) !== 0 || !Number.isFinite(reset) || reset <= now) return undefined;
+  if (!remaining || Number(remaining) !== 0 || !Number.isFinite(new Date(reset).getTime()) || reset <= now) return undefined;
   return { waitMs: reset - now, retryAt: reset };
 }
 

@@ -17,8 +17,10 @@ export function parseRetryAfter(value: string | null | undefined, now = Date.now
 }
 
 /** Rounded up to the minute, so that a retry at the named time is not too early. */
-export function utcTime(ms: number): string {
-  return `${new Date(Math.ceil(ms / 60_000) * 60_000).toISOString().slice(0, 16).replace("T", " ")} UTC`;
+export function utcTime(ms: number): string | undefined {
+  if (!Number.isFinite(new Date(ms).getTime())) return undefined;
+  const date = new Date(Math.ceil(ms / 60_000) * 60_000);
+  return `${date.toISOString().slice(0, 16).replace("T", " ")} UTC`;
 }
 
 function roughDuration(ms: number): string {
@@ -36,10 +38,12 @@ function roughDuration(ms: number): string {
  * `at` is the end of the wait in milliseconds since 1970.
  */
 export function describeWaitUntil(at: number, now = Date.now()): string {
+  const time = utcTime(at);
+  if (time === undefined) return "later";
   const waitMs = Math.max(0, at - now);
   if (waitMs <= SECONDS_LIMIT * 1000) {
     const seconds = Math.max(1, Math.ceil(waitMs / 1000));
     return `${seconds} second${seconds === 1 ? "" : "s"}`;
   }
-  return `${utcTime(at)} (in about ${roughDuration(waitMs)})`;
+  return `${time} (in about ${roughDuration(waitMs)})`;
 }
