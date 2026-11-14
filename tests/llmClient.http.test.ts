@@ -310,6 +310,37 @@ describe("LLM requests through real local HTTP and the OpenAI SDK", () => {
     expect(stderr).toContain("LLM SDK: request failed, status 402");
   });
 
+  it("logs the fixed SDK route when a percent-encoded key is in the base URL path", async () => {
+    const key = "synthetic-key-893571";
+    const encoded = key.replace("s", "%73");
+    const endpoint = `https://offline.invalid/${encoded}/v1`;
+    vi.stubEnv("LLM_API_KEY", key);
+    vi.stubEnv("LLM_BASE_URL", endpoint);
+    vi.stubEnv("OPENAI_LOG", "debug");
+    const fetchMock = vi.fn(async () => Response.json({ choices: [{ message: { content: '{"ok":true}' } }] }));
+    vi.stubGlobal("fetch", fetchMock);
+    const { chatJson } = await import("../src/lib/llmClient.js");
+    await expect(chatJson("synthetic/model", messages, schemaOptions)).resolves.toEqual({ ok: true });
+    expect(fetchMock).toHaveBeenCalledWith(`${endpoint}/chat/completions`, expect.anything());
+    const stderr = JSON.stringify(vi.mocked(console.error).mock.calls);
+    expect(stderr).toContain("LLM SDK: sending request, POST /chat/completions");
+    expect(stderr).not.toContain(encoded);
+  });
+
+  it.each(["37.59", "37PRIVATE"])("omits the token counts for %s in a 60,000-character payment error", async (value) => {
+    for (const name of ["LLM_TEXT_MODELS", "LLM_FAST_TEXT_MODELS", "LLM_VISION_MODELS"]) vi.stubEnv(name, "paid/model");
+    vi.stubEnv("LLM_BASE_URL", "https://other.invalid/v1");
+    const reason = `You requested up to 4096 tokens, but can only afford ${value}`;
+    const message = `${reason} `.repeat(Math.ceil(60_000 / (reason.length + 1))).slice(0, 60_000);
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ error: { code: 402, message } }, { status: 402 })));
+    const { diagnoseLlmConfig } = await import("../src/tools/diagnoseLlmConfig.js");
+    const start = performance.now();
+    const diagnosis = await diagnoseLlmConfig();
+    expect(performance.now() - start).toBeLessThan(1500);
+    expect(diagnosis.summary).toContain("Check your account balance and billing settings with the provider");
+    expect(JSON.stringify(diagnosis)).not.toContain("The provider reports that the request asked for up to");
+  });
+
   it("reads no token counts or other text from a 60,000-character HTTP 402 reason and stays fast", async () => {
     vi.stubEnv("LLM_BASE_URL", "https://other.invalid/v1");
     const nearMiss = "You requested up to 4096 tokens, but can only afford ";

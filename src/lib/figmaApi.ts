@@ -99,7 +99,7 @@ async function figmaFetch(fileKey: string, apiPath: string, token: string, timeo
     const retryAt = retryAfterMs === undefined ? undefined : now + retryAfterMs;
     const status = response.status;
     if (attempt === 0 && RETRIED_STATUSES.has(status)) {
-      await response.body?.cancel();
+      await response.body?.cancel().catch(() => undefined);
       await sleep(retryAfterMs !== undefined && retryAfterMs <= SERVER_ERROR_MAX_RETRY_AFTER_MS ? retryAfterMs : SERVER_ERROR_WAIT_MS, externalSignal);
       continue;
     }
@@ -133,7 +133,7 @@ async function readBounded(response: Response, maxBytes: number, signal?: AbortS
   signal?.throwIfAborted();
   const announced = Number(response.headers.get("Content-Length"));
   if (announced > maxBytes || (budget && announced > budget.maxBytes - budget.usedBytes)) {
-    await response.body?.cancel();
+    await response.body?.cancel().catch(() => undefined);
     throw new FigmaDownloadBudgetError();
   }
   if (!response.body) return Buffer.alloc(0);
@@ -151,7 +151,7 @@ async function readBounded(response: Response, maxBytes: number, signal?: AbortS
       bytes += value.byteLength;
       if (budget) budget.usedBytes += value.byteLength;
       if (bytes > maxBytes || (budget && budget.usedBytes > budget.maxBytes)) {
-        await reader.cancel();
+        await reader.cancel().catch(() => undefined);
         throw new FigmaDownloadBudgetError();
       }
       chunks.push(value);
@@ -241,7 +241,7 @@ export async function downloadOriginals(urls: Array<string | undefined>, imageMa
     }));
     const results: Array<OriginalImage | Response> = [];
     let announcedBytes = 0;
-    for (const [index, response] of responses.entries()) {
+    for (const response of responses) {
       const announced = Number(response?.headers.get("Content-Length") || NaN);
       if (response === undefined) results.push({ fallback: "missing_url" });
       else if (response === null) results.push({ fallback: "download_failed" });
@@ -252,7 +252,7 @@ export async function downloadOriginals(urls: Array<string | undefined>, imageMa
         results.push(response);
         continue;
       }
-      await responses[index]?.body?.cancel();
+      await response?.body?.cancel().catch(() => undefined);
     }
     return await Promise.all(results.map(async (result): Promise<OriginalImage> => {
       if (!(result instanceof Response)) return result;
@@ -302,7 +302,7 @@ export async function downloadRenders(nodeIds: string[], renderUrls: RenderUrls,
         const response = await fetch(urls[current]!, { signal: downloadSignal });
         if (!response.ok) {
           const retryAfter = Number(response.headers.get("Retry-After"));
-          await response.body?.cancel();
+          await response.body?.cancel().catch(() => undefined);
           // These URLs are loaded without the token, so only a rate limit says anything about the Figma API; any other status means this image is unavailable.
           if (response.status !== 429) throw new Error(`Screenshot download failed (${response.status})`);
           const details = describeFigmaRateLimit(response.headers);

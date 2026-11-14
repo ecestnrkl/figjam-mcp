@@ -289,9 +289,29 @@ describe("offline ingest pipeline with actual persistent cache", () => {
     expect(saved).not.toContain(bearer);
     const logged = JSON.stringify(stderr.mock.calls);
     stderr.mockRestore();
-    expect(logged).toContain("LLM SDK: sending request, POST /api/v1/chat/completions");
+    expect(logged).toContain("LLM SDK: sending request, POST /chat/completions");
     expect(logged).not.toContain(marker);
     expect(logged).not.toContain(bearer);
+  });
+
+  it.each([
+    [402, { limit_source: "openrouter_in_flight_budget", headers: { "Retry-After": "1" } }],
+    [429, undefined],
+  ])("uses the HTTP Retry-After for an embedded %i in the ingest cooldown", async (code, metadata) => {
+    activeTree = boardTree([imageNode("limited", 0)]);
+    const endpoint = "https://openrouter.ai/api/v1";
+    vi.stubEnv("LLM_BASE_URL", endpoint);
+    vi.stubEnv("LLM_VISION_MODELS", "vision/model");
+    vi.stubEnv("LLM_RATE_LIMIT_RETRIES", "0");
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const offline = globalThis.fetch;
+    vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => String(url) === `${endpoint}/chat/completions`
+      ? Response.json({ error: { code, metadata } }, { headers: { "Retry-After": "20" } }) : offline(url, init));
+    const { refineClusterWithVision } = await vi.importActual<typeof import("../src/lib/visionInterpreter.js")>("../src/lib/visionInterpreter.js");
+    visionMock.mockImplementation(refineClusterWithVision);
+    const result = await ingestBoard(input);
+    expect(result.qualityReport).toMatchObject({ fallbackReasons: { rate_limit: 1 }, nextRetryAt: Date.now() + 20_000 });
+    expect(result.summary).toContain("Retry after 20 seconds");
   });
 
   it("retries after the provider's daily limit resets, not after a minute", async () => {

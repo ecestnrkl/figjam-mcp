@@ -489,3 +489,13 @@ it.each([
   expect(message.startsWith("Authorization: [redacted]\n")).toBe(true);
   expect(message.length).toBeGreaterThan(40_000);
 });
+
+it.each([
+  ["quoted header", '"Authorization":"' + 'part\\" '.repeat(8572).slice(0, 60_000) + '" end', '"Authorization":"[redacted]" end'],
+  ["Unicode space before the token", "Bearer" + "\u2003".repeat(60_000) + "SYNTHETIC_BEARER_VALUE", "Bearer" + "\u2003".repeat(60_000) + "[redacted]"],
+])("redacts a %s with 60,000 characters without stalling", (_name, input, expected) => {
+  const start = performance.now();
+  const output = redactMessageCredentials(input);
+  expect(performance.now() - start).toBeLessThan(500);
+  expect(output === expected).toBe(true);
+});

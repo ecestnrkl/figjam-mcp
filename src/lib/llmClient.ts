@@ -210,14 +210,12 @@ function logSdkMessage(message: unknown, ...details: unknown[]): void {
   const detail = details[0] && typeof details[0] === "object" ? details[0] as Record<string, unknown> : {};
   const status = outcome ? Number(outcome[2]) : detail.status;
   const durationMs = outcome ? Number(outcome[3]) : detail.durationMs;
-  // Only the request names a URL this server built; a response URL can be a redirect target.
   const method = event === "sending request" && typeof detail.method === "string" && SDK_LOG_METHODS.has(detail.method.toLowerCase())
     ? detail.method.toUpperCase() : undefined;
-  const path = event === "sending request" && typeof detail.url === "string" && detail.url.length <= 2048
-    ? URL.parse(detail.url)?.pathname : undefined;
+  const path = event === "sending request" ? "/chat/completions" : undefined;
   console.error([
     `LLM SDK: ${event}`,
-    [method, path === undefined ? undefined : redactMessage(path).slice(0, 200)].filter(Boolean).join(" "),
+    [method, path].filter(Boolean).join(" "),
     typeof status === "number" && Number.isInteger(status) && status >= 100 && status <= 599 ? `status ${status}` : undefined,
     typeof durationMs === "number" && Number.isFinite(durationMs) && durationMs >= 0 ? `${Math.round(durationMs)} ms` : undefined,
     SDK_LOG_NEXT_STEP.exec(tail)?.[1],
@@ -505,12 +503,12 @@ function providerErrorDetail(error: InstanceType<typeof OpenAI.APIError>): strin
     .join(" ");
 }
 
-/** Error bodies of failures that arrive in a 200 response; kept off the error objects so they never reach messages or logs. */
-const embeddedErrors = new WeakMap<LlmRequestError, NonNullable<EmbeddedErrorEnvelope["error"]>>();
+/** Provider data from failures in 2xx responses stays off the error objects. */
+const embeddedErrors = new WeakMap<LlmRequestError, { body: NonNullable<EmbeddedErrorEnvelope["error"]>; headers: Headers }>();
 
 function providerErrorBody(error: unknown): { message?: unknown; code?: unknown; metadata?: unknown } | undefined {
   if (error instanceof OpenAI.APIError) return error.error && typeof error.error === "object" ? error.error : undefined;
-  return error instanceof LlmRequestError ? embeddedErrors.get(error) : undefined;
+  return error instanceof LlmRequestError ? embeddedErrors.get(error)?.body : undefined;
 }
 
 /** OpenRouter's wording when the upstream provider of a model failed; another model may still answer. */
@@ -533,7 +531,7 @@ function describeProviderError(error: unknown): string | undefined {
 }
 
 /** OpenRouter's wording for a request whose maximum output costs more than the balance covers. */
-const AFFORDABLE_TOKENS = /\brequested up to (\d{1,12}) tokens, but can only afford (\d{1,12})(?!\d)/;
+const AFFORDABLE_TOKENS = /\brequested up to (\d{1,12}) tokens, but can only afford (\d{1,12})(?=$|[\s,]|[.!?](?=\s|$))/;
 
 /**
  * A payment error in diagnose_llm_config: the fixed guidance and, from the provider's text, at most the two token
@@ -594,7 +592,8 @@ function normalizeLlmError(error: unknown, model?: string, role?: LlmRole, baseU
   if ((error instanceof OpenAI.APIError || error instanceof LlmRequestError) && error.status === 402) {
     const body = providerErrorBody(error);
     const now = Date.now();
-    const waitMs = parseRetryAfter(headerValue("retry-after", error instanceof OpenAI.APIError ? error.headers : undefined, body), now);
+    const headers = error instanceof OpenAI.APIError ? error.headers : embeddedErrors.get(error)?.headers;
+    const waitMs = parseRetryAfter(headerValue("retry-after", headers, body), now);
     const retryAfter = waitMs === undefined ? (error instanceof LlmRequestError ? error.retryAfter : undefined) : Math.ceil(waitMs / 1000);
     const retryAt = waitMs === undefined ? (error instanceof LlmRequestError ? error.retryAt : undefined) : now + waitMs;
     const source = openRouterPaymentLimit(baseUrl, body?.metadata);
@@ -794,7 +793,7 @@ async function createCompletion(
       return completion;
     }
     if (isRateLimit(embedded)) {
-      const timing = rateLimitTiming(undefined, embedded);
+      const timing = rateLimitTiming(headers, embedded);
       const waitMs = timing?.waitMs;
       if (attempt < readIntEnv("LLM_RATE_LIMIT_RETRIES", 1, 0) && (waitMs === undefined || fitsRetryWindow(waitMs, options))) {
         await backoff(waitMs ?? 2 ** attempt * 2000, attempt, signal);
@@ -802,15 +801,12 @@ async function createCompletion(
       }
       const limited = new LlmRequestError(redactMessage(rateLimitMessage(timing?.retryAt)), 429,
         waitMs === undefined ? undefined : Math.ceil(waitMs / 1000), timing?.retryAt);
-      embeddedErrors.set(limited, embedded);
+      embeddedErrors.set(limited, { body: embedded, headers });
       throw limited;
     }
     const status = Number(embedded.code) || 502;
-    const now = Date.now();
-    const waitMs = status === 402 ? parseRetryAfter(headerValue("retry-after", headers, embedded), now) : undefined;
-    const failure = new LlmRequestError("LLM request failed: response contained no choices", status,
-      waitMs === undefined ? undefined : Math.ceil(waitMs / 1000), waitMs === undefined ? undefined : now + waitMs);
-    embeddedErrors.set(failure, embedded);
+    const failure = new LlmRequestError("LLM request failed: response contained no choices", status);
+    embeddedErrors.set(failure, { body: embedded, headers });
     throw failure;
   }
 }
