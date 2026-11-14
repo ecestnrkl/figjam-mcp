@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.14.0 — Unreleased
+
+- Speed up context reads and search indexing for long board text by checking repeated node names once per node.
+- Report unexpected snapshot write failures with fixed guidance, the error code, and a path relative to the cache when available.
+
 ## 0.13.1 — 2026-11-14
 
 - Retry transient Windows filesystem errors on cache write locks and report persistent permission errors with the affected path inside the cache directory.

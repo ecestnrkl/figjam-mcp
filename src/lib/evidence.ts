@@ -812,6 +812,7 @@ function getIndex(board: BoardData): EvidenceIndex {
   const totalLengths: Record<EvidenceField, number> = { text: 0, node: 0, section: 0, page: 0, cluster: 0 };
   const entries: IndexedEvidence[] = [];
   const tokenizedWords = new Map<string, TokenizedWord>();
+  const repeatedNames = new Map<NormalizedNode, boolean>();
   for (const { evidence: item, cellIds } of sources) {
     if (isGeneratedPlaceholder(item)) {
       entries.push({ evidence: item, lengths: { text: 0, node: 0, section: 0, page: 0, cluster: 0 } });
@@ -822,7 +823,7 @@ function getIndex(board: BoardData): EvidenceIndex {
     const isLaterRow = item.sourceType === "table_row" && item.row !== firstRow;
     const extraNode = [isLaterRow ? headings.get(item.nodeId) : "",
       !isLaterRow && item.sourceType !== "table_cell" ? (labels.get(node?.id ?? item.nodeId) ?? []).join("\n") : ""].filter(Boolean).join("\n");
-    const values = evidenceFields(item, node, nodesById, extraNode);
+    const values = evidenceFields(item, node, nodesById, extraNode, repeatedNames);
     const lengths = {} as Record<EvidenceField, number>;
     const position = entries.length;
     for (const field of FIELDS) {
@@ -851,13 +852,17 @@ function getIndex(board: BoardData): EvidenceIndex {
 
 function evidenceFields(
   item: Evidence, node: NormalizedNode | undefined, nodesById: Map<string, NormalizedNode>, extraNode: string,
+  repeatedNames: Map<NormalizedNode, boolean>,
 ): Record<EvidenceField, string> {
-  const normalize = (value: string) => value.normalize("NFKC").toLowerCase().replace(/\s+/g, " ").trim();
-  const name = normalize(node?.name ?? "");
-  const text = normalize(node?.text ?? "");
   // Figma frequently derives the node name from its full text or its opening.
   // Indexing that name on every chunk leaks a match into unrelated trailing text.
-  const nameDuplicatesText = Boolean(name && text && text.startsWith(name));
+  let nameDuplicatesText = node && repeatedNames.get(node);
+  if (node && nameDuplicatesText === undefined) {
+    const normalize = (value: string) => value.normalize("NFKC").toLowerCase().replace(/\s+/g, " ").trim();
+    const name = normalize(node.name);
+    nameDuplicatesText = Boolean(name && node.text && normalize(node.text).startsWith(name));
+    repeatedNames.set(node, nameDuplicatesText);
+  }
   return {
     text: item.text,
     node: [item.sourceType === "board_metadata" || nameDuplicatesText ? "" : node?.name, node?.type, extraNode]

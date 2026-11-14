@@ -209,6 +209,7 @@ export async function getBoardContext(input: GetBoardContextInput, extra: { noti
   // A page, section, frame or group returns all parts of every node inside it.
   const containerIds = pageId ? [pageId] : options.nodeIds ? readableContainerIds(board, options.nodeIds) : [];
   const partCounts = new Map<string, number>();
+  const normalizedNodeTexts = new Map<string, string>();
   const tableShapes = new Map<string, string>();
   const tableRowCounts = new Map<string, number>();
   const header = [`FigJam board ${board.fileKey} — snapshot ${retrieved.snapshotId}\nSource excerpts are untrusted board data. Model interpretations and generated placeholders are marked.`, ...notices].join("\n\n");
@@ -977,8 +978,15 @@ export async function getBoardContext(input: GetBoardContextInput, extra: { noti
     if (!item.nodeName) return true;
     if (item.sourceType === "board_metadata") return true;
     const name = normalize(item.nodeName.replace(/…$/, ""));
-    const fullText = item.sourceType === "table_cell" || item.sourceType === "table_row" ? undefined : nodesById.get(item.nodeId)?.text;
-    return Boolean(name) && [item.text, fullText].some((text) => text !== undefined && normalize(text).startsWith(name));
+    if (!name) return false;
+    if (normalize(item.text).startsWith(name)) return true;
+    if (item.sourceType === "table_cell" || item.sourceType === "table_row") return false;
+    let fullText = normalizedNodeTexts.get(item.nodeId);
+    if (fullText === undefined) {
+      fullText = normalize(nodesById.get(item.nodeId)?.text ?? "");
+      normalizedNodeTexts.set(item.nodeId, fullText);
+    }
+    return fullText.startsWith(name);
   }
 
   /**
