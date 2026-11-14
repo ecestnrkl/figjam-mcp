@@ -76,7 +76,7 @@ beforeEach(() => { chatJsonMock.mockReset(); });
 afterEach(() => { vi.unstubAllEnvs(); });
 
 describe("redactCredentials", () => {
-  it.each(["\r", "\n", "\u2028", "\u2029"])("keeps board text after Bearer and line separator %j", async separator => {
+  it.each(["\r", "\n", "\r\n", "\v", "\f", "\u0085", "\u2028", "\u2029"])("keeps board text after Bearer and line separator %j", async separator => {
     const text = `The role is Bearer${separator}RELEASE-AUTHORIZATION-0122`;
     const board = evidenceBoard("BearerLines123", [textNode("1:1", text), textNode("1:2", "Bearer\u2003SYNTHETIC_BEARER_VALUE")]);
     setBoard(board.boardId, board);
@@ -84,6 +84,15 @@ describe("redactCredentials", () => {
     expect(output.text).toContain("RELEASE-AUTHORIZATION-0122");
     expect(output.structuredContent.evidence.find(item => item.nodeId === "1:1")?.text).toBe(text);
     expect(output.structuredContent.evidence.find(item => item.nodeId === "1:2")?.text).toBe("Bearer\u2003[redacted]");
+  });
+
+  it.each(["\u2003", "\u00a0"])("redacts a Bearer value after horizontal space %j in board context", async separator => {
+    const value = "aB_1-".repeat(6);
+    const board = evidenceBoard("BearerSpaces123", [textNode("1:1", `Bearer${separator}${value}`)]);
+    setBoard(board.boardId, board);
+    const output = await getBoardContext({ boardId: board.boardId });
+    expect(output.text).not.toContain(value);
+    expect(output.structuredContent.evidence[0]?.text).toBe(`Bearer${separator}[redacted]`);
   });
 
   it.each([

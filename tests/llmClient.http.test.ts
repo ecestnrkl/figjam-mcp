@@ -327,11 +327,11 @@ describe("LLM requests through real local HTTP and the OpenAI SDK", () => {
     expect(stderr).not.toContain(encoded);
   });
 
-  it.each(["37.59", "37PRIVATE", "37,59", "37,590"])("omits the token counts for %s in a 60,000-character payment error", async (value) => {
+  it.each(["37.59", "37PRIVATE", "37,59", "37,590", "37 590", "37\u00a0590", "37  \u00a0590", "37, 590"])("omits the token counts for %s in a 60,000-character payment error", async (value) => {
     for (const name of ["LLM_TEXT_MODELS", "LLM_FAST_TEXT_MODELS", "LLM_VISION_MODELS"]) vi.stubEnv(name, "paid/model");
     vi.stubEnv("LLM_BASE_URL", "https://other.invalid/v1");
     const reason = `You requested up to 4096 tokens, but can only afford ${value}`;
-    let message = `${reason} `.repeat(Math.ceil(60_000 / (reason.length + 1))).slice(0, 60_000);
+    const message = `${reason} `.repeat(Math.ceil(60_000 / (reason.length + 1))).slice(0, 60_000);
     vi.stubGlobal("fetch", vi.fn(async () => Response.json({ error: { code: 402, message } }, { status: 402 })));
     const { diagnoseLlmConfig } = await import("../src/tools/diagnoseLlmConfig.js");
     const start = performance.now();
@@ -339,7 +339,14 @@ describe("LLM requests through real local HTTP and the OpenAI SDK", () => {
     expect(performance.now() - start).toBeLessThan(1500);
     expect(diagnosis.summary).toContain("Check your account balance and billing settings with the provider");
     expect(JSON.stringify(diagnosis)).not.toContain("The provider reports that the request asked for up to");
-    message = reason.replace(value, "37, ");
+  });
+
+  it.each(["37.", "37, then", "37", "37, "])("reads the token counts for %j in a payment error", async value => {
+    for (const name of ["LLM_TEXT_MODELS", "LLM_FAST_TEXT_MODELS", "LLM_VISION_MODELS"]) vi.stubEnv(name, "paid/model");
+    vi.stubEnv("LLM_BASE_URL", "https://other.invalid/v1");
+    const message = `You requested up to 4096 tokens, but can only afford ${value}`;
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ error: { code: 402, message } }, { status: 402 })));
+    const { diagnoseLlmConfig } = await import("../src/tools/diagnoseLlmConfig.js");
     expect((await diagnoseLlmConfig()).summary).toContain("The provider reports that the request asked for up to 4096 tokens and the balance covers 37.");
   });
 

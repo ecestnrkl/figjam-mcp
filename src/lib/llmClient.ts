@@ -531,7 +531,7 @@ function describeProviderError(error: unknown): string | undefined {
 }
 
 /** OpenRouter's wording for a request whose maximum output costs more than the balance covers. */
-const AFFORDABLE_TOKENS = /\brequested up to (\d{1,12}) tokens, but can only afford (\d{1,12})(?!,\d)(?=$|[\s,]|[.!?](?=\s|$))/;
+const AFFORDABLE_TOKENS = /\brequested up to (\d{1,12}) tokens, but can only afford (\d{1,12})(?=[.,!?]?(?:$|\s+(?![\s\d])))/;
 
 /**
  * A payment error in diagnose_llm_config: the fixed guidance and, from the provider's text, at most the two token
