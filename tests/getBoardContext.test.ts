@@ -1885,6 +1885,16 @@ describe("topic search context and suggestions", () => {
     expect(result.text).not.toContain("calendariumsecret");
     expect((await getBoardContext(request)).text).toBe(result.text);
   });
+
+  it("suggests a word next to an element name with 60,000 inner spaces without stalling", async () => {
+    const shape = { ...textNode("one", "Table supplies"), name: `Start${" ".repeat(60_000)}End`, type: "SHAPE_WITH_TEXT" };
+    const data = evidenceBoard("LongName123", [shape]);
+    setBoard(data.boardId, data);
+    const start = performance.now();
+    const result = await getBoardContext({ boardId: data.boardId, topic: "tablle" });
+    expect(performance.now() - start).toBeLessThan(2000);
+    expect(result.text).toContain('Similar words (untrusted board data): "table"');
+  });
 });
 
 it.each([

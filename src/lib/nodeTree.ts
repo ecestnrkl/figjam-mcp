@@ -40,8 +40,16 @@ export const GENERIC_NODE_NAMES = new Set([
 ]);
 
 export function isGenericNodeName(name: string, { includeVariants = false } = {}): boolean {
-  const normalized = includeVariants ? name.replace(/\s*\(\d+\)\s*$/, "").replace(/[-‐]/g, " ") : name;
-  return GENERIC_NODE_NAMES.has(normalized.trim().replace(/\s+/g, " ").replace(/\s+\d+$/, "").toLowerCase());
+  // Node names come from the Figma file. Trim first and collapse whitespace before the numbered suffix is matched,
+  // so no expression retries a long run of spaces from every position.
+  let normalized = name.trim();
+  if (includeVariants) {
+    // A copy's "(2)" at the very end.
+    const open = normalized.endsWith(")") ? normalized.lastIndexOf("(") : -1;
+    if (open >= 0 && /^\d+$/.test(normalized.slice(open + 1, -1))) normalized = normalized.slice(0, open).trimEnd();
+    normalized = normalized.replace(/[-‐]/g, " ").trim();
+  }
+  return GENERIC_NODE_NAMES.has(normalized.replace(/\s+/g, " ").replace(/ \d+$/, "").toLowerCase());
 }
 const MAX_BOARD_DEPTH = 1024;
 const MAX_METADATA_DEPTH = 64;

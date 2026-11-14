@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { evidenceBoard, textNode } from "./fixtures/retrieval.js";
 import { flattenNodeTree } from "../src/lib/nodeTree.js";
 import { hasProtectedTableValue, redactBoard, redactCredentials, redactMessageCredentials, redactTableCells } from "../src/lib/redact.js";
+import { redactError } from "../src/lib/secrets.js";
 
 const { chatJsonMock, readBoardHistoryMock, readCachedBoardMock } = vi.hoisted(() => ({
   chatJsonMock: vi.fn(), readBoardHistoryMock: vi.fn(), readCachedBoardMock: vi.fn(),
@@ -472,4 +473,19 @@ it.each([
   const expected = `postgres://admin:[redacted]@db.test/app ${unchanged}`;
   expect(redactCredentials(text)).toBe(expected);
   expect(redactMessageCredentials(text)).toBe(expected);
+});
+
+it.each([
+  ["Bearer words", "Bearer ".repeat(8572)],
+  ["spaces after Bearer", `Bearer${" ".repeat(60_000)}`],
+  ["an unfinished JWT", `eyJ${"a".repeat(60_000)}`],
+  ["JWT segments", "eyJa.".repeat(12_000)],
+  ["authorization labels", "authorization ".repeat(4286)],
+  ["one word", "a".repeat(60_000)],
+])("redacts a quoted Authorization header ahead of 60,000 characters of %s, complete and without stalling", (_name, filler) => {
+  const start = performance.now();
+  const { message } = redactError(new Error(`Authorization: Bearer SYNTHETIC_BEARER_43\n${filler}`));
+  expect(performance.now() - start).toBeLessThan(500);
+  expect(message.startsWith("Authorization: [redacted]\n")).toBe(true);
+  expect(message.length).toBeGreaterThan(40_000);
 });

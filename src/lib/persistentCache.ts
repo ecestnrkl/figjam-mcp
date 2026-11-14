@@ -21,6 +21,12 @@ function defaultCacheRoot(): string { return process.platform === "darwin"
     : path.join(nonBlank(process.env.XDG_CACHE_HOME) ?? path.join(homedir(), ".cache"), "figjam-context-mcp"); }
 function cacheRoot(): string { return expandHomePath(nonBlank(process.env.FIGJAM_MCP_CACHE_DIR) ?? defaultCacheRoot()); }
 function cacheDirectory(): string { return path.join(cacheRoot(), "v4"); }
+/** A path inside the cache as "<cache>/…" for tool output, which leaves out the user's directories; undefined outside the cache. */
+export function cacheRelativePath(target: string): string | undefined {
+  const relative = path.relative(cacheRoot(), target);
+  if (relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) return undefined;
+  return ["<cache>", ...relative.split(path.sep).filter(Boolean)].join("/");
+}
 function legacyRoot(): string { return expandHomePath(nonBlank(process.env.FIGJAM_MCP_CACHE_DIR) ?? path.join(process.cwd(), ".cache", "figjam-mcp")); }
 const HISTORY_LIMIT = 20;
 let mutationQueue: Promise<unknown> = Promise.resolve();

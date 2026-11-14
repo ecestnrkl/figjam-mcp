@@ -21,7 +21,7 @@ const BEARER_TOKEN = /\b(Bearer[ \t]+)[A-Za-z0-9._~+/-]{20,}=*/gi;
 const JWT = /(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+(?![A-Za-z0-9_-])/g;
 // Error messages retain the established rules: board-only labels must not consume
 // actionable configuration names such as FIGMA_ACCESS_TOKEN followed by a colon.
-const MESSAGE_LABELS = String.raw`pass(?:wor[dt]|code)|kennwort|pwd?|pin|api[\s_-]?(?:key|token)|(?:access|auth|bearer)[\s_-]?token|client[\s_-]?secret|(?:secret|access|private)[\s_-]?key`;
+const MESSAGE_LABELS = String.raw`authorization|pass(?:wor[dt]|code)|kennwort|pwd?|pin|api[\s_-]?(?:key|token)|(?:access|auth|bearer)[\s_-]?token|client[\s_-]?secret|(?:secret|access|private)[\s_-]?key`;
 const MESSAGE_LABELED_VALUE = new RegExp(String.raw`(?<![\p{L}\p{N}_])((?:${MESSAGE_LABELS})[^\S\r\n]*[:=][^\S\r\n]*)(?=\S)[^\r\n]*`, "giu");
 const PRIVATE_KEY_BLOCK = /-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY-----[\s\S]*?(?:-----END (?:[A-Z0-9]+ )*PRIVATE KEY-----|$)/gi;
 const KEY_FORMATS = [
@@ -98,6 +98,8 @@ export function redactMessageCredentials(text: string): string {
   if (!text || !isCredentialRedactionEnabled()) return text;
   let result = redactUrlPasswords(text).replace(PRIVATE_KEY_BLOCK, REDACTED);
   for (const pattern of KEY_FORMATS) result = result.replace(pattern, REDACTED);
+  // Provider text can quote a request header or a token of another party.
+  result = result.replace(BEARER_TOKEN, `$1${REDACTED}`).replace(JWT, REDACTED);
   return result.replace(MESSAGE_LABELED_VALUE, `$1${REDACTED}`);
 }
 

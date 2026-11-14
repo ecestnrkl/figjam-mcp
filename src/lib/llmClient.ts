@@ -3,7 +3,7 @@ import OpenAI from "openai";
 import { readIntEnv } from "./env.js";
 import { getModelConfig, getModelsForRole, modelSettingForRole, type LlmRole } from "./modelRegistry.js";
 import { getLlmRequestTimeoutMs } from "./llmTimeouts.js";
-import { ERROR_TEXT_SCAN_CHARS, redactError, redactExternalErrorText, redactMessage, redactOutputSecrets, validateHeaderSecret } from "./secrets.js";
+import { boundExternalText, redactError, redactExternalError, redactExternalErrorText, redactMessage, validateHeaderSecret } from "./secrets.js";
 import { missingEnvironmentHint } from "./envFile.js";
 import { describeWaitUntil, parseRetryAfter, utcTime } from "./waitTime.js";
 
@@ -184,13 +184,45 @@ export function getLlmClient(): OpenAI {
   return client;
 }
 
-/** SDK diagnostics must use stderr and the same secret boundary as provider errors. */
-function logSdkMessage(message: string, ...details: unknown[]): void {
-  console.error(redactExternalErrorText(message), ...details.map(detail => {
-    // SDK debug logs may include the raw response body for a plain-text 402.
-    if (detail && typeof detail === "object" && "status" in detail && detail.status === 402) return { status: 402 };
-    return detail instanceof Error ? redactExternalErrorText(detail.message) : redactOutputSecrets(detail);
-  }));
+const SDK_LOG_EVENTS = ["sending request", "response start", "response parsed", "response error", "connection timed out", "connection failed"];
+const SDK_LOG_NEXT_STEPS = "retrying, \\d{1,3} attempts remaining|error; no more retries left|error; not retryable|error; streaming body cannot be retried";
+// Both run on the last characters of a log line only.
+const SDK_LOG_OUTCOME = new RegExp(String.raw` (succeeded|failed) with status (\d{3}) in (\d{1,12})ms(?: - (?:${SDK_LOG_NEXT_STEPS}))?$`);
+const SDK_LOG_NEXT_STEP = new RegExp(String.raw`(${SDK_LOG_NEXT_STEPS})\)?$`);
+const SDK_LOG_TAIL_CHARS = 96;
+const SDK_LOG_METHODS = new Set(["get", "post", "put", "patch", "delete"]);
+
+/**
+ * SDK diagnostics go to stderr as fixed facts only: event, method and path of the request, status, duration and retry state.
+ * Response headers (such as X-Request-ID), bodies and error text come from the provider and can echo a prompt or a
+ * credential. The SDK puts them into the details and into the line itself, so neither is printed.
+ */
+function logSdkMessage(message: unknown, ...details: unknown[]): void {
+  const line = typeof message === "string" ? message : "";
+  const tail = line.slice(-SDK_LOG_TAIL_CHARS);
+  const outcome = SDK_LOG_OUTCOME.exec(tail);
+  // Lines start with "[log_xxxxxx] "; the one that reports the outcome lists the request ID header there instead.
+  const event = SDK_LOG_EVENTS.find(name => line.startsWith(name, 13)) ?? (outcome ? `request ${outcome[1]}` : undefined);
+  if (!event) {
+    console.error("LLM SDK: log entry withheld.");
+    return;
+  }
+  const detail = details[0] && typeof details[0] === "object" ? details[0] as Record<string, unknown> : {};
+  const status = outcome ? Number(outcome[2]) : detail.status;
+  const durationMs = outcome ? Number(outcome[3]) : detail.durationMs;
+  // Only the request names a URL this server built; a response URL can be a redirect target.
+  const method = event === "sending request" && typeof detail.method === "string" && SDK_LOG_METHODS.has(detail.method.toLowerCase())
+    ? detail.method.toUpperCase() : undefined;
+  const path = event === "sending request" && typeof detail.url === "string" && detail.url.length <= 2048
+    ? URL.parse(detail.url)?.pathname : undefined;
+  console.error([
+    `LLM SDK: ${event}`,
+    [method, path === undefined ? undefined : redactMessage(path).slice(0, 200)].filter(Boolean).join(" "),
+    typeof status === "number" && Number.isInteger(status) && status >= 100 && status <= 599 ? `status ${status}` : undefined,
+    typeof durationMs === "number" && Number.isFinite(durationMs) && durationMs >= 0 ? `${Math.round(durationMs)} ms` : undefined,
+    SDK_LOG_NEXT_STEP.exec(tail)?.[1],
+    typeof detail.retryOf === "string" || line.startsWith(", retryOf: ", 11) ? "retry of an earlier request" : undefined,
+  ].filter(Boolean).join(", "));
 }
 
 export function getVisionModel(): string {
@@ -448,6 +480,9 @@ function isUnavailableModelError(error: unknown): boolean {
     });
 }
 
+/** Characters of one provider error field that classification reads; the text is matched, never shown. */
+const PROVIDER_FIELD_SCAN_CHARS = 4096;
+
 /** Inspect only known error fields; provider details never enter our logs/errors. */
 function providerErrorDetail(error: InstanceType<typeof OpenAI.APIError>): string {
   const body = error.error && typeof error.error === "object" ? error.error as Record<string, unknown> : {};
@@ -466,7 +501,7 @@ function providerErrorDetail(error: InstanceType<typeof OpenAI.APIError>): strin
     metadata.error_type, metadata.provider_code, metadata.failed_routing_step,
     rawBody.message, rawBody.param, rawBody.code, rawBody.type, nested.message, nested.param, nested.code, nested.type]
     .filter((value): value is string => typeof value === "string")
-    .map(value => value.slice(0, ERROR_TEXT_SCAN_CHARS))
+    .map(value => value.slice(0, PROVIDER_FIELD_SCAN_CHARS))
     .join(" ");
 }
 
@@ -481,7 +516,7 @@ function providerErrorBody(error: unknown): { message?: unknown; code?: unknown;
 /** OpenRouter's wording when the upstream provider of a model failed; another model may still answer. */
 function isProviderReturnedError(error: unknown): boolean {
   const message = providerErrorBody(error)?.message;
-  return typeof message === "string" && /\bprovider returned error\b/i.test(message.slice(0, ERROR_TEXT_SCAN_CHARS));
+  return typeof message === "string" && /\bprovider returned error\b/i.test(message.slice(0, PROVIDER_FIELD_SCAN_CHARS));
 }
 
 /** The provider's message for diagnose_llm_config: message, code and metadata.provider_name, never metadata.raw. */
@@ -497,20 +532,19 @@ function describeProviderError(error: unknown): string | undefined {
   return parts.length ? parts.join(", ").replace(/\s+/g, " ").slice(0, 200) : undefined;
 }
 
-/** Only diagnostics send synthetic prompts and may show an excerpt of the provider's reason. */
+/** OpenRouter's wording for a request whose maximum output costs more than the balance covers. */
+const AFFORDABLE_TOKENS = /\brequested up to (\d{1,12}) tokens, but can only afford (\d{1,12})(?!\d)/;
+
+/**
+ * A payment error in diagnose_llm_config: the fixed guidance and, from the provider's text, at most the two token
+ * counts of OpenRouter's known sentence. The text itself can echo a request or name credentials and is never shown.
+ */
 function describeDiagnosticPaymentError(normalized: LlmPaymentError, error: unknown): string {
-  const detail = providerErrorBody(error)?.message ?? (error instanceof OpenAI.APIError
-    ? error.error ?? (error.message === "402 status code (no body)" ? undefined : error.message.slice(4)) : undefined);
-  if (typeof detail !== "string") return normalized.message;
-  const reason = redactExternalErrorText(detail)
-    .trim().replace(/\s+/g, " ")
-    .replace(/, or fewer max_tokens\b/gi, "")
-    .replace(/ To increase, visit\b.*$/i, "")
-    .replace(/ ?[(\[<]?(?:(?<![a-z\d+.-])[a-z][a-z\d+.-]*:\/\/|\bwww\.)[^ <>"']+>?/gi,
-      url => /[.!?]$/.test(url) ? url.slice(-1) : "")
-    .replace(/ +/g, " ").trim();
-  const excerpt = reason.length > 200 ? `${reason.slice(0, 199).trimEnd()}…` : reason;
-  return normalized.message + (excerpt ? ` Provider reason: ${excerpt}` : "");
+  const body = providerErrorBody(error);
+  const detail = typeof body?.message === "string" ? body.message : error instanceof OpenAI.APIError ? error.message : undefined;
+  const tokens = typeof detail === "string" ? AFFORDABLE_TOKENS.exec(boundExternalText(detail, PROVIDER_FIELD_SCAN_CHARS)) : null;
+  return normalized.message + (tokens
+    ? ` The provider reports that the request asked for up to ${tokens[1]} tokens and the balance covers ${tokens[2]}.` : "");
 }
 
 /**
@@ -537,7 +571,7 @@ function shouldTryNextModel(error: unknown): boolean {
   }
   if (error instanceof Error) {
     return /429|provider returned error|rate limit|no endpoints|empty response|no choices|timed out|unsupported|response contained/i.test(
-      error.message.slice(0, ERROR_TEXT_SCAN_CHARS),
+      error.message.slice(0, PROVIDER_FIELD_SCAN_CHARS),
     );
   }
   return false;
@@ -546,7 +580,7 @@ function shouldTryNextModel(error: unknown): boolean {
 function isRateLimitError(error: unknown): boolean {
   if (error instanceof OpenAI.RateLimitError) return true;
   if (error instanceof LlmRequestError || error instanceof OpenAI.APIError) return error.status === 429;
-  return error instanceof Error && /429|rate limit/i.test(error.message.slice(0, ERROR_TEXT_SCAN_CHARS));
+  return error instanceof Error && /429|rate limit/i.test(error.message.slice(0, PROVIDER_FIELD_SCAN_CHARS));
 }
 
 /** The closing sentence of provider messages; diagnose_llm_config leaves it out of its own output. */
@@ -573,7 +607,11 @@ function normalizeLlmError(error: unknown, model?: string, role?: LlmRole, baseU
     result.name = "LlmModelNotFoundError";
     return result;
   }
-  if (!(error instanceof OpenAI.APIError)) return redactError(error);
+  if (!(error instanceof OpenAI.APIError)) {
+    // This module composes the messages of its own error classes; anything else comes from the SDK or the runtime.
+    return error instanceof LlmRequestError || error instanceof LLMConfigurationError || error instanceof LlmTimeoutError
+      || error instanceof LlmUnusableReplyError ? redactError(error) : redactExternalError(error);
+  }
   const { status } = error;
   const now = Date.now();
   const timing = status === 429 ? rateLimitTiming(error.headers, error.error, now) : undefined;
@@ -635,7 +673,7 @@ function baseUrlFailure(error: unknown): LlmBaseUrlError | undefined {
   }
   // Bodies of a 2xx answer that cannot be read: not JSON, or the connection ended before the end.
   if (error instanceof SyntaxError) return notChatCompletion("the response body was not valid JSON");
-  if (error instanceof TypeError && /terminated/i.test(error.message.slice(0, ERROR_TEXT_SCAN_CHARS))) return notChatCompletion("the response body was cut off");
+  if (error instanceof TypeError && /terminated/i.test(error.message.slice(0, PROVIDER_FIELD_SCAN_CHARS))) return notChatCompletion("the response body was cut off");
   if (error instanceof OpenAI.APIError && (error.status === 404 || error.status === 405) && !hasErrorMessage(error.error)) {
     return new LlmBaseUrlError(redactMessage(`LLM request failed (HTTP ${error.status}): the answer held no error message, so LLM_BASE_URL probably points to a wrong path. `
       + `OpenAI-compatible APIs usually end in /v1, for example ${EXAMPLE_BASE_URL}. Check LLM_BASE_URL. ${DIAGNOSE_HINT}`), error.status);
@@ -700,12 +738,14 @@ async function createCompletion(
       );
     }
     let completion: OpenAI.ChatCompletion;
+    let headers: Headers;
     // The SDK's own timeout ends with the response headers; it reads an error body without a deadline.
     const deadline = AbortSignal.timeout(timeoutMs);
     const requestSignal = signal ? AbortSignal.any([signal, deadline]) : deadline;
     try {
       options.onRequest?.(params.model);
-      completion = await llm.chat.completions.create(params, { signal: requestSignal, timeout: timeoutMs });
+      // The headers of a 2xx answer are needed too: an error envelope in its body can come with Retry-After.
+      ({ data: completion, response: { headers } } = await llm.chat.completions.create(params, { signal: requestSignal, timeout: timeoutMs }).withResponse());
       // An empty body arrives as undefined or "", an HTML page as a string.
       if (completion && typeof completion === "object") options.onUsage?.({ model: params.model,
         promptTokens: completion.usage?.prompt_tokens, completionTokens: completion.usage?.completion_tokens,
@@ -765,7 +805,11 @@ async function createCompletion(
       embeddedErrors.set(limited, embedded);
       throw limited;
     }
-    const failure = new LlmRequestError("LLM request failed: response contained no choices", Number(embedded.code) || 502);
+    const status = Number(embedded.code) || 502;
+    const now = Date.now();
+    const waitMs = status === 402 ? parseRetryAfter(headerValue("retry-after", headers, embedded), now) : undefined;
+    const failure = new LlmRequestError("LLM request failed: response contained no choices", status,
+      waitMs === undefined ? undefined : Math.ceil(waitMs / 1000), waitMs === undefined ? undefined : now + waitMs);
     embeddedErrors.set(failure, embedded);
     throw failure;
   }

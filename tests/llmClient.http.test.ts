@@ -252,16 +252,16 @@ describe("LLM requests through real local HTTP and the OpenAI SDK", () => {
 
   it.each([
     { name: "OpenRouter", url: "https://openrouter.ai/api/v1", status: 402, limitSource: "openrouter_credits",
-      message: "This request requires more credits, or fewer max_tokens. You requested up to 4096 tokens, but can only afford 3400. To increase, visit https://billing.invalid/key and adjust your limit.",
+      message: "This request requires more credits, or fewer max_tokens. You requested up to 4096 tokens, but can only afford 3400. To increase, visit //example.test/docs "
+        + "or billing.example.test/profile with Authorization: Bearer SYNTHETIC_BEARER_43, eyJTWU5USEVUSUM.eyJTWU5USEVUSUM.U1lOVEhFVElD and kid_z9b8.",
       guidance: "Check your OpenRouter account balance and add credits if needed. OpenRouter estimates the request cost before routing, including the requested maximum output tokens up to its per-request cap.",
-      reason: "This request requires more credits. You requested up to 4096 tokens, but can only afford 3400." },
+      tokens: "The provider reports that the request asked for up to 4096 tokens and the balance covers 3400." },
     { name: "another provider with an embedded payment error", url: "https://openrouter.ai.example.invalid/v1", status: 200,
       message: `Synthetic billing restriction ${"x".repeat(210)}`,
-      guidance: "Check your account balance and billing settings with the provider, and add credits if needed.",
-      reason: `Synthetic billing restriction ${"x".repeat(169)}…` },
+      guidance: "Check your account balance and billing settings with the provider, and add credits if needed." },
     { name: "a bare payment error", url: "https://other.invalid/v1", status: 402, message: undefined,
       guidance: "Check your account balance and billing settings with the provider, and add credits if needed." },
-  ])("explains a payment error from $name throughout the diagnosis", async ({ url, status, message, limitSource, guidance, reason }) => {
+  ])("explains a payment error from $name with fixed guidance and no provider text throughout the diagnosis", async ({ url, status, message, limitSource, guidance, tokens }) => {
       for (const name of ["LLM_TEXT_MODELS", "LLM_FAST_TEXT_MODELS", "LLM_VISION_MODELS"]) vi.stubEnv(name, "paid/first,paid/second");
       vi.stubEnv("LLM_TEXT_MODEL", "");
       vi.stubEnv("LLM_VISION_MODEL", "");
@@ -271,18 +271,19 @@ describe("LLM requests through real local HTTP and the OpenAI SDK", () => {
       const { diagnoseLlmConfig } = await import("../src/tools/diagnoseLlmConfig.js");
       const diagnosis = await diagnoseLlmConfig();
       const expected = "LLM request failed (HTTP 402): " + (limitSource ? "" : "the model provider requires payment or more credits for this model. ")
-        + guidance + (reason ? ` Provider reason: ${reason}` : "");
+        + guidance + (tokens ? ` ${tokens}` : "");
       expect(diagnosis.ok).toBe(false);
       for (const check of diagnosis.checks) {
         expect(check).toMatchObject({ ok: false, error: `paid/first: ${expected}`,
           attempts: [{ model: "paid/first", ok: false, error: expected }] });
       }
       expect(diagnosis.summary.split("\n").slice(1).join("\n")).toBe(`LLM configuration has 3 checks failing.\n- text_json, fast_text_json, vision_json: paid/first: ${expected}`);
+      expect(JSON.stringify(diagnosis)).not.toMatch(/SYNTHETIC_BEARER_43|eyJ|kid_z9b8|example\.test|Synthetic billing/);
       expect(fetchMock).toHaveBeenCalledTimes(3);
     },
   );
 
-  it("keeps echoed prompt text and a bearer value out of answer_from_board HTTP 402 errors", async () => {
+  it("keeps an echoed prompt and a bearer value from the body and the response headers out of answer_from_board errors and SDK logs", async () => {
     vi.stubEnv("LLM_TEXT_MODELS", "paid/first,paid/second");
     vi.stubEnv("LLM_TEXT_MODEL", "");
     const marker = "SYNTHETIC_PRIVATE_NOTE";
@@ -290,8 +291,9 @@ describe("LLM requests through real local HTTP and the OpenAI SDK", () => {
     await localClient((request, response) => {
       const prompt = request.messages?.at(-1)?.content ?? "";
       expect(prompt).toContain(marker);
-      response.writeHead(402, { "content-type": "text/plain" });
-      response.end(`Echo ${prompt.match(/SYNTHETIC_PRIVATE_NOTE/)?.[0]} Authorization: Bearer SYNTHETIC_BEARER_43`);
+      const echo = `Echo ${prompt.match(/SYNTHETIC_PRIVATE_NOTE/)?.[0]} Authorization: Bearer SYNTHETIC_BEARER_43`;
+      response.writeHead(402, { "content-type": "text/plain", "x-request-id": echo, "x-synthetic-trace": echo });
+      response.end(echo);
     });
     const { answerFromBoard } = await import("../src/tools/answerFromBoard.js");
     const { setBoard } = await import("../src/lib/cache.js");
@@ -303,24 +305,24 @@ describe("LLM requests through real local HTTP and the OpenAI SDK", () => {
         message: "LLM request failed (HTTP 402): the model provider requires payment or more credits for this model. "
           + "Check your account balance and billing settings with the provider, and add credits if needed." });
     expect(requests.map(request => request.model)).toEqual(["paid/first"]);
-    expect(JSON.stringify(vi.mocked(console.error).mock.calls)).not.toMatch(/SYNTHETIC_PRIVATE_NOTE|SYNTHETIC_BEARER_43/);
+    const stderr = JSON.stringify(vi.mocked(console.error).mock.calls);
+    expect(stderr).not.toMatch(/SYNTHETIC_PRIVATE_NOTE|SYNTHETIC_BEARER_43/);
+    expect(stderr).toContain("LLM SDK: request failed, status 402");
   });
 
-  it("bounds and redacts a 60,000-character HTTP 402 diagnostic reason", async () => {
-    const key = "synthetic-provider-key-402";
-    vi.stubEnv("LLM_API_KEY", key);
+  it("reads no token counts or other text from a 60,000-character HTTP 402 reason and stays fast", async () => {
     vi.stubEnv("LLM_BASE_URL", "https://other.invalid/v1");
-    const prefix = `Echo ${key} `;
+    const nearMiss = "You requested up to 4096 tokens, but can only afford ";
     vi.stubGlobal("fetch", vi.fn(async () => Response.json({ error: {
-      message: prefix + "a".repeat(60_000 - prefix.length),
+      message: nearMiss.repeat(Math.ceil(60_000 / nearMiss.length)).slice(0, 60_000),
     } }, { status: 402 })));
     const { chatJson } = await import("../src/lib/llmClient.js");
     const onModelFailed = vi.fn();
     const start = performance.now();
     await expect(chatJson("paid/first", messages, { onModelFailed })).rejects.toMatchObject({ status: 402 });
     expect(performance.now() - start).toBeLessThan(1500);
-    expect(onModelFailed).toHaveBeenCalledWith("paid/first",
-      expect.stringMatching(/Provider reason: Echo \[redacted\] a{183}…$/));
+    expect(onModelFailed).toHaveBeenCalledWith("paid/first", "LLM request failed (HTTP 402): the model provider requires payment or more credits for this model. "
+      + "Check your account balance and billing settings with the provider, and add credits if needed.");
   }, 20_000);
 
   it("leads a failed check with its terminal payment error after an earlier candidate fails", async () => {

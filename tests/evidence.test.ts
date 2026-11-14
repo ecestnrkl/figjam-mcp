@@ -25,6 +25,12 @@ describe("similar board words", () => {
     expect(retrieveEvidence(typoBoard, { query }).evidence).toEqual([]);
     expect(similarBoardWords(typoBoard, query)[0]).toBe(word);
   });
+  it.each([["gold", "cold"], ["boat", "goat"], ["hund", "hand"], ["cash", "rash"]])("does not suggest %s as %s, one changed letter in a word under six letters", (query, word) => {
+    expect(similarBoardWords(evidenceBoard("SyntheticShort", [textNode("1:1", word)]), query)).toEqual([]);
+  });
+  it("ranks a word that shares the query's prefix before a single-edit typo candidate", () => {
+    expect(similarBoardWords(evidenceBoard("SyntheticRank", [textNode("1:1", "Cashews and crash")]), "cash")).toEqual(["cashews", "crash"]);
+  });
   it("keeps a default name word from the shape's written text", () => {
     const shape = { ...textNode("1:1", "Table supplies"), name: "Table 2", type: "SHAPE_WITH_TEXT" };
     expect(similarBoardWords(evidenceBoard("SyntheticSupplies", [shape]), "tablle")).toContain("table");

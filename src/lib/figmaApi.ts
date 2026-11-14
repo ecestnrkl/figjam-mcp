@@ -1,7 +1,7 @@
 import { describeConnectionCause } from "./connectionErrors.js";
 import { readIntEnv } from "./env.js";
 import { nodeProxyHint, nodeSystemCaHint } from "./nodeNetwork.js";
-import { redactError, redactExternalErrorText, redactMessage, validateHeaderSecret } from "./secrets.js";
+import { redactError, redactExternalError, redactMessage, validateHeaderSecret } from "./secrets.js";
 import { describeWaitUntil, parseRetryAfter } from "./waitTime.js";
 
 const FIGMA_API_BASE = "https://api.figma.com/v1";
@@ -61,10 +61,11 @@ async function readErrorText(response: Response, token: string): Promise<string>
     }
     const body = Buffer.concat(chunks, bytes).toString("utf8");
     const parsed = JSON.parse(body) as { err?: unknown; message?: unknown } | null;
+    // The body is bounded above, so the whole text is redacted before it is shortened for the message.
     const text = [parsed?.err, parsed?.message].map(value => typeof value === "string"
-      ? redactExternalErrorText(value, [token]).trim() : "")
+      ? redactMessage(value, [token]).replace(/\s+/g, " ").trim() : "")
       .find(Boolean);
-    return text?.replace(/\s+/g, " ").slice(0, ERROR_TEXT_MAX_CHARS) ?? "";
+    return text?.slice(0, ERROR_TEXT_MAX_CHARS) ?? "";
   } catch { return ""; }
   finally { void reader.cancel().catch(() => undefined); }
 }
@@ -178,7 +179,7 @@ async function readJson<T>(response: Response, apiPath: string, timeoutMs: numbe
   catch (error) {
     signal?.throwIfAborted();
     if (isTimeout(error)) throw redactError(timeoutError("Figma API response body", apiPath, timeoutMs), token ? [token] : []);
-    throw redactError(error, typeof token === "string" ? [token] : []);
+    throw redactExternalError(error, typeof token === "string" ? [token] : []);
   }
   let parsed: unknown;
   try { parsed = JSON.parse(text); }
@@ -312,7 +313,7 @@ export async function downloadRenders(nodeIds: string[], renderUrls: RenderUrls,
       } catch (error) {
         workerSignal.throwIfAborted();
         if (isTimeout(error)) throw new FigmaTimeoutError("Figma screenshot download timed out");
-        throw redactError(error);
+        throw redactExternalError(error);
       }
     }
   }

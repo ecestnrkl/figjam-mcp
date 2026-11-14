@@ -30,6 +30,7 @@ import { sectionReference, hiddenSectionNotice, sectionGuide } from "../lib/sect
 import { enclosingIdsLookup, retrieveEvidence } from "../lib/evidence.js";
 import {
   buildBoardCacheKey,
+  cacheRelativePath,
   extractFigmaLastModified,
   hashClusterNodes,
   hashNormalizedNodes,
@@ -489,18 +490,20 @@ async function publishBoard(board: BoardData, signal?: AbortSignal): Promise<boo
   catch (error) {
     signal?.throwIfAborted();
     board.persistenceWarning = persistenceFailureMessage(error);
-    console.error(board.persistenceWarning);
+    // stderr stays on this machine and names the directory; the tool output does not.
+    console.error(persistenceFailureMessage(error, true));
     failedRevision = (await readBoardHead(board.boardId)).revisionId ?? null;
   }
   setBoard(board.boardId, board, publication?.revisionId ?? failedRevision);
   return publication?.historyReset ?? false;
 }
-function persistenceFailureMessage(error: unknown): string {
+function persistenceFailureMessage(error: unknown, absolutePath = false): string {
   const { code, path } = (error as NodeJS.ErrnoException | null) ?? {};
   const prefix = "Snapshot could not be saved; ";
   if (code === "EBUSY") return prefix + "another server process is writing; retry ingest_board.";
   if (code === "EACCES" || code === "EPERM") {
-    const location = path ? ` for ${JSON.stringify(redactMessage(path))}` : "";
+    const shown = path === undefined ? undefined : absolutePath ? path : cacheRelativePath(path);
+    const location = shown ? ` for ${JSON.stringify(redactMessage(shown))}` : "";
     return prefix + `${code}${location}: check permissions of FIGJAM_MCP_CACHE_DIR or the cache directory, then retry ingest_board.`;
   }
   if (code === "ENOSPC") return prefix + "ENOSPC: the disk is full; free disk space, then retry ingest_board.";
