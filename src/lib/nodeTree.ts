@@ -25,7 +25,7 @@ export const STRUCTURAL_TYPES = new Set(["DOCUMENT", "CANVAS", "PAGE", "FRAME", 
 export const MAX_BOARD_NODES = 100_000;
 
 /** Names Figma and FigJam assign to new layers and shapes, optionally numbered ("Frame 12"). */
-const GENERIC_NODE_NAMES = new Set([
+export const GENERIC_NODE_NAMES = new Set([
   "arrow", "boolean", "circle", "code block", "component", "connector", "connector line", "ellipse", "embed",
   "exclude", "frame", "group", "image", "instance", "intersect", "line", "page", "polygon", "rectangle",
   "section", "shape", "shape with text", "link preview", "slice", "stamp", "star", "sticky", "subtract", "table", "text", "union", "vector",

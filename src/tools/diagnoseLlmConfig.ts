@@ -8,6 +8,7 @@ import { describeModelConfig } from "../lib/modelRegistry.js";
 import { getAnswerRequestTimeoutMs, getVisionRequestTimeoutMs } from "../lib/llmTimeouts.js";
 import { getAnswerMaxOutputTokens, getVisionMaxOutputTokens } from "../lib/llmOutputBudgets.js";
 import { nodeProxyHint, nodeProxyStatus } from "../lib/nodeNetwork.js";
+import { packageMetadata } from "../packageMetadata.js";
 
 /**
  * Each check ends after this time even if the provider hangs. The checks run in
@@ -113,8 +114,9 @@ export async function diagnoseLlmConfig(options: { signal?: AbortSignal } = {}):
   }
   const fallbackNote = (retries.length ? ` Retry: ${retries.join("; ")}.` : "")
     + (fallbacks.length ? ` Fallback: ${fallbacks.join("; ")}.` : "");
-  const network = nodeProxyStatus();
+  const network = { serverVersion: packageMetadata.version, ...nodeProxyStatus() };
   const proxyHint = nodeProxyHint(network);
+  const runtime = `${packageMetadata.name} ${network.serverVersion} on Node ${network.nodeVersion}`;
   return {
     ok,
     preset: config.preset,
@@ -124,7 +126,7 @@ export async function diagnoseLlmConfig(options: { signal?: AbortSignal } = {}):
     providerRequireParameters: config.providerRequireParameters,
     checks,
     network,
-    summary: (ok
+    summary: `${runtime}\n` + (ok
       ? `LLM configuration OK (${describeActiveModels(config, checks)}).`
       : `LLM configuration has ${countChecks(checks.filter((check) => !check.ok).length)} failing.`)
       + fallbackNote + describeFailures(checks) + (proxyHint ? `\n${proxyHint}` : ""),

@@ -240,6 +240,9 @@ describe("getBoardContext", () => {
     expect(found.text).not.toContain("outside sections —");
     const missing = await getBoardContext({ boardId: data.boardId, topic: "quasar" });
     expect(missing.text).toContain("Topic search for quasar: no excerpt matches.");
+    for (const shown of [missing.text, missing.structuredContent.contextText]) {
+      expect(shown).toContain("No similar board words found. Search again in the board's language or read one of the listed sections by ID.");
+    }
     expect(missing.text).toContain("Largest sections, 3 of 6 (ID, name, excerpts):");
     expect(missing.text).toContain("30 excerpts lie outside sections: read them with get_board_context outsideSections: true.");
   });

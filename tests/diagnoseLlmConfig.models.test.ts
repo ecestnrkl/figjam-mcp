@@ -22,13 +22,13 @@ afterEach(() => vi.unstubAllEnvs());
 
 describe("diagnostic model summary", () => {
   it("keeps the preset without model overrides", async () => {
-    expect((await diagnoseLlmConfig()).summary).toBe("LLM configuration OK (student-free).");
+    expect((await diagnoseLlmConfig()).summary.split("\n").slice(1).join("\n")).toBe("LLM configuration OK (student-free).");
   });
 
   it("names the shared overridden model while preserving the structured preset", async () => {
     for (const name of ["LLM_TEXT_MODELS", "LLM_FAST_TEXT_MODELS", "LLM_VISION_MODELS"]) vi.stubEnv(name, "openai/gpt-4.1-mini");
     const result = await diagnoseLlmConfig();
-    expect(result.summary).toBe("LLM configuration OK (openai/gpt-4.1-mini).");
+    expect(result.summary.split("\n").slice(1).join("\n")).toBe("LLM configuration OK (openai/gpt-4.1-mini).");
     expect(result.preset).toBe("student-free");
     expect(chatJsonMock.mock.calls.map(([models]) => models)).toEqual(Array(3).fill(["openai/gpt-4.1-mini"]));
   });
@@ -36,7 +36,7 @@ describe("diagnostic model summary", () => {
   it("names different vision and text roles without repeating fast text", async () => {
     vi.stubEnv("LLM_VISION_MODELS", "vision-a");
     vi.stubEnv("LLM_TEXT_MODELS", "text-a");
-    expect((await diagnoseLlmConfig()).summary).toBe("LLM configuration OK (vision: vision-a; text: text-a).");
+    expect((await diagnoseLlmConfig()).summary.split("\n").slice(1).join("\n")).toBe("LLM configuration OK (vision: vision-a; text: text-a).");
   });
 
   it.each([
@@ -47,7 +47,7 @@ describe("diagnostic model summary", () => {
     ["LLM_VISION_MODEL", "vision: custom; text: openrouter/free"],
   ])("recognizes a lone %s override", async (name, roles) => {
     vi.stubEnv(name, "custom");
-    expect((await diagnoseLlmConfig()).summary).toBe(`LLM configuration OK (${roles}).`);
+    expect((await diagnoseLlmConfig()).summary.split("\n").slice(1).join("\n")).toBe(`LLM configuration OK (${roles}).`);
   });
 
   it("names the models that answered after fallback, keeping configured candidate lists", async () => {
@@ -61,7 +61,7 @@ describe("diagnostic model summary", () => {
       return { result: options.schemaName === "diagnose_text_json" ? 42 : 63 };
     });
     const result = await diagnoseLlmConfig();
-    expect(result.summary).toBe("LLM configuration OK (vision: actual-vision; text: actual-text)." +
+    expect(result.summary.split("\n").slice(1).join("\n")).toBe("LLM configuration OK (vision: actual-vision; text: actual-text)." +
       " Fallback: text_json used actual-text after unavailable failed; fast_text_json used actual-text after unavailable failed.");
     expect(result.textModels).toEqual(["unavailable", "actual-text"]);
   });

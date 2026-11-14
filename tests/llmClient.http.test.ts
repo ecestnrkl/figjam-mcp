@@ -277,7 +277,7 @@ describe("LLM requests through real local HTTP and the OpenAI SDK", () => {
         expect(check).toMatchObject({ ok: false, error: `paid/first: ${expected}`,
           attempts: [{ model: "paid/first", ok: false, error: expected }] });
       }
-      expect(diagnosis.summary).toBe(`LLM configuration has 3 checks failing.\n- text_json, fast_text_json, vision_json: paid/first: ${expected}`);
+      expect(diagnosis.summary.split("\n").slice(1).join("\n")).toBe(`LLM configuration has 3 checks failing.\n- text_json, fast_text_json, vision_json: paid/first: ${expected}`);
       expect(fetchMock).toHaveBeenCalledTimes(3);
     },
   );

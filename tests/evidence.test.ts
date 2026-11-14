@@ -1,10 +1,26 @@
 import { describe, expect, it } from "vitest";
-import { connectionsForEvidence, countConnectionsForEvidence, evidenceTokens, formatEvidence, formatEvidenceConnection, retrieveEvidence, snapshotIdForBoard, tableCellPositions } from "../src/lib/evidence.js";
+import { connectionsForEvidence, countConnectionsForEvidence, evidenceTokens, formatEvidence, formatEvidenceConnection, retrieveEvidence, similarBoardWords, snapshotIdForBoard, tableCellPositions } from "../src/lib/evidence.js";
 import { evidenceBoard, textNode } from "./fixtures/retrieval.js";
 import type { NormalizedNode, TableCell } from "../src/types.js";
 
 /** Without a row, this cell keeps its table at cell excerpts. */
 const LOOSE_CELL: TableCell = { id: "cell:loose", text: "Loose note" };
+
+describe("similar board words", () => {
+  const board = evidenceBoard("SyntheticCheckout", [
+    { ...textNode("1:1", "The checkout flow drops users between shipping and payment."), name: "Rectangle 2", type: "RECTANGLE" },
+    { ...textNode("1:2", "Offer a vegan lunch and review the refund policy."), name: "Speech bubble 3", type: "SHAPE_WITH_TEXT" },
+    textNode("1:3", "Participants ran the workshop and need clearer instructions."),
+  ]);
+  it.each(["Bezahlvorgangg", "Rückerstattung", "Lieferadresse", "Bestellnummer", "Veranstaltung", "Teilnehmende", "Rat"])(
+    "omits weak suggestions for %s on an English board", (query) => {
+      expect(similarBoardWords(board, query)).toEqual([]);
+    },
+  );
+  it.each([["rectangl", "rectangle"], ["speeech", "speech"]])("omits the default name word %s would otherwise suggest", (query, word) => {
+    expect(similarBoardWords(board, query)).not.toContain(word);
+  });
+});
 
 describe("source evidence", () => {
   it.each(["Shape with text", "shape with text 2", "Link preview", "LINK PREVIEW 3"])("omits default node name %s", (name) => {

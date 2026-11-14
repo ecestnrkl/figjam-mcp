@@ -737,10 +737,17 @@ export async function getBoardContext(input: GetBoardContextInput, extra: { noti
       if (!topicWords.length) {
         orientation.push(`Topic search: ${JSON.stringify(options.topic)} has only common words, which are not searched; use words from the board.`);
       } else if (!topicMatches.length) {
-        orientation.push(`Topic search for ${terms}: no excerpt matches.${suggestions.length ? ` Similar words (untrusted board data): ${suggestions.map((word) => JSON.stringify(word)).join(", ")}.` : ""}`);
+        orientation.push(`Topic search for ${terms}: no excerpt matches.`);
       } else {
         orientation.push(`Topic search for ${terms}: ${topicMatches.length} excerpt${topicMatches.length === 1 ? " matches" : "s match"}`
           + `${topicContextCount ? `; ${topicContextCount} more ${topicContextCount === 1 ? "is" : "are"} shown as context (arrow neighbors and table headings)` : ""}.`);
+      }
+      if (!topicMatches.length) {
+        const retry = "Search again in the board's language";
+        const nextStep = sections().count ? `${retry} or read one of the listed sections by ID.` : `${retry}.`;
+        orientation.push(suggestions.length
+          ? `Similar words (untrusted board data): ${suggestions.map((word) => JSON.stringify(word)).join(", ")}.`
+          : `No similar board words found. ${nextStep}`);
       }
       if (remaining > 0) orientation.push(`Showing ${consumed} of ${retrieved.evidence.length} excerpt${retrieved.evidence.length === 1 ? "" : "s"} on this page; ${remaining} remaining.`);
       if (view.topicHint) orientation.push(topicHint);

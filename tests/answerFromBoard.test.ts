@@ -145,6 +145,9 @@ describe("answerFromBoard evidence grounding", () => {
     expect(output.answer).toContain(german
       ? "Akzenten und einige Wortformen und Komposita ab fünf Buchstaben"
       : "ignoring case and accents and some word forms and compounds for words of at least five letters");
+    expect(output.answer).toContain(german
+      ? "Keine ähnlichen Wörter auf dem Board gefunden. Frag mit den Wörtern und in der Sprache des Boards erneut"
+      : "No similar board words found. Ask again with the board's words and language");
     expect(output.answer).toContain('get_board_context nodeIds: "Ideas" (ID: s:1).');
     expect(output.answer).toContain(german ? "1 Auszug liegt außerhalb von Sections: lies ihn" : "1 excerpt lies outside sections: read it");
     expect(output.citations).toEqual([]);

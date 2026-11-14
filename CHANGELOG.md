@@ -8,6 +8,8 @@
 - Explain which Node.js versions support environment proxies and system certificates in Figma connection errors.
 - Report the Node.js version and proxy status in `diagnose_llm_config` without exposing proxy values.
 - Show the plan tier and rate limit type from Figma HTTP 429 responses when available.
+- Suggest close board words after a search miss, skip FigJam default names, and guide the next read when there are no close words.
+- Show the installed server version in `diagnose_llm_config` text and structured output.
 
 ## 0.13.0 — 2026-11-13
 

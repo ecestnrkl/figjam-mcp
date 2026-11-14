@@ -546,6 +546,10 @@ try {
     assert(!diagnostic.isError, JSON.stringify(diagnostic));
     assert.equal(diagnostic.structuredContent.ok, true, "All three diagnostic probes must succeed with the offline provider");
     assert.equal(diagnostic.structuredContent.checks.length, 3);
+    assert.equal(diagnostic.structuredContent.network.serverVersion, installedMetadata.version);
+    const versionLine = `${installedMetadata.name} ${installedMetadata.version} on Node ${process.versions.node}`;
+    assert.equal(diagnostic.structuredContent.summary.split("\n")[0], versionLine);
+    assert.equal(diagnostic.content[0].text.split("\n")[0], versionLine);
     const invalid = await client.callTool({ name: "get_board_context", arguments: { boardId: "../private" } }).catch(error => error);
     assert(invalid instanceof Error || invalid.isError, "Invalid tool arguments must be rejected");
     if (longCheck) {
@@ -576,6 +580,7 @@ try {
     try {
       await legacy.connect(legacyTransport);
       assert.equal(legacy.getNegotiatedProtocolVersion(), protocolVersion);
+      assert.equal(legacy.getServerVersion()?.version, installedMetadata.version);
       assert.equal((await legacy.listTools()).tools.length, 5);
       const legacyIngest = await ingestWithProgress(legacy, {
         figmaFileUrl: `https://www.figma.com/board/LegacyBoard${protocolVersion.replaceAll("-", "")}/Smoke`, ingestMode: "max_speed",
