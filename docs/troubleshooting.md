@@ -28,11 +28,13 @@ server before retrying: ingests of the same board run one after another.
 
 ## Connection and model errors
 
-A Figma connection failure names `api.figma.com` and its cause. Check DNS or the connection. If you use a proxy, set `HTTPS_PROXY` or `HTTP_PROXY` and `NODE_USE_ENV_PROXY=1` before Node starts. For `fetch()`, this requires Node.js 22.21.0 or later on the 22.x line, or 24.0.0 or later. For certificate errors, set `NODE_USE_SYSTEM_CA=1` before Node starts. This requires Node.js 22.19.0 or later on the 22.x line, or 24.6.0 or later. See the [Node.js enterprise network guide](https://nodejs.org/learn/http/enterprise-network-configuration).
+A Figma connection failure names `api.figma.com` and its cause. Check DNS or the connection. If you use a proxy, set `HTTPS_PROXY` or `HTTP_PROXY` and `NODE_USE_ENV_PROXY=1` before Node starts. For `fetch()`, this requires Node.js 22.21.0 or later on the 22.x line, or 24.0.0 or later. For certificate errors, set `NODE_USE_SYSTEM_CA=1` before Node starts on Node.js 22.19.0 or later on the 22.x line, or 24.6.0 or later. On earlier versions that support `--use-system-ca`, start Node with that flag or include it in `NODE_OPTIONS`. See the [Node.js enterprise network guide](https://nodejs.org/learn/http/enterprise-network-configuration).
 
 The file request times out after 45 seconds by default. Adjust `FIGMA_FILE_REQUEST_TIMEOUT_MS` and the client timeout together if necessary.
 
 A model HTTP 404 names the requested model and its setting (`LLM_TEXT_MODELS`, `LLM_FAST_TEXT_MODELS`, `LLM_VISION_MODELS`, or `LLM_MODEL_PRESET`). Check the model ID and its availability with the provider.
+
+For OpenRouter HTTP 402, wait for `Retry-After` if the in-flight spending budget is temporarily full. If the API key reached its credit limit, check that key's limit. If the account cannot cover the estimated request cost, check the account balance. The estimate includes the requested maximum output tokens up to OpenRouter's per-request cap. Other 402 responses receive general billing guidance. [OpenRouter HTTP 402 guidance](https://openrouter.ai/docs/api/reference/limits#handling-402-errors)
 
 ## Incomplete image interpretation
 
@@ -44,13 +46,13 @@ cause. Original text and table rows stay searchable in every case.
 | `time_budget` | Not started before the vision deadline | Run `ingest_board` again |
 | `timeout` | A model request ran past its deadline | Run again or choose a faster model |
 | `figma_timeout` | A Figma request or download ran past its deadline, or the time for images ended while rendering | Run again; raise `FIGMA_REQUEST_TIMEOUT_MS` if it repeats |
-| `rate_limit` | The model provider returned 429 | Wait until `qualityReport.nextRetryAt` |
+| `rate_limit` | The model provider returned 429 or OpenRouter's in-flight spending budget is temporarily full (402) | Wait until `qualityReport.nextRetryAt` |
 | `figma_rate_limit` | Figma returned 429 for the image fills or a render; Figma limits requests by seat and plan, and View and Collab seats can wait weeks | Wait until `qualityReport.nextRetryAt` (from Figma's `Retry-After`); no further image requests are sent in this run |
 | `config` | `LLM_BASE_URL` or `LLM_API_KEY` missing or invalid | Fix the named setting, then restart the server |
 | `base_url` | `LLM_BASE_URL` leads to no reachable OpenAI-compatible API: no connection, a wrong path, or an HTTP 200 body that is no JSON object | Check `LLM_BASE_URL`, then run `diagnose_llm_config`; no further image requests are sent |
 | `auth` | The model provider rejected `LLM_API_KEY` | Check the key and its access to the configured models; run `diagnose_llm_config` |
 | `figma_auth` | The Figma API answered 401 or 403 for the image fills or a render request | Check `FIGMA_ACCESS_TOKEN`: scope `file_content:read`, and its account must be able to open the file; no further image requests are sent in this run |
-| `payment` | The model provider returned HTTP 402 (payment or more credits required) | Check the provider account balance and add credits if needed |
+| `payment` | The model provider returned a billing-related HTTP 402 | Follow the summary's API key limit or billing guidance |
 | `invalid_reply` | The model returned no usable reply: no JSON, empty text, no `choices`, a refusal, a content-filter block, a reply cut off at `max_tokens` before any text, only reasoning, or a tool call | Choose another model; for a cut-off reply raise `LLM_VISION_MAX_OUTPUT_TOKENS` |
 | `render_failed` | Figma could not list the image fills or render the nodes, or the download of a rendered image failed (any status except 429; these links are loaded without the token, so only this cluster is affected) | Ingest again later |
 | `download_budget` | The images of this ingest together exceeded the 64 MiB download budget | Run `ingest_board` again: the next ingest continues with the clusters left; or split the board |

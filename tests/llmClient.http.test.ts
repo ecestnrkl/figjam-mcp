@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // Real HTTP and the installed SDK exercise error decoding, body deadlines and
 // socket cancellation. No provider key, external endpoint or SDK mock is used.
-type Request = { model: string; response_format?: { type: string }; provider?: { require_parameters?: boolean }; reasoning_effort?: string; reasoning?: { effort: string } };
+type Request = { model: string; messages?: Array<{ content: string }>; response_format?: { type: string }; provider?: { require_parameters?: boolean }; reasoning_effort?: string; reasoning?: { effort: string } };
 const messages = [{ role: "user" as const, content: "Synthetic fixture only" }];
 const schemaOptions = { jsonSchema: { type: "object", properties: { ok: { type: "boolean" } } } };
 let server: Server | undefined;
@@ -251,9 +251,9 @@ describe("LLM requests through real local HTTP and the OpenAI SDK", () => {
   });
 
   it.each([
-    { name: "OpenRouter", url: "https://openrouter.ai/api/v1", status: 402,
+    { name: "OpenRouter", url: "https://openrouter.ai/api/v1", status: 402, limitSource: "openrouter_credits",
       message: "This request requires more credits, or fewer max_tokens. You requested up to 4096 tokens, but can only afford 3400. To increase, visit https://billing.invalid/key and adjust your limit.",
-      guidance: "Before routing a paid request, OpenRouter checks whether your account balance covers the estimated cost, including the requested maximum output tokens up to its per-request cap. Remaining API key credit alone is insufficient. Check your OpenRouter account balance and add credits if needed.",
+      guidance: "Check your OpenRouter account balance and add credits if needed. OpenRouter estimates the request cost before routing, including the requested maximum output tokens up to its per-request cap.",
       reason: "This request requires more credits. You requested up to 4096 tokens, but can only afford 3400." },
     { name: "another provider with an embedded payment error", url: "https://openrouter.ai.example.invalid/v1", status: 200,
       message: `Synthetic billing restriction ${"x".repeat(210)}`,
@@ -261,16 +261,16 @@ describe("LLM requests through real local HTTP and the OpenAI SDK", () => {
       reason: `Synthetic billing restriction ${"x".repeat(169)}…` },
     { name: "a bare payment error", url: "https://other.invalid/v1", status: 402, message: undefined,
       guidance: "Check your account balance and billing settings with the provider, and add credits if needed." },
-  ])("explains a payment error from $name throughout the diagnosis", async ({ url, status, message, guidance, reason }) => {
+  ])("explains a payment error from $name throughout the diagnosis", async ({ url, status, message, limitSource, guidance, reason }) => {
       for (const name of ["LLM_TEXT_MODELS", "LLM_FAST_TEXT_MODELS", "LLM_VISION_MODELS"]) vi.stubEnv(name, "paid/first,paid/second");
       vi.stubEnv("LLM_TEXT_MODEL", "");
       vi.stubEnv("LLM_VISION_MODEL", "");
       vi.stubEnv("LLM_BASE_URL", url);
-      const fetchMock = vi.fn(async () => Response.json({ error: { code: 402, message } }, { status }));
+      const fetchMock = vi.fn(async () => Response.json({ error: { code: 402, message, metadata: { limit_source: limitSource } } }, { status }));
       vi.stubGlobal("fetch", fetchMock);
       const { diagnoseLlmConfig } = await import("../src/tools/diagnoseLlmConfig.js");
       const diagnosis = await diagnoseLlmConfig();
-      const expected = "LLM request failed (HTTP 402): the model provider requires payment or more credits for this model. "
+      const expected = "LLM request failed (HTTP 402): " + (limitSource ? "" : "the model provider requires payment or more credits for this model. ")
         + guidance + (reason ? ` Provider reason: ${reason}` : "");
       expect(diagnosis.ok).toBe(false);
       for (const check of diagnosis.checks) {
@@ -282,23 +282,46 @@ describe("LLM requests through real local HTTP and the OpenAI SDK", () => {
     },
   );
 
-  it("gives answer_from_board actionable HTTP 402 guidance before the URL-free provider reason", async () => {
+  it("keeps echoed prompt text and a bearer value out of answer_from_board HTTP 402 errors", async () => {
     vi.stubEnv("LLM_TEXT_MODELS", "paid/first,paid/second");
     vi.stubEnv("LLM_TEXT_MODEL", "");
-    await localClient((_request, response) => json(response, 402, { error: { code: 402,
-      message: "Billing is disabled (https://billing.invalid/secret-path) for this account." } }));
+    const marker = "SYNTHETIC_PRIVATE_NOTE";
+    vi.stubEnv("OPENAI_LOG", "debug");
+    await localClient((request, response) => {
+      const prompt = request.messages?.at(-1)?.content ?? "";
+      expect(prompt).toContain(marker);
+      response.writeHead(402, { "content-type": "text/plain" });
+      response.end(`Echo ${prompt.match(/SYNTHETIC_PRIVATE_NOTE/)?.[0]} Authorization: Bearer SYNTHETIC_BEARER_43`);
+    });
     const { answerFromBoard } = await import("../src/tools/answerFromBoard.js");
     const { setBoard } = await import("../src/lib/cache.js");
-    const { evidenceBoard } = await import("./fixtures/retrieval.js");
-    const board = evidenceBoard("PaymentError123");
+    const { evidenceBoard, textNode } = await import("./fixtures/retrieval.js");
+    const board = evidenceBoard("PaymentError123", [textNode("1:1", `Payment retries require review. ${marker}`)]);
     setBoard(board.boardId, board);
     await expect(answerFromBoard({ boardId: board.boardId, question: "What is required for payment retries?" }))
       .rejects.toMatchObject({ status: 402,
         message: "LLM request failed (HTTP 402): the model provider requires payment or more credits for this model. "
-          + "Check your account balance and billing settings with the provider, and add credits if needed. "
-          + "Provider reason: Billing is disabled for this account." });
+          + "Check your account balance and billing settings with the provider, and add credits if needed." });
     expect(requests.map(request => request.model)).toEqual(["paid/first"]);
+    expect(JSON.stringify(vi.mocked(console.error).mock.calls)).not.toMatch(/SYNTHETIC_PRIVATE_NOTE|SYNTHETIC_BEARER_43/);
   });
+
+  it("bounds and redacts a 60,000-character HTTP 402 diagnostic reason", async () => {
+    const key = "synthetic-provider-key-402";
+    vi.stubEnv("LLM_API_KEY", key);
+    vi.stubEnv("LLM_BASE_URL", "https://other.invalid/v1");
+    const prefix = `Echo ${key} `;
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ error: {
+      message: prefix + "a".repeat(60_000 - prefix.length),
+    } }, { status: 402 })));
+    const { chatJson } = await import("../src/lib/llmClient.js");
+    const onModelFailed = vi.fn();
+    const start = performance.now();
+    await expect(chatJson("paid/first", messages, { onModelFailed })).rejects.toMatchObject({ status: 402 });
+    expect(performance.now() - start).toBeLessThan(1500);
+    expect(onModelFailed).toHaveBeenCalledWith("paid/first",
+      expect.stringMatching(/Provider reason: Echo \[redacted\] a{183}…$/));
+  }, 20_000);
 
   it("leads a failed check with its terminal payment error after an earlier candidate fails", async () => {
     for (const name of ["LLM_TEXT_MODELS", "LLM_FAST_TEXT_MODELS", "LLM_VISION_MODELS"]) vi.stubEnv(name, "paid/first,paid/second");

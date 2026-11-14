@@ -1,7 +1,7 @@
 import { describeConnectionCause } from "./connectionErrors.js";
 import { readIntEnv } from "./env.js";
 import { nodeProxyHint, nodeSystemCaHint } from "./nodeNetwork.js";
-import { redactError, redactMessage, validateHeaderSecret } from "./secrets.js";
+import { redactError, redactExternalErrorText, redactMessage, validateHeaderSecret } from "./secrets.js";
 import { describeWaitUntil, parseRetryAfter } from "./waitTime.js";
 
 const FIGMA_API_BASE = "https://api.figma.com/v1";
@@ -34,6 +34,8 @@ const SERVER_ERROR_WAIT_MS = 2000;
 const SERVER_ERROR_MAX_RETRY_AFTER_MS = 5000;
 const ERROR_TEXT_MAX_BYTES = 4096;
 const ERROR_TEXT_MAX_CHARS = 200;
+const FIGMA_PLAN_TIERS = new Set(["enterprise", "org", "pro", "starter", "student"]);
+const FIGMA_RATE_LIMIT_TYPES = new Set(["low", "high"]);
 
 function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -44,7 +46,7 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   });
 }
 /** Figma's own error text (`err` or `message`) from a small error body; empty when there is none. */
-async function readErrorText(response: Response): Promise<string> {
+async function readErrorText(response: Response, token: string): Promise<string> {
   if (!response.body) return "";
   const reader = response.body.getReader();
   const chunks: Uint8Array[] = [];
@@ -53,13 +55,16 @@ async function readErrorText(response: Response): Promise<string> {
     while (bytes < ERROR_TEXT_MAX_BYTES) {
       const { done, value } = await reader.read();
       if (done) break;
-      chunks.push(value);
-      bytes += value.byteLength;
+      const chunk = value.subarray(0, ERROR_TEXT_MAX_BYTES - bytes);
+      chunks.push(chunk);
+      bytes += chunk.byteLength;
     }
     const body = Buffer.concat(chunks, bytes).toString("utf8");
     const parsed = JSON.parse(body) as { err?: unknown; message?: unknown } | null;
-    const text = [parsed?.err, parsed?.message].find((value): value is string => typeof value === "string" && value.trim() !== "");
-    return text?.replace(/\s+/g, " ").trim().slice(0, ERROR_TEXT_MAX_CHARS) ?? "";
+    const text = [parsed?.err, parsed?.message].map(value => typeof value === "string"
+      ? redactExternalErrorText(value, [token]).trim() : "")
+      .find(Boolean);
+    return text?.replace(/\s+/g, " ").slice(0, ERROR_TEXT_MAX_CHARS) ?? "";
   } catch { return ""; }
   finally { void reader.cancel().catch(() => undefined); }
 }
@@ -67,11 +72,12 @@ function figmaNetworkHints(certificate = false): string {
   const hints = [nodeProxyHint(), certificate ? nodeSystemCaHint() : undefined].filter(Boolean);
   return hints.length ? ` ${hints.join(" ")}` : "";
 }
-function describeFigmaRateLimit(headers: Headers, token?: string): string | undefined {
-  const plan = headers.get("X-Figma-Plan-Tier")?.trim();
-  const type = headers.get("X-Figma-Rate-Limit-Type")?.trim();
-  const details = [plan && `plan tier ${plan}`, type && `rate limit type ${type}`].filter(Boolean);
-  return details.length ? redactMessage(`Figma reports ${details.join(" and ")}.`, token ? [token] : []) : undefined;
+function describeFigmaRateLimit(headers: Headers): string | undefined {
+  const plan = headers.get("X-Figma-Plan-Tier");
+  const type = headers.get("X-Figma-Rate-Limit-Type");
+  const details = [plan && FIGMA_PLAN_TIERS.has(plan) && `plan tier ${plan}`,
+    type && FIGMA_RATE_LIMIT_TYPES.has(type) && `rate limit type ${type}`].filter(Boolean);
+  return details.length ? `Figma reports ${details.join(" and ")}.` : undefined;
 }
 async function figmaFetch(fileKey: string, apiPath: string, token: string, timeoutMs: number, externalSignal?: AbortSignal): Promise<Response> {
   validateHeaderSecret(token, token.trim() === process.env.FIGMA_ACCESS_TOKEN?.trim() ? "FIGMA_ACCESS_TOKEN" : "figmaAccessToken");
@@ -105,7 +111,7 @@ async function figmaFetch(fileKey: string, apiPath: string, token: string, timeo
       message = `Figma file not found (404): ${fileKey}. Check the file key in the board URL. `
         + "Figma also answers 404 when the account of FIGMA_ACCESS_TOKEN cannot open the file, typically a company board with a personal token.";
     } else if (status === 429) {
-      rateLimitDetails = describeFigmaRateLimit(response.headers, token);
+      rateLimitDetails = describeFigmaRateLimit(response.headers);
       message = `Figma API rate limit exceeded (429). ${retryAt === undefined ? "Retry later." : `Retry after ${describeWaitUntil(retryAt, now)}.`}`
         + " Figma limits requests by seat and plan; View and Collab seats have the lowest limits."
         + (rateLimitDetails ? ` ${rateLimitDetails}` : "");
@@ -114,7 +120,7 @@ async function figmaFetch(fileKey: string, apiPath: string, token: string, timeo
         ? `Figma is not available right now (HTTP ${status}, repeated once). Try again in a few minutes; status.figma.com shows outages.`
         : `Figma API request failed (HTTP ${status}). Try again in a few minutes.`;
     } else {
-      const text = await readErrorText(response);
+      const text = await readErrorText(response, token);
       message = `Figma rejected the request (HTTP ${status})${text ? `: ${text}` : "."}`;
     }
     await response.body?.cancel().catch(() => undefined);

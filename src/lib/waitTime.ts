@@ -5,9 +5,13 @@ const SECONDS_LIMIT = 120;
 
 /** Retry-After in seconds or as an HTTP date, as milliseconds from now; undefined when absent, zero or past. */
 export function parseRetryAfter(value: string | null | undefined, now = Date.now()): number | undefined {
-  const text = value?.trim();
+  if (!value || value.length > 1000) return undefined;
+  const text = value.trim();
   if (!text) return undefined;
-  if (/^\d+(?:\.\d+)?$/.test(text)) return Number(text) > 0 ? Number(text) * 1000 : undefined;
+  if (/^\d+(?:\.\d+)?$/.test(text)) {
+    const wait = Number(text) * 1000;
+    return wait > 0 && Number.isFinite(new Date(now + wait).getTime()) ? wait : undefined;
+  }
   const at = Date.parse(text);
   return Number.isFinite(at) && at > now ? at - now : undefined;
 }
