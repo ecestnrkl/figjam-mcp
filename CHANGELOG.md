@@ -2,6 +2,8 @@
 
 ## 0.14.0 — Unreleased
 
+- Use fixed guidance for Figma request and download errors without exposing response bodies or network error text.
+- Hide configured credentials in board text before search, excerpts, and model prompts.
 - Speed up context reads and search indexing for long board text by checking repeated node names once per node.
 - Report unexpected snapshot write failures with fixed guidance, the error code, and a path relative to the cache when available.
 

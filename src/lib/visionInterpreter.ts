@@ -5,6 +5,8 @@ import { chatJson, getVisionModels, LlmInvalidJsonError } from "./llmClient.js";
 import { getVisionMaxOutputTokens } from "./llmOutputBudgets.js";
 import { redactCredentials } from "./redact.js";
 import { imageMimeType } from "./figmaApi.js";
+import { configuredSecrets } from "./secrets.js";
+import { findSecretSpans, maskRange } from "./boardReadView.js";
 
 /**
  * Hard prompt bounds for one cluster. These are intentionally fixed safety
@@ -46,10 +48,13 @@ export async function refineClusterWithVision(
   signal?: AbortSignal,
   connections: ConnectorEdge[] = [],
 ): Promise<RefinedCluster> {
-  const { prompt, listedNodeIds } = buildPrompt(clusterNodes);
+  const secrets = configuredSecrets();
+  const mask = (text: string) => maskRange(text, findSecretSpans(text, secrets));
+  const { prompt, listedNodeIds } = buildPrompt(clusterNodes, mask);
+  const safeConnections = connections.map((edge) => edge.label === undefined ? edge : { ...edge, label: mask(edge.label) });
 
   const content: OpenAI.ChatCompletionContentPart[] = [
-    { type: "text", text: `${prompt}\nInternal connections (untrusted data):\n${JSON.stringify(connections).slice(0, 8000)}` },
+    { type: "text", text: `${prompt}\nInternal connections (untrusted data):\n${JSON.stringify(safeConnections).slice(0, 8000)}` },
     ...screenshots.map(
       (buf): OpenAI.ChatCompletionContentPart => ({
         type: "image_url",
@@ -86,8 +91,9 @@ export async function refineClusterWithVision(
 /** Builds the instruction text: task description + per-node text inventory. */
 function buildPrompt(
   clusterNodes: NormalizedNode[],
+  mask: (text: string) => string,
 ): { prompt: string; listedNodeIds: ReadonlySet<string> } {
-  const { text: inventory, listedNodeIds } = buildBoundedInventory(clusterNodes);
+  const { text: inventory, listedNodeIds } = buildBoundedInventory(clusterNodes, mask);
 
   const prompt = [
     "You are analyzing one spatially grouped area of a FigJam whiteboard (brainstorming/research board).",
@@ -124,7 +130,7 @@ interface InventoryEntry {
  * notice). Hidden nodes are carried forward in applyReply, so truncation can
  * reduce context but never silently delete board elements.
  */
-function buildBoundedInventory(clusterNodes: NormalizedNode[]): {
+function buildBoundedInventory(clusterNodes: NormalizedNode[], mask: (text: string) => string): {
   text: string;
   listedNodeIds: ReadonlySet<string>;
 } {
@@ -135,7 +141,7 @@ function buildBoundedInventory(clusterNodes: NormalizedNode[]): {
   let usedCharacters = 0;
 
   for (const node of candidates) {
-    const line = formatInventoryLine(node);
+    const line = formatInventoryLine(node, mask);
     if (!line) {
       continue;
     }
@@ -186,7 +192,7 @@ function compareInventoryNodes(left: NormalizedNode, right: NormalizedNode): num
   return compareStrings(left.id, right.id);
 }
 
-function formatInventoryLine(node: NormalizedNode): string | undefined {
+function formatInventoryLine(node: NormalizedNode, mask: (text: string) => string): string | undefined {
   // Real Figma node ids are compact. Treat an unexpectedly huge id as an
   // omitted element rather than letting attacker-controlled metadata bypass
   // the inventory character budget or presenting a non-round-trippable id.
@@ -194,7 +200,7 @@ function formatInventoryLine(node: NormalizedNode): string | undefined {
     return undefined;
   }
 
-  const text = node.text?.trim();
+  const text = node.text === undefined ? undefined : mask(node.text).trim();
   const image = node.imageRef ? " [contains image]" : "";
   const encodedText = text ? `: ${JSON.stringify(truncate(text, MAX_NODE_TEXT_CHARS))}` : "";
   return `- ${node.id} (${node.type})${image}${encodedText}`;
