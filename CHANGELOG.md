@@ -1,8 +1,7 @@
 # Changelog
 
-## 0.13.1 — Unreleased
+## 0.13.1 — 2026-11-14
 
-- Preserve board text after Bearer and vertical whitespace, and omit diagnostic token counts for grouped numbers.
 - Retry transient Windows filesystem errors on cache write locks and report persistent permission errors with the affected path inside the cache directory.
 - Explain HTTP 402 with fixed billing or retry guidance in ingest summaries, answers and diagnostics. Diagnostics add the token counts OpenRouter reports, without other provider text.
 - Identify missing snapshots by their ID prefix and board, request a full ID when needed, and explain how to restart a cursor read.
