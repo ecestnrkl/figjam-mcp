@@ -85,28 +85,24 @@ describe("MCP wire contract", () => {
     expect(JSON.stringify(result)).not.toContain("random-key-173650");
   });
 
-  it.each([
-    ["Proxy-Authorization: Basic SYNTHETIC_SECRET", "Proxy-Authorization: [redacted]", 400],
-    ["response.headers.Authorization: Basic SYNTHETIC_SECRET", "response.headers.Authorization: [redacted]", 400],
-    ['Rejected {"Authorization":"Basic SYNTHETIC_SECRET"}', 'Rejected {"Authorization":"[redacted]"}', 400],
-    ['Rejected {"Authorization":"Bearer short"}', 'Rejected {"Authorization":"[redacted]"}', 400],
-    ["Rejected {'authorization': 'Basic SYNTHETIC_SECRET'}", "Rejected {'authorization': '[redacted]'}", 400],
-    ['Rejected {"Authorization":"Basic escaped\\"quote", "reason":"synthetic"}',
-      'Rejected {"Authorization":"[redacted]", "reason":"synthetic"}', 400],
-    ['Rejected {"Authorization":"Basic SYNTHETIC_SECRET\nNext line', 'Rejected {"Authorization":"[redacted]" Next line', 400],
-    ["Use Bearer\u2003SYNTHETIC_BEARER_VALUE here", "Use Bearer\u2003[redacted] here", 200],
-    ["Authorization:\n  Basic SYNTHETIC_SECRET\nNext line", "Authorization:\n  [redacted]\nNext line", 200],
-  ])("redacts a Figma credential in %j before the host sees it", async (message, expected, status) => {
+  it.each([400, 200])("returns fixed Figma failure guidance to the host for HTTP %i", async (status) => {
     vi.stubEnv("FIGMA_ACCESS_TOKEN", "offline-fixture-token");
     vi.stubEnv("FIGJAM_MCP_CACHE_DIR", path.join(tmpdir(), `figjam-gate-${process.pid}`));
-    vi.stubEnv("FIGJAM_MCP_REDACT_CREDENTIALS", "true");
+    const message = "Private network detail https://synthetic.example/private";
     vi.stubGlobal("fetch", vi.fn(async () => status === 400
-      ? Response.json({ message }, { status })
+      ? Response.json({ message }, { status, headers: { "X-Request-ID": "private-request-id" } })
       : new Response(new ReadableStream({ start(controller) { controller.error(new Error(message)); } }))));
     handlers.ingest.mockImplementation((await vi.importActual<typeof import("../src/tools/ingestBoard.js")>("../src/tools/ingestBoard.js")).ingestBoard);
-    const result = await client.callTool({ name: "ingest_board", arguments: { figmaFileUrl: "https://www.figma.com/board/Synthetic/Fixture", ingestMode: "max_speed" } });
-    expect(result.isError).toBe(true);
-    expect(result.content[0]).toMatchObject({ type: "text", text: expect.stringContaining(expected) });
+    const stderr = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    try {
+      const result = await client.callTool({ name: "ingest_board", arguments: { figmaFileUrl: "https://www.figma.com/board/Synthetic/Fixture", ingestMode: "max_speed" } });
+      const expected = status === 400
+        ? "Figma rejected the request (HTTP 400). Check the board URL and node IDs. For a large render, request fewer or smaller nodes."
+        : "Figma sent an unreadable response: the connection failed while reading it. Try again in a few minutes; if it persists, check the network and status.figma.com.";
+      expect(result.isError).toBe(true);
+      expect(result.content).toEqual([{ type: "text", text: expected }]);
+      expect(stderr).not.toHaveBeenCalled();
+    } finally { stderr.mockRestore(); }
   });
 
   it("bounds the host error when canceling the first HTTP 500 response fails", async () => {

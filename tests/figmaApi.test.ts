@@ -130,32 +130,47 @@ describe("bounded Figma requests", () => {
   });
   describe("other client errors", () => {
     it.each([
-      ["err", JSON.stringify({ status: 400, err: "Invalid\n  parameter" }), "Figma rejected the request (HTTP 400): Invalid parameter"],
-      ["message", JSON.stringify({ message: "Unprocessable ids" }), "Figma rejected the request (HTTP 400): Unprocessable ids"],
-      ["no text", "<html>Bad Request</html>", "Figma rejected the request (HTTP 400)."],
-    ])("shows Figma's %s instead of the path, once", async (_name, body, expected) => {
-      const mock = vi.fn().mockResolvedValue(new Response(body, { status: 400 }));
+      [400, "Check the board URL and node IDs. For a large render, request fewer or smaller nodes."],
+      [413, "Request fewer or smaller nodes at a time."],
+      [414, "Request fewer node IDs at a time."],
+      [422, "Check the board URL and request parameters, then try again."],
+    ])("gives fixed guidance for HTTP %i without retrying", async (status, guidance) => {
+      const mock = vi.fn().mockResolvedValue(new Response(null, { status }));
       vi.stubGlobal("fetch", mock);
       const { fetchFileTree } = await import("../src/lib/figmaApi.js");
       const error = await failure(fetchFileTree("AbC123", "secret"));
-      expect(error.message).toBe(expected);
+      expect(error).toMatchObject({ status, message: `Figma rejected the request (HTTP ${status}). ${guidance}` });
       expect(mock).toHaveBeenCalledTimes(1);
     });
-    it("shortens Figma's text", async () => {
-      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ err: "x".repeat(500) }), { status: 400 })));
-      const { fetchFileTree } = await import("../src/lib/figmaApi.js");
-      const error = await failure(fetchFileTree("AbC123", "secret"));
-      expect(error.message).toBe(`Figma rejected the request (HTTP 400): ${"x".repeat(200)}`);
+    it.each(["err", "message"])("discards the %s body and arbitrary response headers", async (field) => {
+      const token = "tokenFromSyntheticError123";
+      const url = "https://synthetic.example/private";
+      const responseText = `${JSON.stringify({ [field]: `${token} ${url} ${"z".repeat(120)}` })}${" ".repeat(60_000)}`;
+      const response = new Response(responseText, { status: 400, statusText: "private status text", headers: {
+        "X-Request-ID": "private-request-id", "X-Debug": "private-debug-header",
+      } });
+      const read = vi.spyOn(response.body!, "getReader");
+      const stderr = vi.spyOn(console, "error").mockImplementation(() => undefined);
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response));
+      const { fetchRenderUrls } = await import("../src/lib/figmaApi.js");
+      const error = await failure(fetchRenderUrls("AbC123", ["1:2"], token));
+      expect(error.message).toBe("Figma rejected the request (HTTP 400). Check the board URL and node IDs. For a large render, request fewer or smaller nodes.");
+      expect(read).not.toHaveBeenCalled();
+      expect(stderr).not.toHaveBeenCalled();
     });
-    it.each([
-      ["a URL password", `${" ".repeat(967)}http://user:SYNTHETIC_PASSWORD_42@example.test/`, "http://user:[redacted]@example.test/"],
-      ["a token", `${" ".repeat(991)}ghp_${"SYNTHETIC0".repeat(3)}`, "[redacted]"],
-    ])("redacts %s that crosses the 1,000th character of Figma's text", async (_name, err, shown) => {
-      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ err }), { status: 400 })));
-      const { fetchFileTree } = await import("../src/lib/figmaApi.js");
-      const error = await failure(fetchFileTree("AbC123", "secret"));
-      expect(error.message).toBe(`Figma rejected the request (HTTP 400): ${shown}`);
-    });
+  });
+  it.each(["file", "render", "image fills", "screenshot body", "screenshot connection"])("uses fixed text for a %s transport error", async (request) => {
+    const networkError = new Error("Unexpected response from https://synthetic.example/private");
+    vi.stubGlobal("fetch", request === "screenshot connection" ? vi.fn().mockRejectedValue(networkError)
+      : vi.fn().mockResolvedValue(new Response(new ReadableStream({ start(controller) { controller.error(networkError); } }))));
+    const { fetchFileTree, fetchRenderUrls, fetchImageRefs, downloadRenders } = await import("../src/lib/figmaApi.js");
+    const result = request === "file" ? fetchFileTree("AbC123", "secret")
+      : request === "render" ? fetchRenderUrls("AbC123", ["a"], "secret")
+      : request === "image fills" ? fetchImageRefs("AbC123", "secret")
+      : downloadRenders(["a"], { a: "https://cdn.example/a" });
+    expect((await failure(result)).message).toBe(request.startsWith("screenshot")
+      ? "Figma screenshot download failed. Check your network connection and try again."
+      : "Figma sent an unreadable response: the connection failed while reading it. Try again in a few minutes; if it persists, check the network and status.figma.com.");
   });
   describe("unreadable responses", () => {
     it.each([
