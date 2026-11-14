@@ -2,8 +2,10 @@
 
 import { serveStdio } from "@modelcontextprotocol/server/stdio";
 import { loadConfiguredEnvFile } from "./lib/envFile.js";
+import { captureNodeNetworkSettings } from "./lib/nodeNetwork.js";
 import { redactMessage } from "./lib/secrets.js";
 
+captureNodeNetworkSettings();
 loadConfiguredEnvFile();
 let packageName = "figjam-context-mcp";
 

@@ -6,7 +6,7 @@ import {
   type ContextEvidence,
 } from "../schemas/getBoardContext.js";
 import { figmaUrlNotices, parseBoardId } from "../schemas/common.js";
-import { getBoardOrRestore, getBoardReadWarning } from "../lib/cache.js";
+import { getBoardOrRestore, getBoardReadWarning, SnapshotNotInHistoryError } from "../lib/cache.js";
 import { assertBoardKeyCase, unknownBoardMessage } from "../lib/boardLookup.js";
 import { assertLinksOfBoard, conversionNotice, resolveNodeIds } from "../lib/nodeIds.js";
 import { readBoardHistory } from "../lib/persistentCache.js";
@@ -47,7 +47,7 @@ const SHORT_CURSOR = /^([1-9]\d{0,8})\.(0|[1-9]\d{0,8})\.([0-9a-f]{12})\.([0-9a-
 const V2_CURSOR = /^v2\.(f|o)\.([1-9]\d{0,8})\.(0|[1-9]\d{0,8})\.([0-9a-f]{12})\.([0-9a-f]{12})$/;
 const CURSOR_MISMATCH = "Cursor does not match this request or was changed. Send nextCursor unchanged with the same topic, " +
   "nodeIds, outsideSections, detail, limit and maxChars, or start again without a cursor (also after an ingest refined the board).";
-const CURSOR_SNAPSHOT_GONE = "The snapshot of this cursor is no longer available. Start again without a cursor.";
+const CURSOR_SNAPSHOT_GONE = "The cursor's snapshot is missing from local history or the cursor was changed. Start again without a cursor.";
 /** Characters of requested IDs named in a message; the IDs themselves are up to 50 × 200 characters. */
 const MAX_IDS_IN_MESSAGE = 300;
 
@@ -737,10 +737,17 @@ export async function getBoardContext(input: GetBoardContextInput, extra: { noti
       if (!topicWords.length) {
         orientation.push(`Topic search: ${JSON.stringify(options.topic)} has only common words, which are not searched; use words from the board.`);
       } else if (!topicMatches.length) {
-        orientation.push(`Topic search for ${terms}: no excerpt matches.${suggestions.length ? ` Similar words (untrusted board data): ${suggestions.map((word) => JSON.stringify(word)).join(", ")}.` : ""}`);
+        orientation.push(`Topic search for ${terms}: no excerpt matches.`);
       } else {
         orientation.push(`Topic search for ${terms}: ${topicMatches.length} excerpt${topicMatches.length === 1 ? " matches" : "s match"}`
           + `${topicContextCount ? `; ${topicContextCount} more ${topicContextCount === 1 ? "is" : "are"} shown as context (arrow neighbors and table headings)` : ""}.`);
+      }
+      if (!topicMatches.length) {
+        const retry = "Search again in the board's language";
+        const nextStep = sections().count ? `${retry} or read one of the listed sections by ID.` : `${retry}.`;
+        orientation.push(suggestions.length
+          ? `Similar words (untrusted board data): ${suggestions.map((word) => JSON.stringify(word)).join(", ")}.`
+          : `No similar board words found. ${nextStep}`);
       }
       if (remaining > 0) orientation.push(`Showing ${consumed} of ${retrieved.evidence.length} excerpt${retrieved.evidence.length === 1 ? "" : "s"} on this page; ${remaining} remaining.`);
       if (view.topicHint) orientation.push(topicHint);
@@ -1121,7 +1128,13 @@ function decodeCursor(value: string): Cursor {
 
 /** The cursor's snapshot: the latest board if it matches, else the newest matching snapshot in the board's history. */
 async function cursorBoard(boardId: string, cursor: Cursor): Promise<BoardData | undefined> {
-  if (!cursor.check) return getBoardOrRestore(boardId, cursor.snapshot);
+  if (!cursor.check) {
+    try { return await getBoardOrRestore(boardId, cursor.snapshot); }
+    catch (error) {
+      if (error instanceof SnapshotNotInHistoryError) throw new Error(CURSOR_SNAPSHOT_GONE);
+      throw error;
+    }
+  }
   const latest = await getBoardOrRestore(boardId);
   if (!latest || snapshotIdForBoard(latest).startsWith(cursor.snapshot)) return latest;
   const snapshotId = (await readBoardHistory(boardId)).findLast((entry) => entry.snapshotId?.startsWith(cursor.snapshot))?.snapshotId;

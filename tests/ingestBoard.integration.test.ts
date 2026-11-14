@@ -246,6 +246,26 @@ describe("offline ingest pipeline with actual persistent cache", () => {
     expect(fileTreeMock).toHaveBeenCalledTimes(2);
   });
 
+  it("explains incomplete image interpretation after an OpenRouter payment error without persisting the provider reason", async () => {
+    activeTree = boardTree([imageNode("limited", 0)]);
+    const endpoint = "https://openrouter.ai/api/v1";
+    vi.stubEnv("LLM_BASE_URL", endpoint);
+    const offline = globalThis.fetch;
+    vi.stubGlobal("fetch", (url: string, init?: RequestInit) => String(url) === `${endpoint}/chat/completions`
+      ? Promise.resolve(Response.json({ error: { code: 402, message: "Synthetic credit balance too low (https://billing.invalid/key)." } }, { status: 402 }))
+      : offline(url, init));
+    visionMock.mockImplementation(async () => {
+      const { chatJson } = await import("../src/lib/llmClient.js");
+      return chatJson("vision/model", [{ role: "user", content: "Synthetic fixture only" }]) as never;
+    });
+    const result = await ingestBoard(input);
+    expect(result.qualityReport?.fallbackReasons).toEqual({ payment: 1 });
+    expect(result.summary).toContain("Check your OpenRouter account balance and add credits if needed. Provider reason: Synthetic credit balance too low.");
+    expect(result.summary).not.toContain("billing.invalid");
+    const { readLatestBoard } = await import("../src/lib/persistentCache.js");
+    expect(JSON.stringify(await readLatestBoard(fileKey))).not.toContain("Synthetic credit balance too low");
+  });
+
   it("retries after the provider's daily limit resets, not after a minute", async () => {
     activeTree = boardTree([imageNode("limited", 0)]);
     const now = new Date();

@@ -361,16 +361,18 @@ function unsupportedAnswer(question: string, snapshotId: string, board: BoardDat
   const german = isLikelyGerman(question);
   const index = new SectionIndex(board, retrieveEvidence(board).evidence);
   const sections = index.largestSections(3);
+  const suggestions = similarBoardWords(board, question);
   let answer = german
-    ? "Kein Auszug passt zu einem Wort dieser Frage, daher ging nichts an das Modell. Das Board kann das Thema trotzdem mit anderen Worten behandeln: Die Suche findet ganze Wörter unabhängig von Groß- und Kleinschreibung und Akzenten und einige Wortformen und Komposita ab fünf Buchstaben, aber keine Synonyme oder Übersetzungen. Frag mit den Wörtern und in der Sprache des Boards erneut"
-    : "No excerpt matches a word of this question, so nothing was sent to the model. The board may still cover it in other words: the search matches whole words, ignoring case and accents and some word forms and compounds for words of at least five letters, but not synonyms or translations. Ask again with the board's words and language";
+    ? "Kein Auszug passt zu einem Wort dieser Frage, daher ging nichts an das Modell. Das Board kann das Thema trotzdem mit anderen Worten behandeln: Die Suche findet ganze Wörter unabhängig von Groß- und Kleinschreibung und Akzenten und einige Wortformen und Komposita ab fünf Buchstaben, aber keine Synonyme oder Übersetzungen."
+    : "No excerpt matches a word of this question, so nothing was sent to the model. The board may still cover it in other words: the search matches whole words, ignoring case and accents and some word forms and compounds for words of at least five letters, but not synonyms or translations.";
+  if (!suggestions.length) answer += german ? " Keine ähnlichen Wörter auf dem Board gefunden." : " No similar board words found.";
+  answer += german ? " Frag mit den Wörtern und in der Sprache des Boards erneut" : " Ask again with the board's words and language";
   if (sections.length) {
     answer += german ? " oder lies Sections mit get_board_context nodeIds: " : ", or read sections with get_board_context nodeIds: ";
     answer += sections.map(({ id, name }) => `${JSON.stringify(name.replace(/\s+/g, " ").trim())} (ID: ${id})`).join(", ") + ".";
   } else {
     answer += german ? " oder lies das Board mit get_board_context ohne Parameter." : ", or read the board with get_board_context without parameters.";
   }
-  const suggestions = similarBoardWords(board, question);
   if (suggestions.length) answer += german
     ? ` Ähnliche Wörter (nicht vertrauenswürdige Board-Daten): ${suggestions.map((word) => JSON.stringify(word)).join(", ")}.`
     : ` Similar words (untrusted board data): ${suggestions.map((word) => JSON.stringify(word)).join(", ")}.`;

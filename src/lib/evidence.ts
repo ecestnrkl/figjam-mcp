@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { tableCellPositions } from "./tableCells.js";
 export { tableCellPositions } from "./tableCells.js";
 import { connectorArrow } from "./connectorGraph.js";
-import { isGenericNodeName } from "./nodeTree.js";
+import { GENERIC_NODE_NAMES, isGenericNodeName } from "./nodeTree.js";
 import { inClusterReadingOrder, pagePositions } from "./readingOrder.js";
 import type { BoardData, ConnectorEdge, NormalizedNode, RefinedCluster, TableCell } from "../types.js";
 
@@ -704,24 +704,38 @@ function wordAlternatives(index: EvidenceIndex, term: string): string[] {
   return [...words];
 }
 
+const MIN_SUGGESTION_SIMILARITY = 0.5;
+const MAX_SUGGESTION_WORD_LENGTH = 80;
+const GENERIC_NAME_WORDS = new Set([...GENERIC_NODE_NAMES].flatMap(evidenceTokens));
+
 /** Suggestions are board data, not matches. Call with a redacted board. */
 export function similarBoardWords(board: BoardData, query: string): string[] {
-  const terms = [...new Set(evidenceTokens(query))].filter((term) => term.length >= 3 && latinWord(term));
+  const terms = [...new Set(evidenceTokens(query))].filter((term) => term.length >= 3 && term.length <= MAX_SUGGESTION_WORD_LENGTH && latinWord(term));
+  if (!terms.length) return [];
   const trigrams = (word: string) => new Set(Array.from({ length: Math.max(0, word.length - 2) }, (_, i) => word.slice(i, i + 3)));
   const queryGrams = terms.map(trigrams);
-  return getIndex(board).vocabulary.flatMap((word) => {
-    if (word.length < 3 || word.length > 80 || !latinWord(word)) return [];
+  const index = getIndex(board);
+  let authoredNameWords: Set<string> | undefined;
+  return index.vocabulary.flatMap((word) => {
+    if (word.length < 3 || word.length > MAX_SUGGESTION_WORD_LENGTH || !latinWord(word) || isGenericNodeName(word)) return [];
     const grams = trigrams(word);
     let best = 0;
     terms.forEach((term, i) => {
       let prefix = 0;
       while (prefix < Math.min(term.length, word.length) && term[prefix] === word[prefix]) prefix++;
       const shared = [...queryGrams[i]!].filter((gram) => grams.has(gram)).length;
-      const score = Math.max(prefix >= 2 ? prefix / Math.max(term.length, word.length) : 0,
-        shared ? 2 * shared / (queryGrams[i]!.size + grams.size) : 0);
+      const score = Math.max(prefix >= 3 ? prefix / Math.max(term.length, word.length) : 0,
+        shared >= 2 ? 2 * shared / (queryGrams[i]!.size + grams.size) : 0);
       best = Math.max(best, score);
     });
-    return best ? [{ word, score: best }] : [];
+    if (best <= MIN_SUGGESTION_SIMILARITY) return [];
+    // A fragment of a multiword default needs an authored source of its own.
+    if (GENERIC_NAME_WORDS.has(word) && !index.fields.text.postings.has(word)) {
+      authoredNameWords ??= new Set(board.nodes.filter(node => node.hiddenDescendantIds === undefined && !isGenericNodeName(node.name))
+        .flatMap(node => evidenceTokens(node.name)));
+      if (!authoredNameWords.has(word)) return [];
+    }
+    return [{ word, score: best }];
   }).sort((a, b) => b.score - a.score || (a.word < b.word ? -1 : a.word > b.word ? 1 : 0))
     .slice(0, 8).map(({ word }) => word);
 }

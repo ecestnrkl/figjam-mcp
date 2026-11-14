@@ -1,5 +1,6 @@
 import { describeConnectionCause } from "./connectionErrors.js";
 import { readIntEnv } from "./env.js";
+import { nodeProxyHint, nodeSystemCaHint } from "./nodeNetwork.js";
 import { redactError, redactMessage, validateHeaderSecret } from "./secrets.js";
 import { describeWaitUntil, parseRetryAfter } from "./waitTime.js";
 
@@ -11,7 +12,8 @@ export const INGEST_IMAGE_MAX_BYTES = 64 * 1024 * 1024;
 export const ORIGINAL_IMAGE_MAX_BYTES = 3.75 * 1024 * 1024;
 export interface DownloadBudget { usedBytes: number; maxBytes: number }
 export class FigmaApiError extends Error {
-  constructor(message: string, readonly status: number, readonly retryAfter?: number, readonly retryAt?: number) { super(message); }
+  constructor(message: string, readonly status: number, readonly retryAfter?: number, readonly retryAt?: number,
+    readonly rateLimitDetails?: string) { super(message); }
 }
 export class FigmaDownloadBudgetError extends Error {
   constructor() { super("Figma download exceeds the configured byte budget"); this.name = "FigmaDownloadBudgetError"; }
@@ -62,9 +64,14 @@ async function readErrorText(response: Response): Promise<string> {
   finally { void reader.cancel().catch(() => undefined); }
 }
 function figmaNetworkHints(certificate = false): string {
-  const proxy = (process.env.HTTPS_PROXY?.trim() || process.env.HTTP_PROXY?.trim() || process.env.https_proxy?.trim() || process.env.http_proxy?.trim()) && process.env.NODE_USE_ENV_PROXY?.trim() !== "1"
-    ? " Node ignores HTTPS_PROXY and HTTP_PROXY unless NODE_USE_ENV_PROXY=1." : "";
-  return proxy + (certificate ? " Try NODE_USE_SYSTEM_CA=1 to use system certificates." : "");
+  const hints = [nodeProxyHint(), certificate ? nodeSystemCaHint() : undefined].filter(Boolean);
+  return hints.length ? ` ${hints.join(" ")}` : "";
+}
+function describeFigmaRateLimit(headers: Headers, token?: string): string | undefined {
+  const plan = headers.get("X-Figma-Plan-Tier")?.trim();
+  const type = headers.get("X-Figma-Rate-Limit-Type")?.trim();
+  const details = [plan && `plan tier ${plan}`, type && `rate limit type ${type}`].filter(Boolean);
+  return details.length ? redactMessage(`Figma reports ${details.join(" and ")}.`, token ? [token] : []) : undefined;
 }
 async function figmaFetch(fileKey: string, apiPath: string, token: string, timeoutMs: number, externalSignal?: AbortSignal): Promise<Response> {
   validateHeaderSecret(token, token.trim() === process.env.FIGMA_ACCESS_TOKEN?.trim() ? "FIGMA_ACCESS_TOKEN" : "figmaAccessToken");
@@ -90,6 +97,7 @@ async function figmaFetch(fileKey: string, apiPath: string, token: string, timeo
       continue;
     }
     let message: string;
+    let rateLimitDetails: string | undefined;
     if (status === 401 || status === 403) {
       message = `Figma access denied (${status}). Check FIGMA_ACCESS_TOKEN: it must be a valid token with the scope `
         + `file_content:read, and its account must be able to open the file.`;
@@ -97,8 +105,10 @@ async function figmaFetch(fileKey: string, apiPath: string, token: string, timeo
       message = `Figma file not found (404): ${fileKey}. Check the file key in the board URL. `
         + "Figma also answers 404 when the account of FIGMA_ACCESS_TOKEN cannot open the file, typically a company board with a personal token.";
     } else if (status === 429) {
+      rateLimitDetails = describeFigmaRateLimit(response.headers, token);
       message = `Figma API rate limit exceeded (429). ${retryAt === undefined ? "Retry later." : `Retry after ${describeWaitUntil(retryAt, now)}.`}`
-        + " Figma limits requests by seat and plan; View and Collab seats have the lowest limits.";
+        + " Figma limits requests by seat and plan; View and Collab seats have the lowest limits."
+        + (rateLimitDetails ? ` ${rateLimitDetails}` : "");
     } else if (status >= 500) {
       message = RETRIED_STATUSES.has(status)
         ? `Figma is not available right now (HTTP ${status}, repeated once). Try again in a few minutes; status.figma.com shows outages.`
@@ -108,7 +118,7 @@ async function figmaFetch(fileKey: string, apiPath: string, token: string, timeo
       message = `Figma rejected the request (HTTP ${status})${text ? `: ${text}` : "."}`;
     }
     await response.body?.cancel().catch(() => undefined);
-    throw new FigmaApiError(redactMessage(message, [token]), status, retryAfterMs === undefined ? undefined : Math.ceil(retryAfterMs / 1000), retryAt);
+    throw new FigmaApiError(redactMessage(message, [token]), status, retryAfterMs === undefined ? undefined : Math.ceil(retryAfterMs / 1000), retryAt, rateLimitDetails);
   }
 }
 /** Enforces the limit while streaming, including servers that omit Content-Length. */
@@ -288,8 +298,9 @@ export async function downloadRenders(nodeIds: string[], renderUrls: RenderUrls,
           await response.body?.cancel();
           // These URLs are loaded without the token, so only a rate limit says anything about the Figma API; any other status means this image is unavailable.
           if (response.status !== 429) throw new Error(`Screenshot download failed (${response.status})`);
-          throw new FigmaApiError(`Screenshot download failed (${response.status})`, response.status,
-            Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter : undefined);
+          const details = describeFigmaRateLimit(response.headers);
+          throw new FigmaApiError(`Screenshot download failed (${response.status})${details ? `. ${details}` : ""}`, response.status,
+            Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter : undefined, undefined, details);
         }
         images[current] = await readBounded(response, IMAGE_MAX_BYTES, downloadSignal, budget);
       } catch (error) {

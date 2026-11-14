@@ -7,6 +7,8 @@ import {
 import { describeModelConfig } from "../lib/modelRegistry.js";
 import { getAnswerRequestTimeoutMs, getVisionRequestTimeoutMs } from "../lib/llmTimeouts.js";
 import { getAnswerMaxOutputTokens, getVisionMaxOutputTokens } from "../lib/llmOutputBudgets.js";
+import { nodeProxyHint, nodeProxyStatus } from "../lib/nodeNetwork.js";
+import { packageMetadata } from "../packageMetadata.js";
 
 /**
  * Each check ends after this time even if the provider hangs. The checks run in
@@ -112,6 +114,9 @@ export async function diagnoseLlmConfig(options: { signal?: AbortSignal } = {}):
   }
   const fallbackNote = (retries.length ? ` Retry: ${retries.join("; ")}.` : "")
     + (fallbacks.length ? ` Fallback: ${fallbacks.join("; ")}.` : "");
+  const network = { serverVersion: packageMetadata.version, ...nodeProxyStatus() };
+  const proxyHint = nodeProxyHint(network);
+  const runtime = `${packageMetadata.name} ${network.serverVersion} on Node ${network.nodeVersion}`;
   return {
     ok,
     preset: config.preset,
@@ -120,9 +125,11 @@ export async function diagnoseLlmConfig(options: { signal?: AbortSignal } = {}):
     fastTextModels: config.fastTextModels,
     providerRequireParameters: config.providerRequireParameters,
     checks,
-    summary: (ok
+    network,
+    summary: `${runtime}\n` + (ok
       ? `LLM configuration OK (${describeActiveModels(config, checks)}).`
-      : `LLM configuration has ${countChecks(checks.filter((check) => !check.ok).length)} failing.`) + fallbackNote + describeFailures(checks),
+      : `LLM configuration has ${countChecks(checks.filter((check) => !check.ok).length)} failing.`)
+      + fallbackNote + describeFailures(checks) + (proxyHint ? `\n${proxyHint}` : ""),
   };
 }
 
@@ -163,7 +170,7 @@ async function runCheck(
 ): Promise<CheckResult> {
   signal?.throwIfAborted();
   let modelUsed: string | undefined;
-  // The checks send only synthetic data, so the provider's own message may be shown here, unlike in other tools.
+  // Synthetic inputs let us show more provider detail in diagnostics.
   const attempts: Attempt[] = [];
   // The candidate whose request is running; a check deadline ends it without a reported failure.
   let pending: string | undefined;
@@ -179,7 +186,7 @@ async function runCheck(
     CHECK_DEADLINE_MS,
   );
   const failed = (error: string): CheckResult => {
-    const details = describeAttempts(attempts);
+    const details = describeAttempts(attempts, error.startsWith("LLM request failed (HTTP 402):"));
     return { name, ok: false, modelUsed,
       error: details && error.startsWith("LLM request failed (HTTP 404): model ") ? `${details}; ${error}` : details ?? error,
       ...(attempts.length ? { attempts } : {}) };
@@ -228,8 +235,9 @@ async function runCheck(
 type Attempt = NonNullable<CheckResult["attempts"]>[number];
 
 /** Names every model of a failed check with its error. */
-function describeAttempts(attempts: Attempt[]): string | undefined {
+function describeAttempts(attempts: Attempt[], terminalPaymentError: boolean): string | undefined {
   const failures = attempts.filter((attempt) => !attempt.ok);
+  if (terminalPaymentError && failures.length > 1) failures.unshift(failures.pop()!);
   return failures.length ? failures.map((attempt) => `${attempt.model}: ${attempt.error}`).join("; ") : undefined;
 }
 

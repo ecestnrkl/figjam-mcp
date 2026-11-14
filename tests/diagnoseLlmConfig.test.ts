@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PNG } from "pngjs";
+import metadata from "../package.json" with { type: "json" };
 
 const { chatJsonMock } = vi.hoisted(() => ({ chatJsonMock: vi.fn() }));
 
@@ -26,13 +27,35 @@ const { diagnoseLlmConfig } = await import("../src/tools/diagnoseLlmConfig.js");
 
 beforeEach(() => {
   chatJsonMock.mockReset();
+  for (const key of ["HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy", "NODE_USE_ENV_PROXY", "NODE_OPTIONS"]) vi.stubEnv(key, undefined);
 });
 afterEach(() => {
   vi.useRealTimers();
   vi.unstubAllEnvs();
+  vi.restoreAllMocks();
 });
 
 describe("diagnoseLlmConfig", () => {
+  it.each([
+    { version: "22.20.0", variable: "HTTPS_PROXY", enabled: "1", active: false, hint: "Node.js 22.20.0 is too old for NODE_USE_ENV_PROXY." },
+    { version: "22.21.0", variable: "HTTP_PROXY", enabled: "1", active: true },
+    { version: "24.0.0", variable: "https_proxy", enabled: "1", active: true },
+    { version: "24.6.0", variable: "HTTPS_PROXY", enabled: undefined, active: false, hint: "Node ignores HTTPS_PROXY and HTTP_PROXY unless NODE_USE_ENV_PROXY=1." },
+    { version: "24.6.0", variable: undefined, enabled: "1", active: false },
+  ])("reports proxy configuration and activity on Node $version ($variable, enabled=$enabled)", async ({ version, variable, enabled, active, hint }) => {
+    vi.stubGlobal("process", Object.create(process, { versions: { value: { ...process.versions, node: version } } }));
+    try {
+      vi.stubEnv("NODE_USE_ENV_PROXY", enabled);
+      if (variable) vi.stubEnv(variable, "http://private-user:private-password@proxy.invalid:8080");
+      chatJsonMock.mockResolvedValueOnce({ result: 42 }).mockResolvedValueOnce({ result: 63 }).mockResolvedValueOnce({ dominantColor: "blue" });
+      const result = await diagnoseLlmConfig();
+      expect(result.network).toEqual({ serverVersion: metadata.version, nodeVersion: version, proxyConfigured: Boolean(variable), proxyActive: active });
+      const summary = `${metadata.name} ${metadata.version} on Node ${version}\nLLM configuration OK (student-free).`;
+      expect(result.summary).toBe(hint ? `${summary}\n${hint}${version === "22.20.0"
+        ? " For fetch(), use Node.js 22.21.0+ on the 22.x line or 24.0.0+." : " Set the proxy and NODE_USE_ENV_PROXY before Node starts."}` : summary);
+      expect(JSON.stringify(result)).not.toMatch(/private-user|private-password|proxy\.invalid/);
+    } finally { vi.unstubAllGlobals(); }
+  });
   it("sends a 64x64 diagnostic PNG containing only pure opaque blue", async () => {
     chatJsonMock.mockResolvedValue({});
     await diagnoseLlmConfig();
@@ -167,7 +190,7 @@ describe("diagnoseLlmConfig", () => {
 
     expect(result.ok).toBe(false);
     expect(result.checks[2]).toMatchObject({ name: "vision_json", ok: false });
-    expect(result.summary).toBe("LLM configuration has 1 check failing.\n- vision_json: vision failed");
+    expect(result.summary.split("\n").slice(1).join("\n")).toBe("LLM configuration has 1 check failing.\n- vision_json: vision failed");
   });
 
   it("names the failing checks with one line per shared cause", async () => {
@@ -177,7 +200,7 @@ describe("diagnoseLlmConfig", () => {
     const result = await diagnoseLlmConfig();
 
     expect(result.ok).toBe(false);
-    expect(result.summary).toBe(`LLM configuration has 3 checks failing.\n- text_json, fast_text_json, vision_json: ${missing}`);
+    expect(result.summary.split("\n").slice(1).join("\n")).toBe(`LLM configuration has 3 checks failing.\n- text_json, fast_text_json, vision_json: ${missing}`);
   });
 
   it("names every tried candidate and reports a fallback that answers", async () => {
@@ -201,7 +224,7 @@ describe("diagnoseLlmConfig", () => {
     expect(result.checks[0]).toEqual({ name: "text_json", ok: true, modelUsed: "router/free", attempts: [
       { model: "text-model", ok: false, error: providerMessage }, { model: "router/free", ok: true }] });
     expect(result.checks[1]?.attempts).toEqual([{ model: "fast-model", ok: true }]);
-    expect(result.summary).toBe("LLM configuration OK (student-free). Fallback: text_json used router/free after text-model failed.");
+    expect(result.summary.split("\n").slice(1).join("\n")).toBe("LLM configuration OK (student-free). Fallback: text_json used router/free after text-model failed.");
   });
 
   it("reports a router retry apart from a fallback after both router attempts failed", async () => {
@@ -224,7 +247,7 @@ describe("diagnoseLlmConfig", () => {
     const result = await diagnoseLlmConfig();
 
     expect(result.checks[1]?.attempts?.map((attempt) => attempt.model)).toEqual(["openrouter/free", "openrouter/free", "fast-model"]);
-    expect(result.summary).toBe("LLM configuration OK (student-free). Retry: text_json passed on the second openrouter/free attempt."
+    expect(result.summary.split("\n").slice(1).join("\n")).toBe("LLM configuration OK (student-free). Retry: text_json passed on the second openrouter/free attempt."
       + " Fallback: fast_text_json used fast-model after openrouter/free failed.");
   });
 
@@ -256,7 +279,7 @@ describe("diagnoseLlmConfig", () => {
       attempts: [{ model: "fast-model", ok: false, error: "Check did not finish within 45 s." }] });
     expect(result.checks[2]).toMatchObject({ ok: false, modelUsed: "vision-model",
       error: expect.stringMatching(/^vision-model: Vision diagnostic failed: expected dominant color blue/) });
-    expect(result.summary).toBe("LLM configuration has 3 checks failing."
+    expect(result.summary.split("\n").slice(1).join("\n")).toBe("LLM configuration has 3 checks failing."
       + "\n- text_json: text-model: Provider returned error, code 404, provider Nvidia; router/free: Provider returned error, code 404, provider Nvidia"
       + "\n- fast_text_json: fast-model: Check did not finish within 45 s."
       + `\n- vision_json: ${result.checks[2]?.error}`);

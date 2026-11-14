@@ -321,7 +321,6 @@ describe("chatJson", () => {
   it.each([
     [400, "Invalid schema: missing required property"],
     [401, "Authentication failed; response_format unsupported"],
-    [402, "Insufficient credits; response_format unsupported"],
     [403, "Permission denied; response_format unsupported"],
     [422, "Unprocessable request"],
   ])("does not retry unrelated request failures or expose their details (%s)", async (status, message) => {
@@ -338,7 +337,7 @@ describe("chatJson", () => {
       const pending = chatJson(["openrouter/free", "second-model"], MESSAGES, SCHEMA_OPTIONS);
       await expect(pending).rejects.toMatchObject({ status: 402, retryAfter: 90,
         message: "LLM request failed (HTTP 402): the model provider requires payment or more credits for this model. "
-          + "Add credits or raise the API key's credit limit, or use a free model." });
+          + `Check your account balance and billing settings with the provider, and add credits if needed. Provider reason: ${message}` });
       expect(createMock).toHaveBeenCalledTimes(1);
     },
   );

@@ -31,6 +31,14 @@ async function corruptNewest(all = false, artifact: "source" | "refinement" = "s
 }
 
 describe("snapshot readers", () => {
+  it.each(["01234567", "0123456789abcdef".repeat(4)])("explains an unknown snapshot ID %s", async (snapshotId) => {
+    const { getBoardContext } = await import("../src/tools/getBoardContext.js");
+    const { persistBoard } = await import("../src/lib/persistentCache.js");
+    await persistBoard(board("Saved synthetic snapshot", 1000));
+    await expect(getBoardContext({ boardId: "Synthetic123", snapshotId })).rejects.toThrow(
+      `Snapshot ${snapshotId.slice(0, 12)} of board "Synthetic123" is missing from local history. It may have aged out or the ID may be incomplete. `
+      + "Omit snapshotId to read the latest ingest, or run ingest_board.");
+  });
   it("refreshes both in-process server instances after the other publishes", async () => {
     const cacheA = await import("../src/lib/cache.js");
     const persistenceA = await import("../src/lib/persistentCache.js");
