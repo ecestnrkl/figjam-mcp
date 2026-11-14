@@ -327,11 +327,11 @@ describe("LLM requests through real local HTTP and the OpenAI SDK", () => {
     expect(stderr).not.toContain(encoded);
   });
 
-  it.each(["37.59", "37PRIVATE"])("omits the token counts for %s in a 60,000-character payment error", async (value) => {
+  it.each(["37.59", "37PRIVATE", "37,59", "37,590"])("omits the token counts for %s in a 60,000-character payment error", async (value) => {
     for (const name of ["LLM_TEXT_MODELS", "LLM_FAST_TEXT_MODELS", "LLM_VISION_MODELS"]) vi.stubEnv(name, "paid/model");
     vi.stubEnv("LLM_BASE_URL", "https://other.invalid/v1");
     const reason = `You requested up to 4096 tokens, but can only afford ${value}`;
-    const message = `${reason} `.repeat(Math.ceil(60_000 / (reason.length + 1))).slice(0, 60_000);
+    let message = `${reason} `.repeat(Math.ceil(60_000 / (reason.length + 1))).slice(0, 60_000);
     vi.stubGlobal("fetch", vi.fn(async () => Response.json({ error: { code: 402, message } }, { status: 402 })));
     const { diagnoseLlmConfig } = await import("../src/tools/diagnoseLlmConfig.js");
     const start = performance.now();
@@ -339,6 +339,8 @@ describe("LLM requests through real local HTTP and the OpenAI SDK", () => {
     expect(performance.now() - start).toBeLessThan(1500);
     expect(diagnosis.summary).toContain("Check your account balance and billing settings with the provider");
     expect(JSON.stringify(diagnosis)).not.toContain("The provider reports that the request asked for up to");
+    message = reason.replace(value, "37, ");
+    expect((await diagnoseLlmConfig()).summary).toContain("The provider reports that the request asked for up to 4096 tokens and the balance covers 37.");
   });
 
   it("reads no token counts or other text from a 60,000-character HTTP 402 reason and stays fast", async () => {
@@ -625,6 +627,36 @@ describe("LLM requests through real local HTTP and the OpenAI SDK", () => {
         response.writeHead(429, { "content-type": "application/json", ...headers });
         response.end(JSON.stringify(body));
       };
+
+      it.each([
+        [200, "response"], [429, "response"], [200, "body"], [429, "body"],
+      ])("ignores an invalid reset date on HTTP %i in %s and diagnoses the fallback model", async (status, location) => {
+        for (const name of ["LLM_TEXT_MODELS", "LLM_FAST_TEXT_MODELS", "LLM_VISION_MODELS"]) vi.stubEnv(name, "limited/model,good/model");
+        vi.stubEnv("LLM_TEXT_MODEL", "");
+        vi.stubEnv("LLM_VISION_MODEL", "");
+        await localClient((request, response) => {
+          if (request.model === "limited/model") {
+            const headers = { "X-RateLimit-Remaining": "0", "X-RateLimit-Reset": "99999999999999999" };
+            response.writeHead(status, { "content-type": "application/json", ...(location === "response" ? headers : {}) });
+            response.end(JSON.stringify({ error: { code: 429, message: "Rate limit exceeded",
+              ...(location === "body" ? { metadata: { headers } } : {}) } }));
+          } else {
+            const prompt = JSON.stringify(request.messages);
+            const content = prompt.includes("17 + 25") ? '{"result":42}' : prompt.includes("9 * 7") ? '{"result":63}' : '{"dominantColor":"blue"}';
+            json(response, 200, { choices: [{ message: { content } }] });
+          }
+        });
+        const { diagnoseLlmConfig } = await import("../src/tools/diagnoseLlmConfig.js");
+        const diagnosis = await diagnoseLlmConfig();
+        expect(diagnosis.ok).toBe(true);
+        for (const check of diagnosis.checks) {
+          expect(check).toMatchObject({ modelUsed: "good/model", attempts: [
+            { model: "limited/model", ok: false }, { model: "good/model", ok: true },
+          ] });
+          expect(check.attempts![0]!.error).not.toMatch(/Invalid time value|accepts requests again/);
+        }
+        expect(requests).toHaveLength(6);
+      });
 
       it("waits for a short Retry-After and repeats the request once", async () => {
         vi.stubEnv("LLM_RATE_LIMIT_RETRIES", "1");

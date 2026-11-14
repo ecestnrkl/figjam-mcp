@@ -76,6 +76,16 @@ beforeEach(() => { chatJsonMock.mockReset(); });
 afterEach(() => { vi.unstubAllEnvs(); });
 
 describe("redactCredentials", () => {
+  it.each(["\r", "\n", "\u2028", "\u2029"])("keeps board text after Bearer and line separator %j", async separator => {
+    const text = `The role is Bearer${separator}RELEASE-AUTHORIZATION-0122`;
+    const board = evidenceBoard("BearerLines123", [textNode("1:1", text), textNode("1:2", "Bearer\u2003SYNTHETIC_BEARER_VALUE")]);
+    setBoard(board.boardId, board);
+    const output = await getBoardContext({ boardId: board.boardId });
+    expect(output.text).toContain("RELEASE-AUTHORIZATION-0122");
+    expect(output.structuredContent.evidence.find(item => item.nodeId === "1:1")?.text).toBe(text);
+    expect(output.structuredContent.evidence.find(item => item.nodeId === "1:2")?.text).toBe("Bearer\u2003[redacted]");
+  });
+
   it.each([
     ["Passwort: Sommer2024!", "Passwort: [redacted]"],
     ["WLAN-Passwort = hunter2 bitte nicht teilen", "WLAN-Passwort = [redacted]"],
