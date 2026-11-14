@@ -69,8 +69,8 @@ installable in two minutes, documented, and used on real boards.
 ## 1.0.0 — proven in real use
 
 - [x] Public demo board and a screen recording
-- [ ] User tests on real workshop boards: three to five people install from the README in their own MCP client, ask their own questions and check the citations; friction becomes issues
-- [ ] Fix what the tests show before anything new
+- [ ] Used on the maintainer's own workshop boards; friction becomes issues and is fixed before anything new
+- [ ] Persona tests: AI agents with distinct user profiles install from the README in their own MCP client and work through realistic tasks on the demo board and synthetic boards
 - [ ] Stable tool contract: tool names, input schemas and required output fields are frozen and documented. Decide before the freeze:
   - the length limit of `nodeIds` and `focusNodeIds` entries, so that a Figma link with a long board name fits
   - which excerpt fields stay when they follow from others, such as `url` from `nodeId`
@@ -81,15 +81,16 @@ installable in two minutes, documented, and used on real boards.
 
 Each item names the observation that would justify it.
 
-- An outline for boards that use frames instead of sections — if testers' boards are organized in frames
+- Tests with other people on their own boards — after the persona tests
+- An outline for boards that use frames instead of sections — if real use or persona tests show that frame-organized boards are hard to navigate
 - Background image interpretation with a daily limit — if image interpretation regularly outlasts client timeouts on real boards
-- Votes and sticky colors — if testers ask about voting results or color coding
+- Votes and sticky colors — if real use or persona tests turn up questions about voting results or color coding
 - Answer-kind refinements — if answers to real questions misjudge whether something is confirmed, proposed or contested
-- Semantic search (local embeddings or hybrid ranking) — if user tests show frequent paraphrased or cross-language questions that hosts do not rephrase after a miss
+- Semantic search (local embeddings or hybrid ranking) — if real use or persona tests show frequent paraphrased or cross-language questions that hosts do not rephrase after a miss
 - Model-suggested search words in `answer_from_board` — if hosts call `answer_from_board` and its misses are mostly synonyms or another language
 - Fuzzy matches for typos — if similar-word suggestions do not lead hosts to a successful second search
 - An opt-in to read hidden section contents — if a facilitator asks for hidden sections to be included
 - Column headings and background shapes as group boundaries — if boards without sections merge neighboring groups or read columns in the wrong order
 - More credential formats and placeholder values — if a real board shows a missed key or a redacted placeholder
-- Detection of personal data beyond credentials — if testers' boards hold names or contact details they do not want sent to a provider
-- Link preview content and sticky authors — if testers ask for them and Figma's REST API returns them
+- Detection of personal data beyond credentials — if real use or persona tests show a need to keep names or contact details out of provider requests
+- Link preview content and sticky authors — if real use or persona tests show a need for them and Figma's REST API returns them
