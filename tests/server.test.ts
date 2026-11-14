@@ -30,7 +30,7 @@ beforeEach(async () => {
   await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
   expect(client.getNegotiatedProtocolVersion()).toBe("2025-11-25");
 });
-afterEach(async () => { vi.unstubAllEnvs(); await client.close(); await server.close(); });
+afterEach(async () => { vi.unstubAllEnvs(); vi.unstubAllGlobals(); await client.close(); await server.close(); });
 
 describe("MCP wire contract", () => {
   it("returns host guidance in the initialize result", () => {
@@ -83,6 +83,66 @@ describe("MCP wire contract", () => {
     expect(result.isError).not.toBe(true);
     expect(result.structuredContent).toMatchObject({ summary: "Summary [redacted]", persistenceWarning: "Warning [redacted]" });
     expect(JSON.stringify(result)).not.toContain("random-key-173650");
+  });
+
+  it.each([
+    ['Rejected {"Authorization":"Basic SYNTHETIC_SECRET"}', 'Rejected {"Authorization":"[redacted]"}', 400],
+    ['Rejected {"Authorization":"Bearer short"}', 'Rejected {"Authorization":"[redacted]"}', 400],
+    ["Rejected {'authorization': 'Basic SYNTHETIC_SECRET'}", "Rejected {'authorization': '[redacted]'}", 400],
+    ['Rejected {"Authorization":"Basic escaped\\"quote", "reason":"synthetic"}',
+      'Rejected {"Authorization":"[redacted]", "reason":"synthetic"}', 400],
+    ['Rejected {"Authorization":"Basic SYNTHETIC_SECRET\nNext line', 'Rejected {"Authorization":"[redacted]" Next line', 400],
+    ["Use Bearer\u2003SYNTHETIC_BEARER_VALUE here", "Use Bearer\u2003[redacted] here", 200],
+    ["Authorization:\n  Basic SYNTHETIC_SECRET\nNext line", "Authorization:\n  [redacted]\nNext line", 200],
+  ])("redacts a Figma credential in %j before the host sees it", async (message, expected, status) => {
+    vi.stubEnv("FIGMA_ACCESS_TOKEN", "offline-fixture-token");
+    vi.stubEnv("FIGJAM_MCP_CACHE_DIR", path.join(tmpdir(), `figjam-gate-${process.pid}`));
+    vi.stubEnv("FIGJAM_MCP_REDACT_CREDENTIALS", "true");
+    vi.stubGlobal("fetch", vi.fn(async () => status === 400
+      ? Response.json({ message }, { status })
+      : new Response(new ReadableStream({ start(controller) { controller.error(new Error(message)); } }))));
+    handlers.ingest.mockImplementation((await vi.importActual<typeof import("../src/tools/ingestBoard.js")>("../src/tools/ingestBoard.js")).ingestBoard);
+    const result = await client.callTool({ name: "ingest_board", arguments: { figmaFileUrl: "https://www.figma.com/board/Synthetic/Fixture", ingestMode: "max_speed" } });
+    expect(result.isError).toBe(true);
+    expect(result.content[0]).toMatchObject({ type: "text", text: expect.stringContaining(expected) });
+  });
+
+  it("bounds the host error when canceling the first HTTP 500 response fails", async () => {
+    vi.stubEnv("FIGMA_ACCESS_TOKEN", "offline-fixture-token");
+    vi.stubEnv("FIGJAM_MCP_CACHE_DIR", path.join(tmpdir(), `figjam-gate-${process.pid}`));
+    const marker = "SYNTHETIC_STREAM_TAIL";
+    const fetchMock = vi.fn(async () => new Response(new ReadableStream({
+      start(controller) { controller.error(new Error(`${"x".repeat(60_000)} ${marker}`)); },
+    }), { status: 500, headers: { "Retry-After": "0.001" } }));
+    vi.stubGlobal("fetch", fetchMock);
+    handlers.ingest.mockImplementation((await vi.importActual<typeof import("../src/tools/ingestBoard.js")>("../src/tools/ingestBoard.js")).ingestBoard);
+    const result = await client.callTool({ name: "ingest_board", arguments: { figmaFileUrl: "https://www.figma.com/board/Synthetic/Fixture", ingestMode: "max_speed" } });
+    const { text } = (result.content as Array<{ text: string }>)[0]!;
+    expect(result.isError).toBe(true);
+    expect(text).not.toContain(marker);
+    expect(text.length).toBeLessThanOrEqual(1000);
+    expect(text).toContain("HTTP 500, repeated once");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps a model ID containing authorization and both configuration hints on HTTP 404", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "figjam-server-"));
+    vi.stubEnv("FIGJAM_MCP_CACHE_DIR", root);
+    vi.stubEnv("LLM_BASE_URL", "https://offline.invalid/v1");
+    vi.stubEnv("LLM_API_KEY", "offline-fixture-key");
+    vi.stubEnv("LLM_TEXT_MODELS", "synthetic/authorization:free");
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json({ error: { code: 404, message: "No endpoints found" } }, { status: 404 })));
+    try {
+      const { setBoard } = await import("../src/lib/cache.js");
+      const { evidenceBoard } = await import("./fixtures/retrieval.js");
+      setBoard("ModelFixture", evidenceBoard("ModelFixture"));
+      handlers.answer.mockImplementation((await vi.importActual<typeof import("../src/tools/answerFromBoard.js")>("../src/tools/answerFromBoard.js")).answerFromBoard);
+      const result = await client.callTool({ name: "answer_from_board", arguments: { boardId: "ModelFixture", question: "What is required for payment retries?" } });
+      expect(result.isError).toBe(true);
+      expect(result.content[0]).toMatchObject({ type: "text", text: expect.stringContaining(
+        "LLM request failed (HTTP 404): model synthetic/authorization:free was not found or has no available endpoint. "
+        + "Check LLM_TEXT_MODELS. diagnose_llm_config can test the configured model provider.") });
+    } finally { await rm(root, { recursive: true, force: true }); }
   });
 
   it("returns an unknown board message with ten 128-character keys in full, including both recovery hints", async () => {
