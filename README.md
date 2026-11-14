@@ -57,9 +57,11 @@ Five steps. Requires Node.js 22.12 or later. Step 4 sets the model provider that
 2. **Figma token.** Create a personal access token under **Settings → Security →
    Personal access tokens** with the scope `file_content:read`. The token's account
    must be able to open the board. Every `ingest_board` call is one Figma file
-   download, a Tier 1 request. Figma allows View and Collab seats up to 20 Tier 1
-   requests a month on every plan, and says the actual limit may be lower
-   ([rate limits](https://developers.figma.com/docs/rest-api/rate-limits/)).
+   download, a Tier 1 request. With a View or Collab seat, plan for 6 ingests a month.
+   The [Figma Help Center](https://help.figma.com/hc/en-us/articles/34963238552855-What-if-I-m-rate-limited#rate-limits)
+   lists up to 6 Tier 1 requests a month on paid plans and 20 on Starter. The
+   [developer docs](https://developers.figma.com/docs/rest-api/rate-limits/)
+   list up to 20 on all plans, with lower limits possible.
 3. **Add the server** with the example for your client below. The examples set only
    `FIGMA_ACCESS_TOKEN`, so the server starts and `ingest_board` works in
    `ingestMode: "max_speed"` without a model provider. `@latest` with `--prefer-online`
@@ -385,14 +387,16 @@ larger ones are scaled down locally.
 - OpenRouter allows free models 20 requests per minute and 50 requests per day,
   or 1,000 per day once you have bought at least 10 credits
   ([limits](https://openrouter.ai/docs/api-reference/limits)).
-- Figma limits requests by seat and plan
-  ([rate limits](https://developers.figma.com/docs/rest-api/rate-limits/)). File
-  downloads and image renders are Tier 1: Dev and Full seats on paid plans get
-  10–20 requests per minute, View and Collab seats and files in Starter plans at
-  most 20 per month. Every `ingest_board` call is one file download, so a View or
-  Collab seat allows about 20 ingests a month. Images come from the image fills instead, Tier 2 with at
-  least 5 requests per minute, in one request per ingest. Renders are left for
-  drawings without an image and as a fallback for images without a usable original;
+- Figma counts file downloads and image renders as Tier 1 requests. Dev and Full
+  seats on paid plans get 10–20 per minute. For View and Collab seats, the
+  [Figma Help Center](https://help.figma.com/hc/en-us/articles/34963238552855-What-if-I-m-rate-limited#rate-limits)
+  lists up to 6 per month on paid plans and 20 on Starter. The
+  [developer docs](https://developers.figma.com/docs/rest-api/rate-limits/)
+  list up to 20 on all plans, with lower limits possible. With a View or Collab
+  seat, plan for 6 ingests a month. Every ingest uses one file download, and
+  renders also count toward the Tier 1 limit. Image fills use one Tier 2 request
+  per ingest, with up to 5 requests per minute for View and Collab seats. The
+  server renders drawings without an image and images without a usable original;
   renders of several clusters share requests of up to 18 nodes, so 30 image clusters
   without image fills need 2 render requests. `max_speed` needs neither.
 - `LLM_BASE_URL` takes any OpenAI-compatible endpoint; for paid models, set
@@ -420,9 +424,11 @@ larger ones are scaled down locally.
   off the board.
 - Keep tokens in the client's environment. A token passed as a tool argument can
   appear in client logs.
+- Redaction targets credentials and leaves names and contact details on notes intact.
 
 ## Limitations
 
+- Figma's REST API omits link preview contents and sticky note authors.
 - Image interpretation gets 40 seconds per ingest by default; large boards need
   several ingests to interpret every image cluster.
 - A client that cancels an ingest, for example after a 60-second timeout, gets

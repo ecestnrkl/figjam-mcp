@@ -5,20 +5,20 @@ not a release gate; the model checks below are smoke tests.
 
 ## Retrieval and change detection (offline)
 
-`npm run eval:retrieval` runs 29 synthetic board cases and one known word-form
-limitation without provider calls.
-CI runs it on every push (Linux, Node 24).
+`npm run eval:retrieval` runs 41 synthetic retrieval cases without provider calls.
+The fixtures cover short and long queries, common word forms and compounds in
+English and German, and queries with no matching sources. CI runs it on pushes
+to `main` and on pull requests (Linux, Node 24).
 
 | Check | Result |
 | --- | --- |
-| Original expected source ranked first | 25/25 |
-| Long English/German question: source in first six | 2/2 |
-| Correct empty result for an unrelated topic | 2/2 |
+| Expected source ranked first | 36/36 |
+| Correct empty result for a query with no match | 5/5 |
 | Expected board changes found by `diff_board` | 27/27 |
 | Changes named in the text output | 27/27 |
 
-Recall@6, Recall@15 and MRR cover all 27 answerable cases. The plural/singular
-case is reported separately and excluded from those metrics.
+Recall@6, Recall@15 and MRR cover all 36 answerable cases, including word forms
+and compounds.
 
 The corpus is small and synthetic. It measures ranking, source traceability and
 diffs, not answers on real boards.
@@ -61,7 +61,7 @@ server. Three arrows anchored to the page canvas did not become connections.
 - Few free models accept images with structured outputs, so free image
   interpretation is the least reliable part of the default preset.
 - Search is lexical (field-weighted BM25 with squared query-word coverage and
-  a weaker length penalty); synonyms and word forms without shared words do not match.
+  a weaker length penalty) and misses matches that depend on synonyms, translation, or typo correction.
 - Citations show where an answer comes from, not that its conclusion is right.
 - In the Inspector web UI with Safari, a finished ingest was once displayed
   late; the Inspector CLI was not affected.
