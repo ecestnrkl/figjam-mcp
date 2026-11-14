@@ -1,3 +1,6 @@
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Client } from "@modelcontextprotocol/client";
 import { InMemoryTransport } from "@modelcontextprotocol/server";
@@ -80,6 +83,25 @@ describe("MCP wire contract", () => {
     expect(result.isError).not.toBe(true);
     expect(result.structuredContent).toMatchObject({ summary: "Summary [redacted]", persistenceWarning: "Warning [redacted]" });
     expect(JSON.stringify(result)).not.toContain("random-key-173650");
+  });
+
+  it("returns an unknown board message with ten 128-character keys in full, including both recovery hints", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "figjam-server-"));
+    vi.stubEnv("FIGJAM_MCP_CACHE_DIR", root);
+    try {
+      const { persistBoard } = await import("../src/lib/persistentCache.js");
+      for (let index = 0; index < 10; index++) {
+        const fileKey = `Synthetic${index}`.padEnd(128, "k");
+        await persistBoard({ boardId: fileKey, fileKey, docStructureHint: "freeform", cacheKey: `key-${index}`, createdAt: 1000 + index, nodes: [], clusters: [] });
+      }
+      handlers.context.mockImplementation((await vi.importActual<typeof import("../src/tools/getBoardContext.js")>("../src/tools/getBoardContext.js")).getBoardContext);
+      const result = await client.callTool({ name: "get_board_context", arguments: { boardId: "Unknown999" } });
+      const { text } = (result.content as Array<{ text: string }>)[0]!;
+      expect(result.isError).toBe(true);
+      expect(text.length).toBeGreaterThan(1000);
+      expect(text).toContain("boardId is the Figma file key from the board URL (figma.com/board/<key>/…).");
+      expect(text).toMatch(/For another board, run ingest_board first\.$/);
+    } finally { await rm(root, { recursive: true, force: true }); }
   });
 
   it("advertises the actual package version and five accurately annotated tools", async () => {

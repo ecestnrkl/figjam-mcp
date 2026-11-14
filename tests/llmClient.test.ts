@@ -17,7 +17,11 @@ vi.mock("openai", async (importActual) => {
   // Subclass-ish stub: `new OpenAI()` yields our controllable create(), while
   // the static error classes used by instanceof checks are preserved.
   class MockOpenAI {
-    chat = { completions: { create: createMock } };
+    // chatJson reads the completion together with its HTTP response.
+    chat = { completions: { create: (...args: unknown[]) => {
+      const data = Promise.resolve(createMock(...args));
+      return Object.assign(data, { withResponse: async () => ({ data: await data, response: new Response(null) }) });
+    } } };
     baseURL: string;
     constructor(opts: { baseURL: string }) { constructorMock(opts); this.baseURL = opts.baseURL; }
     static RateLimitError = Real.RateLimitError;
@@ -306,6 +310,34 @@ describe("chatJson", () => {
     await expect(chatJson("available/model", MESSAGES, SCHEMA_OPTIONS)).resolves.toEqual({ ok: true });
     expect(createMock.mock.calls.map(([params]) => [params.model, params.response_format?.type]))
       .toEqual([["available/model", "json_schema"], ["available/model", "json_object"]]);
+  });
+
+  it.each([
+    { status: 404, message: "No endpoints can handle the requested parameters", filler: " no endpoints support",
+      requests: [["synthetic/first", "json_schema"], ["synthetic/first", "json_object"]] },
+    { status: 400, message: "Model synthetic/first does not exist", filler: " model",
+      requests: [["synthetic/first", "json_schema"], ["synthetic/second", "json_schema"]] },
+  ])("still falls back when \"$message\" follows 1,100 characters in a 60,000-character provider text", async ({ status, message, filler, requests }) => {
+    const text = `${"x ".repeat(550)}${message}`;
+    createMock.mockRejectedValueOnce(providerError(status, text + filler.repeat(Math.ceil((60_000 - text.length) / filler.length))))
+      .mockResolvedValueOnce(okCompletion('{"ok":true}'));
+    const start = performance.now();
+    await expect(chatJson(["synthetic/first", "synthetic/second"], MESSAGES, SCHEMA_OPTIONS)).resolves.toEqual({ ok: true });
+    expect(performance.now() - start).toBeLessThan(1000);
+    expect(createMock.mock.calls.map(([params]) => [params.model, params.response_format?.type])).toEqual(requests);
+  });
+
+  it.each([
+    ["a URL password", `${" ".repeat(967)}http://user:SYNTHETIC_PASSWORD_42@example.test/`],
+    ["a token", `${" ".repeat(991)}ghp_${"SYNTHETIC0".repeat(3)}`],
+    ["a quoted request header", "Rejected request with Authorization: Bearer SYNTHETIC_BEARER_43"],
+    ["a JWT", `Rejected ${["eyJTWU5USEVUSUM", "eyJTWU5USEVUSUM", "U1lOVEhFVElD"].join(".")}`],
+  ])("keeps %s out of the provider message that diagnostics show", async (_name, message) => {
+    createMock.mockRejectedValueOnce(providerError(400, message));
+    const onModelFailed = vi.fn();
+    await expect(chatJson("only-model", MESSAGES, { ...SCHEMA_OPTIONS, onModelFailed })).rejects.toMatchObject({ status: 400 });
+    expect(onModelFailed).toHaveBeenCalledOnce();
+    expect(onModelFailed.mock.calls[0]![1]).not.toMatch(/SYNTHETIC|ghp_|eyJ/);
   });
 
   it("reaches prompt-only JSON and removes require_parameters only after both format attempts fail", async () => {

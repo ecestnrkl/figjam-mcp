@@ -133,7 +133,7 @@ describe("configured secrets at external error boundaries", () => {
     for (const secret of [argumentKey, apiKey, figmaKey]) expect(error.message).not.toContain(secret);
   });
 
-  it("keeps SDK debug diagnostics on stderr with configured secrets redacted", async () => {
+  it("keeps SDK debug diagnostics on stderr without the response body", async () => {
     vi.stubEnv("OPENAI_LOG", "debug");
     const stdoutDebug = vi.spyOn(console, "debug").mockImplementation(() => {});
     const stdoutInfo = vi.spyOn(console, "info").mockImplementation(() => {});
@@ -141,12 +141,12 @@ describe("configured secrets at external error boundaries", () => {
     const { diagnoseLlmConfig } = await import("../src/tools/diagnoseLlmConfig.js");
     await diagnoseLlmConfig();
     expectNoSecrets(vi.mocked(console.error).mock.calls);
-    expect(JSON.stringify(vi.mocked(console.error).mock.calls)).toContain("[redacted]");
+    expect(JSON.stringify(vi.mocked(console.error).mock.calls)).toContain("LLM SDK: response error, status 401");
     expect(stdoutDebug).not.toHaveBeenCalled();
     expect(stdoutInfo).not.toHaveBeenCalled();
   });
 
-  it("redacts a figmaAccessToken argument in provider SDK logs within that ingest", async () => {
+  it("keeps a figmaAccessToken argument out of provider SDK logs within that ingest", async () => {
     vi.stubEnv("OPENAI_LOG", "debug");
     const fixtureFetch = fetchMock.getMockImplementation() as (request: string | URL | Request) => Promise<Response>;
     fetchMock.mockImplementation(async (request: string | URL | Request) => {
@@ -158,7 +158,7 @@ describe("configured secrets at external error boundaries", () => {
     const { ingestBoard } = await import("../src/tools/ingestBoard.js");
     expectNoSecrets(await ingestBoard({ ...input, figmaAccessToken: argumentKey }));
     expectNoSecrets(vi.mocked(console.error).mock.calls);
-    expect(JSON.stringify(vi.mocked(console.error).mock.calls)).toContain("[redacted]");
+    expect(JSON.stringify(vi.mocked(console.error).mock.calls)).toContain("LLM SDK: response error, status 401");
   });
 
   it("redacts before diagnostic whitespace folding and truncation", async () => {

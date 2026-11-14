@@ -147,6 +147,15 @@ describe("bounded Figma requests", () => {
       const error = await failure(fetchFileTree("AbC123", "secret"));
       expect(error.message).toBe(`Figma rejected the request (HTTP 400): ${"x".repeat(200)}`);
     });
+    it.each([
+      ["a URL password", `${" ".repeat(967)}http://user:SYNTHETIC_PASSWORD_42@example.test/`, "http://user:[redacted]@example.test/"],
+      ["a token", `${" ".repeat(991)}ghp_${"SYNTHETIC0".repeat(3)}`, "[redacted]"],
+    ])("redacts %s that crosses the 1,000th character of Figma's text", async (_name, err, shown) => {
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ err }), { status: 400 })));
+      const { fetchFileTree } = await import("../src/lib/figmaApi.js");
+      const error = await failure(fetchFileTree("AbC123", "secret"));
+      expect(error.message).toBe(`Figma rejected the request (HTTP 400): ${shown}`);
+    });
   });
   describe("unreadable responses", () => {
     it.each([

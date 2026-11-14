@@ -247,26 +247,30 @@ describe("offline ingest pipeline with actual persistent cache", () => {
   });
 
   it.each([
-    { limitSource: "openrouter_in_flight_budget", reason: "rate_limit", guidance: "Retry after 20 seconds" },
-    { limitSource: "openrouter_key_limit", reason: "payment", guidance: "The OpenRouter API key reached its credit limit." },
-    { limitSource: "openrouter_credits", reason: "payment", guidance: "Check your OpenRouter account balance and add credits if needed." },
-    { limitSource: "SYNTHETIC_UNKNOWN_LIMIT", reason: "payment", guidance: "Check your account balance and billing settings with the provider" },
-    { limitSource: undefined, reason: "payment", guidance: "Check your account balance and billing settings with the provider" },
-  ])("uses safe OpenRouter 402 guidance for $limitSource without exposing provider text", async ({ limitSource, reason, guidance }) => {
+    { limitSource: "openrouter_in_flight_budget", status: 402, reason: "rate_limit", guidance: "Retry after 20 seconds" },
+    { limitSource: "openrouter_in_flight_budget", status: 200, reason: "rate_limit", guidance: "Retry after 20 seconds" },
+    { limitSource: "openrouter_key_limit", status: 402, reason: "payment", guidance: "The OpenRouter API key reached its credit limit." },
+    { limitSource: "openrouter_credits", status: 402, reason: "payment", guidance: "Check your OpenRouter account balance and add credits if needed." },
+    { limitSource: "SYNTHETIC_UNKNOWN_LIMIT", status: 402, reason: "payment", guidance: "Check your account balance and billing settings with the provider" },
+    { limitSource: undefined, status: 402, reason: "payment", guidance: "Check your account balance and billing settings with the provider" },
+  ])("uses safe OpenRouter 402 guidance for $limitSource in an HTTP $status answer without exposing provider text or headers", async ({ limitSource, status, reason, guidance }) => {
     const marker = "SYNTHETIC_VISION_PROMPT";
     const bearer = "SYNTHETIC_BEARER_43";
     activeTree = boardTree([{ ...imageNode("limited", 0), characters: marker }]);
     const endpoint = "https://openrouter.ai/api/v1";
     vi.stubEnv("LLM_BASE_URL", endpoint);
     vi.stubEnv("LLM_VISION_MODELS", "vision/model");
+    vi.stubEnv("OPENAI_LOG", "debug");
+    const stderr = vi.spyOn(console, "error").mockImplementation(() => {});
     const offline = globalThis.fetch;
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
       if (String(url) !== `${endpoint}/chat/completions`) return offline(url, init);
       const prompt = JSON.parse(String(init?.body)).messages[1].content[0].text as string;
       expect(prompt).toContain(marker);
-      return Response.json({ error: { code: 402, message: `Echo ${prompt.match(/SYNTHETIC_VISION_PROMPT/)?.[0]} Authorization: Bearer ${bearer}`,
-        metadata: { limit_source: limitSource } } }, { status: 402, headers: { "Retry-After": "20" } });
+      const echo = `Echo ${prompt.match(/SYNTHETIC_VISION_PROMPT/)?.[0]} Authorization: Bearer ${bearer}`;
+      return Response.json({ error: { code: 402, message: echo, metadata: { limit_source: limitSource } } },
+        { status, headers: { "Retry-After": "20", "X-Request-ID": echo, "X-Synthetic-Trace": echo } });
     });
     // Exercise the actual vision prompt builder and provider client.
     const { refineClusterWithVision } = await vi.importActual<typeof import("../src/lib/visionInterpreter.js")>("../src/lib/visionInterpreter.js");
@@ -283,6 +287,11 @@ describe("offline ingest pipeline with actual persistent cache", () => {
     const saved = JSON.stringify(await persistence.readLatestBoard(fileKey));
     expect(saved).not.toContain(`Echo ${marker}`);
     expect(saved).not.toContain(bearer);
+    const logged = JSON.stringify(stderr.mock.calls);
+    stderr.mockRestore();
+    expect(logged).toContain("LLM SDK: sending request, POST /api/v1/chat/completions");
+    expect(logged).not.toContain(marker);
+    expect(logged).not.toContain(bearer);
   });
 
   it("retries after the provider's daily limit resets, not after a minute", async () => {
