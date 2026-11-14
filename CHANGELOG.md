@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.13.1 — Unreleased
+## 0.13.1 — 2026-11-14
 
 - Retry transient Windows filesystem errors when acquiring, recovering, and cleaning up cache write locks.
 - Explain model HTTP 402 errors in diagnostics, ingest summaries, and answers, with a short URL-free provider reason and OpenRouter account credit guidance.
