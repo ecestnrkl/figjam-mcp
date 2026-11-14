@@ -39,8 +39,17 @@ export const GENERIC_NODE_NAMES = new Set([
   "triangle down", "triangle up",
 ]);
 
-export function isGenericNodeName(name: string): boolean {
-  return GENERIC_NODE_NAMES.has(name.trim().replace(/\s+/g, " ").replace(/\s+\d+$/, "").toLowerCase());
+export function isGenericNodeName(name: string, { includeVariants = false } = {}): boolean {
+  // Node names come from the Figma file. Trim first and collapse whitespace before the numbered suffix is matched,
+  // so no expression retries a long run of spaces from every position.
+  let normalized = name.trim();
+  if (includeVariants) {
+    // A copy's "(2)" at the very end.
+    const open = normalized.endsWith(")") ? normalized.lastIndexOf("(") : -1;
+    if (open >= 0 && /^\d+$/.test(normalized.slice(open + 1, -1))) normalized = normalized.slice(0, open).trimEnd();
+    normalized = normalized.replace(/[-‐]/g, " ").trim();
+  }
+  return GENERIC_NODE_NAMES.has(normalized.replace(/\s+/g, " ").replace(/ \d+$/, "").toLowerCase());
 }
 const MAX_BOARD_DEPTH = 1024;
 const MAX_METADATA_DEPTH = 64;

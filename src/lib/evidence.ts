@@ -706,7 +706,21 @@ function wordAlternatives(index: EvidenceIndex, term: string): string[] {
 
 const MIN_SUGGESTION_SIMILARITY = 0.5;
 const MAX_SUGGESTION_WORD_LENGTH = 80;
-const GENERIC_NAME_WORDS = new Set([...GENERIC_NODE_NAMES].flatMap(evidenceTokens));
+const GENERIC_NAME_WORDS = new Set([...GENERIC_NODE_NAMES].flatMap(name => [
+  ...evidenceTokens(name), ...evidenceTokens(name.replaceAll(" ", "-")),
+]));
+
+/** One insertion, deletion or adjacent transposition in a short word, or one substitution in a word of at least six letters. */
+function isShortTypo(term: string, word: string, prefix: number): boolean {
+  const shorter = term.length <= word.length ? term : word;
+  const longer = shorter === term ? word : term;
+  if (shorter.length < 4 || longer.length > 8 || longer.length - shorter.length > 1 || term === word) return false;
+  if (shorter.length !== longer.length) return shorter.slice(prefix) === longer.slice(prefix + 1);
+  // One changed letter in a shorter word mostly gives another valid word ("gold", "cold").
+  if (shorter.slice(prefix + 1) === longer.slice(prefix + 1)) return shorter.length >= 6;
+  return shorter[prefix] === longer[prefix + 1] && shorter[prefix + 1] === longer[prefix]
+    && shorter.slice(prefix + 2) === longer.slice(prefix + 2);
+}
 
 /** Suggestions are board data, not matches. Call with a redacted board. */
 export function similarBoardWords(board: BoardData, query: string): string[] {
@@ -715,28 +729,34 @@ export function similarBoardWords(board: BoardData, query: string): string[] {
   const trigrams = (word: string) => new Set(Array.from({ length: Math.max(0, word.length - 2) }, (_, i) => word.slice(i, i + 3)));
   const queryGrams = terms.map(trigrams);
   const index = getIndex(board);
-  let authoredNameWords: Set<string> | undefined;
+  let authoredWords: Set<string> | undefined;
   return index.vocabulary.flatMap((word) => {
-    if (word.length < 3 || word.length > MAX_SUGGESTION_WORD_LENGTH || !latinWord(word) || isGenericNodeName(word)) return [];
+    if (word.length < 3 || word.length > MAX_SUGGESTION_WORD_LENGTH || !latinWord(word)) return [];
     const grams = trigrams(word);
     let best = 0;
+    let typo = 0;
     terms.forEach((term, i) => {
       let prefix = 0;
       while (prefix < Math.min(term.length, word.length) && term[prefix] === word[prefix]) prefix++;
+      if (isShortTypo(term, word, prefix)) typo = Math.max(typo, 1 - 1 / Math.max(term.length, word.length));
       const shared = [...queryGrams[i]!].filter((gram) => grams.has(gram)).length;
       const score = Math.max(prefix >= 3 ? prefix / Math.max(term.length, word.length) : 0,
         shared >= 2 ? 2 * shared / (queryGrams[i]!.size + grams.size) : 0);
       best = Math.max(best, score);
     });
-    if (best <= MIN_SUGGESTION_SIMILARITY) return [];
-    // A fragment of a multiword default needs an authored source of its own.
-    if (GENERIC_NAME_WORDS.has(word) && !index.fields.text.postings.has(word)) {
-      authoredNameWords ??= new Set(board.nodes.filter(node => node.hiddenDescendantIds === undefined && !isGenericNodeName(node.name))
-        .flatMap(node => evidenceTokens(node.name)));
-      if (!authoredNameWords.has(word)) return [];
+    // A word that shares a prefix or trigrams with the query ranks before one that is only a single edit away.
+    const strong = best > MIN_SUGGESTION_SIMILARITY;
+    if (!strong && !typo) return [];
+    if (GENERIC_NAME_WORDS.has(word)) {
+      authoredWords ??= new Set(board.nodes.filter(node => node.hiddenDescendantIds === undefined).flatMap(node => [
+        ...evidenceTokens(node.text ?? ""),
+        ...((node.table?.cells ?? []).flatMap(cell => evidenceTokens(cell.text))),
+        ...(isGenericNodeName(node.name, { includeVariants: true }) ? [] : evidenceTokens(node.name)),
+      ]));
+      if (!authoredWords.has(word)) return [];
     }
-    return [{ word, score: best }];
-  }).sort((a, b) => b.score - a.score || (a.word < b.word ? -1 : a.word > b.word ? 1 : 0))
+    return [{ word, score: Math.max(best, typo), strong }];
+  }).sort((a, b) => Number(b.strong) - Number(a.strong) || b.score - a.score || (a.word < b.word ? -1 : a.word > b.word ? 1 : 0))
     .slice(0, 8).map(({ word }) => word);
 }
 

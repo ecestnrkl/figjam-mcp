@@ -246,24 +246,72 @@ describe("offline ingest pipeline with actual persistent cache", () => {
     expect(fileTreeMock).toHaveBeenCalledTimes(2);
   });
 
-  it("explains incomplete image interpretation after an OpenRouter payment error without persisting the provider reason", async () => {
+  it.each([
+    { limitSource: "openrouter_in_flight_budget", status: 402, reason: "rate_limit", guidance: "Retry after 20 seconds" },
+    { limitSource: "openrouter_in_flight_budget", status: 200, reason: "rate_limit", guidance: "Retry after 20 seconds" },
+    { limitSource: "openrouter_key_limit", status: 402, reason: "payment", guidance: "The OpenRouter API key reached its credit limit." },
+    { limitSource: "openrouter_credits", status: 402, reason: "payment", guidance: "Check your OpenRouter account balance and add credits if needed." },
+    { limitSource: "SYNTHETIC_UNKNOWN_LIMIT", status: 402, reason: "payment", guidance: "Check your account balance and billing settings with the provider" },
+    { limitSource: undefined, status: 402, reason: "payment", guidance: "Check your account balance and billing settings with the provider" },
+  ])("uses safe OpenRouter 402 guidance for $limitSource in an HTTP $status answer without exposing provider text or headers", async ({ limitSource, status, reason, guidance }) => {
+    const marker = "SYNTHETIC_VISION_PROMPT";
+    const bearer = "SYNTHETIC_BEARER_43";
+    activeTree = boardTree([{ ...imageNode("limited", 0), characters: marker }]);
+    const endpoint = "https://openrouter.ai/api/v1";
+    vi.stubEnv("LLM_BASE_URL", endpoint);
+    vi.stubEnv("LLM_VISION_MODELS", "vision/model");
+    vi.stubEnv("OPENAI_LOG", "debug");
+    const stderr = vi.spyOn(console, "error").mockImplementation(() => {});
+    const offline = globalThis.fetch;
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
+      if (String(url) !== `${endpoint}/chat/completions`) return offline(url, init);
+      const prompt = JSON.parse(String(init?.body)).messages[1].content[0].text as string;
+      expect(prompt).toContain(marker);
+      const echo = `Echo ${prompt.match(/SYNTHETIC_VISION_PROMPT/)?.[0]} Authorization: Bearer ${bearer}`;
+      return Response.json({ error: { code: 402, message: echo, metadata: { limit_source: limitSource } } },
+        { status, headers: { "Retry-After": "20", "X-Request-ID": echo, "X-Synthetic-Trace": echo } });
+    });
+    // Exercise the actual vision prompt builder and provider client.
+    const { refineClusterWithVision } = await vi.importActual<typeof import("../src/lib/visionInterpreter.js")>("../src/lib/visionInterpreter.js");
+    visionMock.mockImplementation(refineClusterWithVision);
+    const result = await ingestBoard(input);
+    expect(result.qualityReport?.fallbackReasons).toEqual({ [reason]: 1 });
+    expect(result.summary).toContain(guidance);
+    expect(result.summary).not.toContain(`Echo ${marker}`);
+    expect(result.summary).not.toMatch(/Provider reason:|Authorization: Bearer|SYNTHETIC_UNKNOWN_LIMIT/);
+    if (reason === "rate_limit") {
+      expect(result.qualityReport?.nextRetryAt).toBe(Date.now() + 20_000);
+      expect(result.summary).not.toMatch(/add credits|After that/);
+    }
+    const saved = JSON.stringify(await persistence.readLatestBoard(fileKey));
+    expect(saved).not.toContain(`Echo ${marker}`);
+    expect(saved).not.toContain(bearer);
+    const logged = JSON.stringify(stderr.mock.calls);
+    stderr.mockRestore();
+    expect(logged).toContain("LLM SDK: sending request, POST /chat/completions");
+    expect(logged).not.toContain(marker);
+    expect(logged).not.toContain(bearer);
+  });
+
+  it.each([
+    [402, { limit_source: "openrouter_in_flight_budget", headers: { "Retry-After": "1" } }],
+    [429, undefined],
+  ])("uses the HTTP Retry-After for an embedded %i in the ingest cooldown", async (code, metadata) => {
     activeTree = boardTree([imageNode("limited", 0)]);
     const endpoint = "https://openrouter.ai/api/v1";
     vi.stubEnv("LLM_BASE_URL", endpoint);
+    vi.stubEnv("LLM_VISION_MODELS", "vision/model");
+    vi.stubEnv("LLM_RATE_LIMIT_RETRIES", "0");
+    vi.useFakeTimers({ toFake: ["Date"] });
     const offline = globalThis.fetch;
-    vi.stubGlobal("fetch", (url: string, init?: RequestInit) => String(url) === `${endpoint}/chat/completions`
-      ? Promise.resolve(Response.json({ error: { code: 402, message: "Synthetic credit balance too low (https://billing.invalid/key)." } }, { status: 402 }))
-      : offline(url, init));
-    visionMock.mockImplementation(async () => {
-      const { chatJson } = await import("../src/lib/llmClient.js");
-      return chatJson("vision/model", [{ role: "user", content: "Synthetic fixture only" }]) as never;
-    });
+    vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => String(url) === `${endpoint}/chat/completions`
+      ? Response.json({ error: { code, metadata } }, { headers: { "Retry-After": "20" } }) : offline(url, init));
+    const { refineClusterWithVision } = await vi.importActual<typeof import("../src/lib/visionInterpreter.js")>("../src/lib/visionInterpreter.js");
+    visionMock.mockImplementation(refineClusterWithVision);
     const result = await ingestBoard(input);
-    expect(result.qualityReport?.fallbackReasons).toEqual({ payment: 1 });
-    expect(result.summary).toContain("Check your OpenRouter account balance and add credits if needed. Provider reason: Synthetic credit balance too low.");
-    expect(result.summary).not.toContain("billing.invalid");
-    const { readLatestBoard } = await import("../src/lib/persistentCache.js");
-    expect(JSON.stringify(await readLatestBoard(fileKey))).not.toContain("Synthetic credit balance too low");
+    expect(result.qualityReport).toMatchObject({ fallbackReasons: { rate_limit: 1 }, nextRetryAt: Date.now() + 20_000 });
+    expect(result.summary).toContain("Retry after 20 seconds");
   });
 
   it("retries after the provider's daily limit resets, not after a minute", async () => {

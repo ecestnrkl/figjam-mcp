@@ -222,6 +222,22 @@ it.each(["EACCES", "EBUSY"])("waits and recovers an abandoned lock after a trans
   expect(await cache.readLatestBoard("locks")).toBeDefined();
 });
 
+it.each(["EACCES", "EPERM"])("reports %s when abandoned lock recovery runs out of retries", async code => {
+  const lockPath = path.join(root, "v4", ".write-lock");
+  await writeFile(path.join(lockPath, "owner.json"), JSON.stringify({ pid: 12345, hostname: hostname(), token: "terminated" }));
+  vi.spyOn(process, "kill").mockImplementation(() => { throw Object.assign(new Error("no such process"), { code: "ESRCH" }); });
+  const retiredPath = path.join(lockPath, ".retired");
+  hooks.beforeRetire = async () => { throw Object.assign(new Error(`permission denied: ${retiredPath}`), { code, path: retiredPath }); };
+  const clock = Date.now(); let elapsed = 0;
+  vi.spyOn(Date, "now").mockImplementation(() => clock + elapsed);
+  hooks.delay = () => { elapsed += 10_000; };
+  const cache = await import("../src/lib/persistentCache.js");
+  await expect(cache.persistBoard(input)).rejects.toMatchObject({
+    code, path: retiredPath, message: expect.stringContaining("check permissions of FIGJAM_MCP_CACHE_DIR"),
+  });
+  expect(elapsed).toBe(10_000);
+});
+
 it("lets exactly one simultaneous recovery win and serializes both publications", async () => {
   const stale = new Date(Date.now() - 31_000);
   await utimes(path.join(root, "v4", ".write-lock"), stale, stale);

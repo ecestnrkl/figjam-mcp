@@ -2,6 +2,8 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { redactMessageCredentials, REDACTED } from "./redact.js";
 
 const scopedSecrets = new AsyncLocalStorage<string[]>();
+/** Characters of one foreign text (provider, Figma, runtime error) that are kept where it is read. */
+export const ERROR_TEXT_SCAN_CHARS = 1000;
 
 /** A token argument stays local to its asynchronous tool call, including SDK logs. */
 export function withSecretScope<T>(secrets: string[], run: () => T): T {
@@ -19,11 +21,30 @@ export function redactConfiguredSecrets(text: string, additionalSecrets: string[
   return text;
 }
 
-/** Normalize messages at external error boundaries, before truncation or whitespace folding. */
-export function redactMessage(text: string, additionalSecrets: string[] = []): string {
-  const safe = redactConfiguredSecrets(text, additionalSecrets);
+function redactMessageValue(safe: string): string {
   // Invalid redaction configuration must still be reportable without leaking a secret.
   try { return redactMessageCredentials(safe); } catch { return safe; }
+}
+
+/** Normalize messages before rendering them to the user. */
+export function redactMessage(text: string, additionalSecrets: string[] = []): string {
+  return redactMessageValue(redactConfiguredSecrets(text, additionalSecrets));
+}
+
+/**
+ * Cuts foreign text (provider, Figma, runtime errors) where it is read. A word the cut runs through is dropped,
+ * so the redaction that follows never sees part of a URL or token.
+ */
+export function boundExternalText(text: string, limit = ERROR_TEXT_SCAN_CHARS): string {
+  if (text.length <= limit) return text;
+  let end = limit;
+  if (!/\s/.test(text[end]!)) while (end > 0 && !/\s/.test(text[end - 1]!)) end--;
+  return text.slice(0, end);
+}
+
+/** Foreign text: exact secrets go first, then the text is bounded at a word boundary and redacted. Shorten for output only afterwards. */
+export function redactExternalErrorText(text: string, additionalSecrets: string[] = []): string {
+  return redactMessageValue(boundExternalText(redactConfiguredSecrets(text, additionalSecrets)));
 }
 
 export function validateHeaderSecret(value: string, source: string): void {
@@ -32,13 +53,22 @@ export function validateHeaderSecret(value: string, source: string): void {
   }
 }
 
-/** Keep typed errors (timeouts, status and cooldown) while hiding their message. */
+/** Keep typed errors (timeouts, status and cooldown) while redacting their message; messages the server composed stay complete. */
 export function redactError(error: unknown, additionalSecrets: string[] = []): Error {
   if (error instanceof Error) {
     error.message = redactMessage(error.message, additionalSecrets);
     return error;
   }
   return new Error(redactMessage(String(error), additionalSecrets));
+}
+
+/** For errors of foreign origin (fetch, SDK, streams): their message is bounded before it is redacted. */
+export function redactExternalError(error: unknown, additionalSecrets: string[] = []): Error {
+  if (error instanceof Error) {
+    error.message = redactExternalErrorText(error.message, additionalSecrets);
+    return error;
+  }
+  return new Error(redactExternalErrorText(String(error), additionalSecrets));
 }
 
 /** Final host boundary: covers summaries and warnings as well as structured tool text. */

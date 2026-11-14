@@ -6,6 +6,7 @@ import { setTimeout as delay } from "node:timers/promises";
 
 // Recursive mode enables Node's retries for the temporary owner file as well.
 const cleanupOptions = { recursive: true, force: true, maxRetries: 3, retryDelay: 20 };
+const PERMISSION_HINT = "check permissions of FIGJAM_MCP_CACHE_DIR or the cache directory, then retry ingest_board.";
 
 /** Directory locks coordinate independent server processes sharing the same cache. */
 export async function withCacheLock<T>(directory: string, operation: () => Promise<T>, signal?: AbortSignal): Promise<T> {
@@ -41,9 +42,13 @@ export async function withCacheLock<T>(directory: string, operation: () => Promi
         const recovery = await reclaimAbandonedLock(lockPath);
         if (recovery === "retired" || (recovery === "missing" && !retryableMkdirError)) continue;
         if (Date.now() - started >= 10_000) {
+          if (recovery instanceof Error) {
+            recovery.message += `; ${PERMISSION_HINT}`;
+            throw recovery;
+          }
           if (retryableMkdirError && error instanceof Error &&
             await lstat(lockPath).then(() => false, error => code(error) === "ENOENT")) {
-            error.message += "; check permissions of FIGJAM_MCP_CACHE_DIR or the cache directory, then retry ingest_board.";
+            error.message += `; ${PERMISSION_HINT}`;
             throw error;
           }
           throw Object.assign(new Error("another server process is writing; retry ingest_board"), { code: "EBUSY" });
@@ -64,7 +69,7 @@ export async function withCacheLock<T>(directory: string, operation: () => Promi
   }
 }
 
-async function reclaimAbandonedLock(lockPath: string): Promise<"retired" | "held" | "missing"> {
+async function reclaimAbandonedLock(lockPath: string): Promise<"retired" | "held" | "missing" | NodeJS.ErrnoException> {
   try {
     const directory = await stat(lockPath);
     let abandoned = Date.now() - directory.mtimeMs > 600_000;
@@ -75,6 +80,7 @@ async function reclaimAbandonedLock(lockPath: string): Promise<"retired" | "held
           try { process.kill(owner.pid as number, 0); } catch (error) { abandoned = code(error) === "ESRCH"; }
         }
       } catch (error) {
+        if (isTransientLockError(code(error))) throw error;
         // A missing owner can be the small window between mkdir and owner publication.
         abandoned = code(error) === "ENOENT" && Date.now() - directory.mtimeMs > 30_000;
       }
@@ -92,7 +98,12 @@ async function reclaimAbandonedLock(lockPath: string): Promise<"retired" | "held
   } catch (error) {
     const failure = code(error);
     if (failure === "ENOENT") return "missing";
-    if (isTransientLockError(failure)) return "held";
+    if (failure === "EBUSY") return "held";
+    if ((failure === "EACCES" || failure === "EPERM") && error instanceof Error) {
+      const permissionError = error as NodeJS.ErrnoException;
+      permissionError.path ??= lockPath;
+      return permissionError;
+    }
     throw error;
   }
 }

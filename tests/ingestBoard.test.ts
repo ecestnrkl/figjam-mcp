@@ -1,3 +1,5 @@
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { BoardData, Cluster, NormalizedNode } from "../src/types.js";
 import { FigmaApiError, FigmaDownloadBudgetError, FigmaTimeoutError } from "../src/lib/figmaApi.js";
@@ -50,7 +52,8 @@ vi.mock("../src/lib/visionInterpreter.js", () => ({
 // The worker thread runs only from the built package (see package:smoke); here the same function runs inline.
 vi.mock("../src/lib/imageWorker.js", () => ({ resizeInWorker: resizeInWorkerMock }));
 
-vi.mock("../src/lib/persistentCache.js", () => ({
+vi.mock("../src/lib/persistentCache.js", async (importOriginal) => ({
+  cacheRelativePath: (await importOriginal<typeof import("../src/lib/persistentCache.js")>()).cacheRelativePath,
   EXTRACTION_VERSION: 5,
   extractFigmaLastModified: () => "2026-07-04T00:00:00Z",
   hashNormalizedNodes: () => "node-hash",
@@ -255,6 +258,24 @@ describe("ingestBoard", () => {
     expect(result.summary).not.toContain("call diff_board");
     expect(result.summary).not.toContain("since the previous ingest");
     expect(previous.persistenceWarning).toBeUndefined();
+  });
+
+  it.each([
+    ["inside the cache", ["v4", ".write-lock", ".retired"], ' for "<cache>/v4/.write-lock/.retired"'],
+    ["outside the cache", ["..", "elsewhere", ".retired"], ""],
+  ])("names a permission error path %s relative to the cache in tool output and in full on stderr only", async (_name, segments, location) => {
+    const root = path.join(tmpdir(), "synthetic-profile", "figjam-cache");
+    vi.stubEnv("FIGJAM_MCP_CACHE_DIR", root);
+    const denied = path.join(root, ...segments);
+    persistBoardMock.mockRejectedValueOnce(Object.assign(new Error(`permission denied, rename '${denied}'`), { code: "EACCES", path: denied }));
+    const stderr = vi.spyOn(console, "error").mockImplementation(() => {});
+    const result = await ingestBoard({ figmaFileUrl: "https://www.figma.com/board/AbC123/Fixture", docStructureHint: "freeform", ingestMode: "max_speed" });
+    const warning = `Snapshot could not be saved; EACCES${location}: check permissions of FIGJAM_MCP_CACHE_DIR or the cache directory, then retry ingest_board.`;
+    expect(result.persistenceWarning).toBe(warning);
+    expect(result.summary).toContain(warning);
+    expect(JSON.stringify(result)).not.toContain("synthetic-profile");
+    expect(stderr).toHaveBeenCalledWith(expect.stringContaining(` for ${JSON.stringify(denied)}`));
+    stderr.mockRestore();
   });
 
   it("redacts and bounds unexpected persistence errors", async () => {
@@ -578,7 +599,7 @@ describe("ingestBoard", () => {
     expect(output.qualityReport).toMatchObject({ fallbackReasons: { payment: 10 }, visionClusters: 7, incompleteClusters: 10 });
     expect(output.qualityReport?.nextRetryAt).toBeUndefined();
     expect(output.summary).toContain("Visual interpretation is incomplete for 10 clusters: the model provider requires payment or more credits.");
-    expect(output.summary).toContain("Check your OpenRouter account balance and add credits if needed.");
+    expect(output.summary).toContain("Check your account balance and billing settings with the provider, and add credits if needed.");
     expect(output.summary).toContain("After that, run ingest_board again; finished clusters are kept.");
     expect(output.summary).not.toContain("Run ingest_board again");
     expect(output.summary).not.toContain("Retry after");

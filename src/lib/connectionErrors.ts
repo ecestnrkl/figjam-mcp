@@ -1,3 +1,5 @@
+import { ERROR_TEXT_SCAN_CHARS } from "./secrets.js";
+
 const TLS_CODES = /^(?:CERT_|DEPTH_ZERO_|SELF_SIGNED_|UNABLE_TO_|ERR_TLS_|ERR_SSL_|ERR_OSSL_|HOSTNAME_MISMATCH)/;
 
 export function describeConnectionCause(error: unknown): string {
@@ -10,9 +12,12 @@ export function describeConnectionCause(error: unknown): string {
       const inner = link.errors.find((item: unknown) => typeof (item as { code?: unknown } | undefined)?.code === "string") as { code: string } | undefined;
       code = inner?.code;
     }
-    if (typeof link.message === "string") text += ` ${link.message}`;
+    if (typeof link.message === "string" && text.length < ERROR_TEXT_SCAN_CHARS) {
+      text += ` ${link.message.slice(0, ERROR_TEXT_SCAN_CHARS - text.length - 1)}`;
+    }
     current = link.cause;
   }
+  if (code && code.length > ERROR_TEXT_SCAN_CHARS) code = undefined;
   if (code && /^(?:ENOTFOUND|EAI_AGAIN|EAI_NODATA|EAI_NONAME)$/.test(code)) return "host not found";
   if (code && /^(?:ETIMEDOUT|UND_ERR_CONNECT_TIMEOUT)$/.test(code)) return "connection timed out";
   if (code === "ECONNREFUSED") return "connection refused";

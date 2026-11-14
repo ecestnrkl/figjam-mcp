@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { evidenceBoard, textNode } from "./fixtures/retrieval.js";
 import { flattenNodeTree } from "../src/lib/nodeTree.js";
 import { hasProtectedTableValue, redactBoard, redactCredentials, redactMessageCredentials, redactTableCells } from "../src/lib/redact.js";
+import { redactError } from "../src/lib/secrets.js";
 
 const { chatJsonMock, readBoardHistoryMock, readCachedBoardMock } = vi.hoisted(() => ({
   chatJsonMock: vi.fn(), readBoardHistoryMock: vi.fn(), readCachedBoardMock: vi.fn(),
@@ -75,6 +76,25 @@ beforeEach(() => { chatJsonMock.mockReset(); });
 afterEach(() => { vi.unstubAllEnvs(); });
 
 describe("redactCredentials", () => {
+  it.each(["\r", "\n", "\r\n", "\v", "\f", "\u0085", "\u2028", "\u2029"])("keeps board text after Bearer and line separator %j", async separator => {
+    const text = `The role is Bearer${separator}RELEASE-AUTHORIZATION-0122`;
+    const board = evidenceBoard("BearerLines123", [textNode("1:1", text), textNode("1:2", "Bearer\u2003SYNTHETIC_BEARER_VALUE")]);
+    setBoard(board.boardId, board);
+    const output = await getBoardContext({ boardId: board.boardId });
+    expect(output.text).toContain("RELEASE-AUTHORIZATION-0122");
+    expect(output.structuredContent.evidence.find(item => item.nodeId === "1:1")?.text).toBe(text);
+    expect(output.structuredContent.evidence.find(item => item.nodeId === "1:2")?.text).toBe("Bearer\u2003[redacted]");
+  });
+
+  it.each(["\u2003", "\u00a0"])("redacts a Bearer value after horizontal space %j in board context", async separator => {
+    const value = "aB_1-".repeat(6);
+    const board = evidenceBoard("BearerSpaces123", [textNode("1:1", `Bearer${separator}${value}`)]);
+    setBoard(board.boardId, board);
+    const output = await getBoardContext({ boardId: board.boardId });
+    expect(output.text).not.toContain(value);
+    expect(output.structuredContent.evidence[0]?.text).toBe(`Bearer${separator}[redacted]`);
+  });
+
   it.each([
     ["Passwort: Sommer2024!", "Passwort: [redacted]"],
     ["WLAN-Passwort = hunter2 bitte nicht teilen", "WLAN-Passwort = [redacted]"],
@@ -472,4 +492,29 @@ it.each([
   const expected = `postgres://admin:[redacted]@db.test/app ${unchanged}`;
   expect(redactCredentials(text)).toBe(expected);
   expect(redactMessageCredentials(text)).toBe(expected);
+});
+
+it.each([
+  ["Bearer words", "Bearer ".repeat(8572)],
+  ["spaces after Bearer", `Bearer${" ".repeat(60_000)}`],
+  ["an unfinished JWT", `eyJ${"a".repeat(60_000)}`],
+  ["JWT segments", "eyJa.".repeat(12_000)],
+  ["authorization labels", "authorization ".repeat(4286)],
+  ["one word", "a".repeat(60_000)],
+])("redacts a quoted Authorization header ahead of 60,000 characters of %s, complete and without stalling", (_name, filler) => {
+  const start = performance.now();
+  const { message } = redactError(new Error(`Authorization: Bearer SYNTHETIC_BEARER_43\n${filler}`));
+  expect(performance.now() - start).toBeLessThan(500);
+  expect(message.startsWith("Authorization: [redacted]\n")).toBe(true);
+  expect(message.length).toBeGreaterThan(40_000);
+});
+
+it.each([
+  ["quoted header", '"Authorization":"' + 'part\\" '.repeat(8572).slice(0, 60_000) + '" end', '"Authorization":"[redacted]" end'],
+  ["Unicode space before the token", "Bearer" + "\u2003".repeat(60_000) + "SYNTHETIC_BEARER_VALUE", "Bearer" + "\u2003".repeat(60_000) + "[redacted]"],
+])("redacts a %s with 60,000 characters without stalling", (_name, input, expected) => {
+  const start = performance.now();
+  const output = redactMessageCredentials(input);
+  expect(performance.now() - start).toBeLessThan(500);
+  expect(output === expected).toBe(true);
 });
