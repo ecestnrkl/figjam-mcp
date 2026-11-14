@@ -56,6 +56,18 @@ describe("diagnoseLlmConfig", () => {
       expect(JSON.stringify(result)).not.toMatch(/private-user|private-password|proxy\.invalid/);
     } finally { vi.unstubAllGlobals(); }
   });
+  it.each(['--use-"env"-proxy', String.raw`"--use-env-pro\xy"`])("recognizes a Node proxy flag with NODE_OPTIONS=%s", async options => {
+    vi.stubGlobal("process", Object.create(process, {
+      versions: { value: { ...process.versions, node: "24.5.0" } },
+      allowedNodeEnvironmentFlags: { value: new Set(["--use-env-proxy"]) },
+    }));
+    try {
+      vi.stubEnv("HTTPS_PROXY", "http://proxy.invalid:8080");
+      vi.stubEnv("NODE_OPTIONS", options);
+      chatJsonMock.mockResolvedValue({});
+      expect((await diagnoseLlmConfig()).network).toMatchObject({ proxyActive: true });
+    } finally { vi.unstubAllGlobals(); }
+  });
   it("sends a 64x64 diagnostic PNG containing only pure opaque blue", async () => {
     chatJsonMock.mockResolvedValue({});
     await diagnoseLlmConfig();

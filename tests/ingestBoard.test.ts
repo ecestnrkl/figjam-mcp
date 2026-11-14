@@ -578,7 +578,7 @@ describe("ingestBoard", () => {
     expect(output.qualityReport).toMatchObject({ fallbackReasons: { payment: 10 }, visionClusters: 7, incompleteClusters: 10 });
     expect(output.qualityReport?.nextRetryAt).toBeUndefined();
     expect(output.summary).toContain("Visual interpretation is incomplete for 10 clusters: the model provider requires payment or more credits.");
-    expect(output.summary).toContain("Check your OpenRouter account balance and add credits if needed.");
+    expect(output.summary).toContain("Check your account balance and billing settings with the provider, and add credits if needed.");
     expect(output.summary).toContain("After that, run ingest_board again; finished clusters are kept.");
     expect(output.summary).not.toContain("Run ingest_board again");
     expect(output.summary).not.toContain("Retry after");

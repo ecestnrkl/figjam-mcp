@@ -246,24 +246,43 @@ describe("offline ingest pipeline with actual persistent cache", () => {
     expect(fileTreeMock).toHaveBeenCalledTimes(2);
   });
 
-  it("explains incomplete image interpretation after an OpenRouter payment error without persisting the provider reason", async () => {
-    activeTree = boardTree([imageNode("limited", 0)]);
+  it.each([
+    { limitSource: "openrouter_in_flight_budget", reason: "rate_limit", guidance: "Retry after 20 seconds" },
+    { limitSource: "openrouter_key_limit", reason: "payment", guidance: "The OpenRouter API key reached its credit limit." },
+    { limitSource: "openrouter_credits", reason: "payment", guidance: "Check your OpenRouter account balance and add credits if needed." },
+    { limitSource: "SYNTHETIC_UNKNOWN_LIMIT", reason: "payment", guidance: "Check your account balance and billing settings with the provider" },
+    { limitSource: undefined, reason: "payment", guidance: "Check your account balance and billing settings with the provider" },
+  ])("uses safe OpenRouter 402 guidance for $limitSource without exposing provider text", async ({ limitSource, reason, guidance }) => {
+    const marker = "SYNTHETIC_VISION_PROMPT";
+    const bearer = "SYNTHETIC_BEARER_43";
+    activeTree = boardTree([{ ...imageNode("limited", 0), characters: marker }]);
     const endpoint = "https://openrouter.ai/api/v1";
     vi.stubEnv("LLM_BASE_URL", endpoint);
+    vi.stubEnv("LLM_VISION_MODELS", "vision/model");
     const offline = globalThis.fetch;
-    vi.stubGlobal("fetch", (url: string, init?: RequestInit) => String(url) === `${endpoint}/chat/completions`
-      ? Promise.resolve(Response.json({ error: { code: 402, message: "Synthetic credit balance too low (https://billing.invalid/key)." } }, { status: 402 }))
-      : offline(url, init));
-    visionMock.mockImplementation(async () => {
-      const { chatJson } = await import("../src/lib/llmClient.js");
-      return chatJson("vision/model", [{ role: "user", content: "Synthetic fixture only" }]) as never;
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
+      if (String(url) !== `${endpoint}/chat/completions`) return offline(url, init);
+      const prompt = JSON.parse(String(init?.body)).messages[1].content[0].text as string;
+      expect(prompt).toContain(marker);
+      return Response.json({ error: { code: 402, message: `Echo ${prompt.match(/SYNTHETIC_VISION_PROMPT/)?.[0]} Authorization: Bearer ${bearer}`,
+        metadata: { limit_source: limitSource } } }, { status: 402, headers: { "Retry-After": "20" } });
     });
+    // Exercise the actual vision prompt builder and provider client.
+    const { refineClusterWithVision } = await vi.importActual<typeof import("../src/lib/visionInterpreter.js")>("../src/lib/visionInterpreter.js");
+    visionMock.mockImplementation(refineClusterWithVision);
     const result = await ingestBoard(input);
-    expect(result.qualityReport?.fallbackReasons).toEqual({ payment: 1 });
-    expect(result.summary).toContain("Check your OpenRouter account balance and add credits if needed. Provider reason: Synthetic credit balance too low.");
-    expect(result.summary).not.toContain("billing.invalid");
-    const { readLatestBoard } = await import("../src/lib/persistentCache.js");
-    expect(JSON.stringify(await readLatestBoard(fileKey))).not.toContain("Synthetic credit balance too low");
+    expect(result.qualityReport?.fallbackReasons).toEqual({ [reason]: 1 });
+    expect(result.summary).toContain(guidance);
+    expect(result.summary).not.toContain(`Echo ${marker}`);
+    expect(result.summary).not.toMatch(/Provider reason:|Authorization: Bearer|SYNTHETIC_UNKNOWN_LIMIT/);
+    if (reason === "rate_limit") {
+      expect(result.qualityReport?.nextRetryAt).toBe(Date.now() + 20_000);
+      expect(result.summary).not.toMatch(/add credits|After that/);
+    }
+    const saved = JSON.stringify(await persistence.readLatestBoard(fileKey));
+    expect(saved).not.toContain(`Echo ${marker}`);
+    expect(saved).not.toContain(bearer);
   });
 
   it("retries after the provider's daily limit resets, not after a minute", async () => {

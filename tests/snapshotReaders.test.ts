@@ -36,8 +36,29 @@ describe("snapshot readers", () => {
     const { persistBoard } = await import("../src/lib/persistentCache.js");
     await persistBoard(board("Saved synthetic snapshot", 1000));
     await expect(getBoardContext({ boardId: "Synthetic123", snapshotId })).rejects.toThrow(
-      `Snapshot ${snapshotId.slice(0, 12)} of board "Synthetic123" is missing from local history. It may have aged out or the ID may be incomplete. `
+      `Snapshot ${snapshotId.slice(0, 12)} of board "Synthetic123" is missing from local history. `
+      + (snapshotId.length < 64 ? "Use the full snapshot ID to read a specific snapshot. " : "")
       + "Omit snapshotId to read the latest ingest, or run ingest_board.");
+  });
+  it("explains how to restart a cursor read with an expired full snapshot ID or its short prefix", async () => {
+    const { getBoardContext } = await import("../src/tools/getBoardContext.js");
+    const { persistBoard, readBoardHistory } = await import("../src/lib/persistentCache.js");
+    const initial = board("Old snapshot", 1000);
+    initial.nodes.push(textNode("1:2", "Second excerpt"));
+    await persistBoard(initial);
+    const { structuredContent: first } = await getBoardContext({ boardId: initial.boardId, limit: 1 });
+    expect(first.nextCursor).toBeDefined();
+    for (let revision = 1; revision <= 20; revision++) {
+      await persistBoard(board(`Synthetic revision ${revision}`, 1000 + revision));
+    }
+    expect((await readBoardHistory(initial.boardId)).some(entry => entry.snapshotId === first.snapshotId)).toBe(false);
+    // A fresh server cannot serve the first snapshot from its in-memory head.
+    vi.resetModules();
+    const { getBoardContext: restartedContext } = await import("../src/tools/getBoardContext.js");
+    const request = { boardId: initial.boardId, limit: 1, cursor: first.nextCursor };
+    await expect(restartedContext({ ...request, snapshotId: first.snapshotId })).rejects.toThrow("Omit both cursor and snapshotId");
+    await expect(restartedContext({ ...request, snapshotId: first.snapshotId.slice(0, 12) }))
+      .rejects.toThrow(/Use the full snapshot ID.*Omit both cursor and snapshotId/);
   });
   it("refreshes both in-process server instances after the other publishes", async () => {
     const cacheA = await import("../src/lib/cache.js");

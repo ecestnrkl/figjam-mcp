@@ -45,9 +45,11 @@ export function getBoard(boardId: string): BoardData | undefined {
 }
 
 export class SnapshotNotInHistoryError extends Error {
-  constructor(boardId: string, snapshotId: string) {
-    super(`Snapshot ${snapshotId.slice(0, 12)} of board "${boardId}" is missing from local history. It may have aged out or the ID may be incomplete. `
-      + "Omit snapshotId to read the latest ingest, or run ingest_board.");
+  constructor(boardId: string, snapshotId: string, withCursor = false) {
+    super(`Snapshot ${snapshotId.slice(0, 12)} of board "${boardId}" is missing from local history. `
+      + (snapshotId.length < 64 ? "Use the full snapshot ID to read a specific snapshot. " : "")
+      + (withCursor ? "Omit both cursor and snapshotId to read the latest ingest, or run ingest_board."
+        : "Omit snapshotId to read the latest ingest, or run ingest_board."));
   }
 }
 

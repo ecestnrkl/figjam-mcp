@@ -337,7 +337,7 @@ describe("chatJson", () => {
       const pending = chatJson(["openrouter/free", "second-model"], MESSAGES, SCHEMA_OPTIONS);
       await expect(pending).rejects.toMatchObject({ status: 402, retryAfter: 90,
         message: "LLM request failed (HTTP 402): the model provider requires payment or more credits for this model. "
-          + `Check your account balance and billing settings with the provider, and add credits if needed. Provider reason: ${message}` });
+          + "Check your account balance and billing settings with the provider, and add credits if needed." });
       expect(createMock).toHaveBeenCalledTimes(1);
     },
   );

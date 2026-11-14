@@ -39,8 +39,9 @@ export const GENERIC_NODE_NAMES = new Set([
   "triangle down", "triangle up",
 ]);
 
-export function isGenericNodeName(name: string): boolean {
-  return GENERIC_NODE_NAMES.has(name.trim().replace(/\s+/g, " ").replace(/\s+\d+$/, "").toLowerCase());
+export function isGenericNodeName(name: string, { includeVariants = false } = {}): boolean {
+  const normalized = includeVariants ? name.replace(/\s*\(\d+\)\s*$/, "").replace(/[-‐]/g, " ") : name;
+  return GENERIC_NODE_NAMES.has(normalized.trim().replace(/\s+/g, " ").replace(/\s+\d+$/, "").toLowerCase());
 }
 const MAX_BOARD_DEPTH = 1024;
 const MAX_METADATA_DEPTH = 64;

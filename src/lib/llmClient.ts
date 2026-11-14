@@ -3,9 +3,9 @@ import OpenAI from "openai";
 import { readIntEnv } from "./env.js";
 import { getModelConfig, getModelsForRole, modelSettingForRole, type LlmRole } from "./modelRegistry.js";
 import { getLlmRequestTimeoutMs } from "./llmTimeouts.js";
-import { redactError, redactMessage, redactOutputSecrets, validateHeaderSecret } from "./secrets.js";
+import { ERROR_TEXT_SCAN_CHARS, redactError, redactExternalErrorText, redactMessage, redactOutputSecrets, validateHeaderSecret } from "./secrets.js";
 import { missingEnvironmentHint } from "./envFile.js";
-import { parseRetryAfter, utcTime } from "./waitTime.js";
+import { describeWaitUntil, parseRetryAfter, utcTime } from "./waitTime.js";
 
 /**
  * Shared LLM access for visionInterpreter.ts and answerFromBoard.ts.
@@ -26,7 +26,9 @@ export class LlmRequestError extends Error {
   constructor(message: string, readonly status?: number, readonly retryAfter?: number, readonly retryAt?: number) { super(message); }
 }
 export class LlmPaymentError extends LlmRequestError {
-  constructor(message: string, retryAfter?: number) { super(message, 402, retryAfter); }
+  constructor(message: string, retryAfter?: number, retryAt?: number, readonly temporary = false) {
+    super(message, 402, retryAfter, retryAt);
+  }
 }
 /**
  * LLM_BASE_URL does not lead to a working OpenAI-compatible API: no connection, a wrong path, or a body that is no
@@ -184,8 +186,11 @@ export function getLlmClient(): OpenAI {
 
 /** SDK diagnostics must use stderr and the same secret boundary as provider errors. */
 function logSdkMessage(message: string, ...details: unknown[]): void {
-  console.error(redactMessage(message), ...details.map(detail =>
-    detail instanceof Error ? redactMessage(detail.message) : redactOutputSecrets(detail)));
+  console.error(redactExternalErrorText(message), ...details.map(detail => {
+    // SDK debug logs may include the raw response body for a plain-text 402.
+    if (detail && typeof detail === "object" && "status" in detail && detail.status === 402) return { status: 402 };
+    return detail instanceof Error ? redactExternalErrorText(detail.message) : redactOutputSecrets(detail);
+  }));
 }
 
 export function getVisionModel(): string {
@@ -260,7 +265,7 @@ export async function chatJson(
         }
         errors.push(error);
         const normalized = normalizeLlmError(error, candidate, options.modelRole, llm.baseURL);
-        options.onModelFailed?.(candidate, normalized instanceof LlmPaymentError ? normalized.message
+        options.onModelFailed?.(candidate, normalized instanceof LlmPaymentError ? describeDiagnosticPaymentError(normalized, error)
           : describeProviderError(error) ?? withoutDiagnoseHint(errorMessage(normalized)));
         const recoverable = shouldTryNextModel(error) && remainingMs(requestOptions) >= MIN_REQUEST_TIMEOUT_MS;
         // A router picks a model per request, so one more request can reach a working one.
@@ -422,14 +427,25 @@ function isUnsupportedParamError(error: unknown, hasExplicitReasoning = false): 
   }
   if (hasExplicitReasoning) return false;
   return (/\brequire[_ -]?parameters\b/i.test(detail) && unsupported.test(detail)) ||
-    /no (?:available )?endpoints.*(?:support|match|handle).*\b(?:requested|required) parameters\b/i.test(detail) ||
+    detail.split(/[\r\n\u2028\u2029]/).some(line => {
+      const endpoints = /no (?:available )?endpoints/i.exec(line);
+      if (!endpoints) return false;
+      const capability = /support|match|handle/i.exec(line.slice(endpoints.index + endpoints[0].length));
+      return capability !== null && /\b(?:requested|required) parameters\b/i.test(
+        line.slice(endpoints.index + endpoints[0].length + capability.index + capability[0].length),
+      );
+    }) ||
     /\bFilter by Parameters\b/i.test(detail);
 }
 
 function isUnavailableModelError(error: unknown): boolean {
   if (!(error instanceof OpenAI.APIError) || ![400, 404, 410, 422].includes(error.status ?? 0)) return false;
   const detail = providerErrorDetail(error);
-  return /\b(?:model[_ -]not[_ -]found|invalid[_ -]model|model[_ -]unavailable)\b|\bno (?:available )?endpoints\b|\bmodel\b.*\b(?:not found|does not exist|not available|unavailable|not a valid|decommissioned)\b|\b(?:unknown|invalid|unavailable|not a valid) model\b/i.test(detail);
+  return /\b(?:model[_ -]not[_ -]found|invalid[_ -]model|model[_ -]unavailable)\b|\bno (?:available )?endpoints\b|\b(?:unknown|invalid|unavailable|not a valid) model\b/i.test(detail) ||
+    detail.split(/[\r\n\u2028\u2029]/).some(line => {
+      const model = /\bmodel\b/i.exec(line);
+      return model !== null && /\b(?:not found|does not exist|not available|unavailable|not a valid|decommissioned)\b/i.test(line.slice(model.index + model[0].length));
+    });
 }
 
 /** Inspect only known error fields; provider details never enter our logs/errors. */
@@ -450,7 +466,7 @@ function providerErrorDetail(error: InstanceType<typeof OpenAI.APIError>): strin
     metadata.error_type, metadata.provider_code, metadata.failed_routing_step,
     rawBody.message, rawBody.param, rawBody.code, rawBody.type, nested.message, nested.param, nested.code, nested.type]
     .filter((value): value is string => typeof value === "string")
-    .map(value => value.slice(0, 4096))
+    .map(value => value.slice(0, ERROR_TEXT_SCAN_CHARS))
     .join(" ");
 }
 
@@ -465,7 +481,7 @@ function providerErrorBody(error: unknown): { message?: unknown; code?: unknown;
 /** OpenRouter's wording when the upstream provider of a model failed; another model may still answer. */
 function isProviderReturnedError(error: unknown): boolean {
   const message = providerErrorBody(error)?.message;
-  return typeof message === "string" && /\bprovider returned error\b/i.test(message);
+  return typeof message === "string" && /\bprovider returned error\b/i.test(message.slice(0, ERROR_TEXT_SCAN_CHARS));
 }
 
 /** The provider's message for diagnose_llm_config: message, code and metadata.provider_name, never metadata.raw. */
@@ -477,8 +493,24 @@ function describeProviderError(error: unknown): string | undefined {
     typeof body.message === "string" ? body.message : undefined,
     typeof body.code === "string" || typeof body.code === "number" ? `code ${body.code}` : undefined,
     typeof metadata.provider_name === "string" ? `provider ${metadata.provider_name}` : undefined,
-  ].filter((part): part is string => Boolean(part?.trim()));
-  return parts.length ? redactMessage(parts.join(", ")).replace(/\s+/g, " ").trim().slice(0, 200) : undefined;
+  ].flatMap(part => part === undefined ? [] : [redactExternalErrorText(part).trim()]).filter(Boolean);
+  return parts.length ? parts.join(", ").replace(/\s+/g, " ").slice(0, 200) : undefined;
+}
+
+/** Only diagnostics send synthetic prompts and may show an excerpt of the provider's reason. */
+function describeDiagnosticPaymentError(normalized: LlmPaymentError, error: unknown): string {
+  const detail = providerErrorBody(error)?.message ?? (error instanceof OpenAI.APIError
+    ? error.error ?? (error.message === "402 status code (no body)" ? undefined : error.message.slice(4)) : undefined);
+  if (typeof detail !== "string") return normalized.message;
+  const reason = redactExternalErrorText(detail)
+    .trim().replace(/\s+/g, " ")
+    .replace(/, or fewer max_tokens\b/gi, "")
+    .replace(/ To increase, visit\b.*$/i, "")
+    .replace(/ ?[(\[<]?(?:(?<![a-z\d+.-])[a-z][a-z\d+.-]*:\/\/|\bwww\.)[^ <>"']+>?/gi,
+      url => /[.!?]$/.test(url) ? url.slice(-1) : "")
+    .replace(/ +/g, " ").trim();
+  const excerpt = reason.length > 200 ? `${reason.slice(0, 199).trimEnd()}…` : reason;
+  return normalized.message + (excerpt ? ` Provider reason: ${excerpt}` : "");
 }
 
 /**
@@ -505,7 +537,7 @@ function shouldTryNextModel(error: unknown): boolean {
   }
   if (error instanceof Error) {
     return /429|provider returned error|rate limit|no endpoints|empty response|no choices|timed out|unsupported|response contained/i.test(
-      error.message,
+      error.message.slice(0, ERROR_TEXT_SCAN_CHARS),
     );
   }
   return false;
@@ -514,7 +546,7 @@ function shouldTryNextModel(error: unknown): boolean {
 function isRateLimitError(error: unknown): boolean {
   if (error instanceof OpenAI.RateLimitError) return true;
   if (error instanceof LlmRequestError || error instanceof OpenAI.APIError) return error.status === 429;
-  return error instanceof Error && /429|rate limit/i.test(error.message);
+  return error instanceof Error && /429|rate limit/i.test(error.message.slice(0, ERROR_TEXT_SCAN_CHARS));
 }
 
 /** The closing sentence of provider messages; diagnose_llm_config leaves it out of its own output. */
@@ -526,17 +558,13 @@ function withoutDiagnoseHint(message: string): string {
 
 function normalizeLlmError(error: unknown, model?: string, role?: LlmRole, baseUrl?: string): unknown {
   if ((error instanceof OpenAI.APIError || error instanceof LlmRequestError) && error.status === 402) {
-    const detail = providerErrorBody(error)?.message ?? (error instanceof OpenAI.APIError
-      ? error.error ?? error.message.replace(/^402 (?:status code \(no body\)$)?/, "") : undefined);
-    const reason = typeof detail === "string" ? redactMessage(detail)
-      .replace(/,\s+or fewer max_tokens\b/gi, "")
-      .replace(/\s+To increase, visit\b[\s\S]*$/i, "")
-      .replace(/\s*[(\[<]?(?:[a-z][a-z\d+.-]*:\/\/|\bwww\.)[^\s<>"']+>?/gi, url => /[.!?]$/.test(url) ? url.slice(-1) : "")
-      .replace(/\s+/g, " ").trim() : "";
-    const excerpt = reason.length > 200 ? `${reason.slice(0, 199).trimEnd()}…` : reason;
-    const waitMs = error instanceof OpenAI.APIError ? parseRetryAfter(headerValue("retry-after", error.headers, error.error)) : undefined;
-    return new LlmPaymentError(llmPaymentMessage(baseUrl) + (excerpt ? ` Provider reason: ${excerpt}` : ""),
-      error instanceof LlmRequestError ? error.retryAfter : waitMs === undefined ? undefined : Math.ceil(waitMs / 1000));
+    const body = providerErrorBody(error);
+    const now = Date.now();
+    const waitMs = parseRetryAfter(headerValue("retry-after", error instanceof OpenAI.APIError ? error.headers : undefined, body), now);
+    const retryAfter = waitMs === undefined ? (error instanceof LlmRequestError ? error.retryAfter : undefined) : Math.ceil(waitMs / 1000);
+    const retryAt = waitMs === undefined ? (error instanceof LlmRequestError ? error.retryAt : undefined) : now + waitMs;
+    const source = openRouterPaymentLimit(baseUrl, body?.metadata);
+    return new LlmPaymentError(llmPaymentMessage(source, retryAt), retryAfter, retryAt, source === "openrouter_in_flight_budget");
   }
   if (!(error instanceof LlmBaseUrlError) && role && model &&
       (error instanceof OpenAI.APIError || error instanceof LlmRequestError) && error.status === 404) {
@@ -564,13 +592,29 @@ function normalizeLlmError(error: unknown, model?: string, role?: LlmRole, baseU
   return new LlmRequestError(redactMessage(message), status, waitMs === undefined ? undefined : Math.ceil(waitMs / 1000), timing?.retryAt);
 }
 
-export function llmPaymentMessage(baseUrl = process.env.LLM_BASE_URL): string {
-  const message = "LLM request failed (HTTP 402): the model provider requires payment or more credits for this model. ";
-  if (baseUrl && URL.parse(baseUrl)?.hostname === "openrouter.ai") {
-    return message + "Before routing a paid request, OpenRouter checks whether your account balance covers the estimated cost, including the requested maximum output tokens up to its per-request cap. "
-      + "Remaining API key credit alone is insufficient. Check your OpenRouter account balance and add credits if needed.";
+type OpenRouterPaymentLimit = "openrouter_in_flight_budget" | "openrouter_key_limit" | "openrouter_credits";
+
+function openRouterPaymentLimit(baseUrl: string | undefined, metadata: unknown): OpenRouterPaymentLimit | undefined {
+  if (!baseUrl || URL.parse(baseUrl)?.hostname !== "openrouter.ai" || !metadata || typeof metadata !== "object") return undefined;
+  const source = (metadata as { limit_source?: unknown }).limit_source;
+  if (source === "openrouter_in_flight_budget" || source === "openrouter_key_limit" || source === "openrouter_credits") return source;
+}
+
+export function llmPaymentMessage(source?: OpenRouterPaymentLimit, retryAt?: number): string {
+  const prefix = "LLM request failed (HTTP 402): ";
+  switch (source) {
+    case "openrouter_in_flight_budget":
+      return prefix + "OpenRouter's in-flight spending budget is temporarily full. "
+        + (retryAt === undefined ? "Retry later." : `Retry after ${describeWaitUntil(retryAt)}.`);
+    case "openrouter_key_limit":
+      return prefix + "The OpenRouter API key reached its credit limit. Check the limit on that key and raise it if needed.";
+    case "openrouter_credits":
+      return prefix + "Check your OpenRouter account balance and add credits if needed. OpenRouter estimates the request cost "
+        + "before routing, including the requested maximum output tokens up to its per-request cap.";
+    default:
+      return prefix + "the model provider requires payment or more credits for this model. "
+        + "Check your account balance and billing settings with the provider, and add credits if needed.";
   }
-  return message + "Check your account balance and billing settings with the provider, and add credits if needed.";
 }
 
 function rateLimitMessage(retryAt: number | undefined): string {
@@ -591,7 +635,7 @@ function baseUrlFailure(error: unknown): LlmBaseUrlError | undefined {
   }
   // Bodies of a 2xx answer that cannot be read: not JSON, or the connection ended before the end.
   if (error instanceof SyntaxError) return notChatCompletion("the response body was not valid JSON");
-  if (error instanceof TypeError && /terminated/i.test(error.message)) return notChatCompletion("the response body was cut off");
+  if (error instanceof TypeError && /terminated/i.test(error.message.slice(0, ERROR_TEXT_SCAN_CHARS))) return notChatCompletion("the response body was cut off");
   if (error instanceof OpenAI.APIError && (error.status === 404 || error.status === 405) && !hasErrorMessage(error.error)) {
     return new LlmBaseUrlError(redactMessage(`LLM request failed (HTTP ${error.status}): the answer held no error message, so LLM_BASE_URL probably points to a wrong path. `
       + `OpenAI-compatible APIs usually end in /v1, for example ${EXAMPLE_BASE_URL}. Check LLM_BASE_URL. ${DIAGNOSE_HINT}`), error.status);

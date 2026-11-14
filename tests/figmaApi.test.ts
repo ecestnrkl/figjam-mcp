@@ -62,17 +62,22 @@ describe("bounded Figma requests", () => {
     });
     it.each([
       { plan: "starter", type: "low", expected: "plan tier starter and rate limit type low" },
-      { plan: "future-plan", type: undefined, expected: "plan tier future-plan" },
-      { plan: undefined, type: "future-limit", expected: "rate limit type future-limit" },
-    ])("shows $expected alongside the wait", async ({ plan, type, expected }) => {
+      { plan: "pro", type: "future-limit", expected: "plan tier pro" },
+      { plan: "figd_SYNTHETIC_1", type: "high", expected: "rate limit type high" },
+      { plan: "figd_SYNTHETIC_1", type: "future-limit", expected: undefined },
+    ])("shows only documented 429 values from $plan and $type", async ({ plan, type, expected }) => {
       const headers = new Headers({ "Retry-After": "30" });
       if (plan) headers.set("X-Figma-Plan-Tier", plan);
       if (type) headers.set("X-Figma-Rate-Limit-Type", type);
-      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("", { status: 429, headers })));
-      const { fetchFileTree } = await import("../src/lib/figmaApi.js");
-      const error = await failure(fetchFileTree("AbC123", "synthetic-token"));
-      expect(error.message).toContain("Retry after 30 seconds.");
-      expect(error.message).toContain(`Figma reports ${expected}.`);
+      vi.stubGlobal("fetch", vi.fn(async () => new Response(null, { status: 429, headers })));
+      const { fetchFileTree, downloadRenders } = await import("../src/lib/figmaApi.js");
+      for (const request of [fetchFileTree("AbC123", "figd_SYNTHETIC_123456789"), downloadRenders(["a"], { a: "https://cdn.example/a" })]) {
+        const error = await failure(request);
+        expect(error.retryAfter).toBe(30);
+        expect(error.message).not.toMatch(/figd_SYNTHETIC_1|future-limit/);
+        if (expected) expect(error.message).toContain(`Figma reports ${expected}.`);
+        else expect(error.message).not.toContain("Figma reports");
+      }
     });
   });
   describe("Figma server errors", () => {
@@ -325,15 +330,20 @@ it.each([
 });
 
 it.each([
-  ["22.12.0", true, true],
-  ["22.18.0", true, true],
-  ["22.19.0", true, false],
-  ["22.21.0", false, false],
-  ["24.0.0", false, true],
-  ["24.5.0", false, true],
-  ["24.6.0", false, false],
-] as const)("explains unsupported startup settings in a TLS failure on Node %s", async (version, proxyTooOld, systemCaTooOld) => {
-  vi.stubGlobal("process", Object.create(process, { versions: { value: { ...process.versions, node: version } } }));
+  ["22.12.0", true, false, true],
+  ["22.18.0", true, true, true],
+  ["22.19.0", true, true, false],
+  ["22.21.0", false, true, false],
+  ["23.11.1", true, true, true],
+  ["24.0.0", false, true, true],
+  ["24.5.0", false, true, true],
+  ["24.6.0", false, true, false],
+] as const)("explains unsupported startup settings in a TLS failure on Node %s", async (version, proxyTooOld, caFlag, caEnvTooOld) => {
+  vi.stubGlobal("process", Object.create(process, {
+    versions: { value: { ...process.versions, node: version } },
+    allowedNodeEnvironmentFlags: { value: new Set(caFlag ? ["--use-system-ca"] : []) },
+  }));
+  vi.stubEnv("NODE_OPTIONS", undefined);
   vi.stubEnv("HTTPS_PROXY", "http://proxy.invalid:8080");
   vi.stubEnv("NODE_USE_ENV_PROXY", "1");
   vi.stubEnv("NODE_USE_SYSTEM_CA", "1");
@@ -342,7 +352,8 @@ it.each([
   const { fetchFileTree } = await import("../src/lib/figmaApi.js");
   const { message } = await failure(fetchFileTree("AbC123", "synthetic-token"));
   expect(message.includes(`Node.js ${version} is too old for NODE_USE_ENV_PROXY. For fetch(), use Node.js 22.21.0+ on the 22.x line or 24.0.0+.`)).toBe(proxyTooOld);
-  expect(message.includes(`Node.js ${version} is too old for NODE_USE_SYSTEM_CA. Use Node.js 22.19.0+ on the 22.x line or 24.6.0+.`)).toBe(systemCaTooOld);
+  expect(message.includes(`Node.js ${version} is too old for NODE_USE_SYSTEM_CA. Use Node.js 22.19.0+ on the 22.x line or 24.6.0+.`)).toBe(caEnvTooOld && !caFlag);
+  expect(message.includes("Try starting Node with --use-system-ca")).toBe(caEnvTooOld && caFlag);
   expect(message).not.toMatch(/Try NODE_USE_SYSTEM_CA|proxy\.invalid/);
 });
 

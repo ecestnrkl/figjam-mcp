@@ -439,9 +439,12 @@ async function performIngest(input: IngestBoardInput, options: OperationOptions)
       } catch (error) {
         signal?.throwIfAborted();
         if (error instanceof LlmRequestError && error.name === "LlmModelNotFoundError") failureNotices.add(error.message);
-        if (error instanceof LlmPaymentError) paymentMessage ??= error.message;
         if (error instanceof FigmaApiError && error.rateLimitDetails) failureNotices.add(error.rateLimitDetails);
         const reason = classifyVisionFailure(error, stage);
+        if (error instanceof LlmPaymentError) {
+          if (reason === "payment") paymentMessage ??= error.message;
+          else failureNotices.add("OpenRouter's in-flight spending budget is temporarily full.");
+        }
         const retryDelay = reason !== "payment" && (error instanceof FigmaApiError || error instanceof LlmRequestError) ? error.retryAfter : undefined;
         const retryAt = reason !== "payment" && (error instanceof FigmaApiError || error instanceof LlmRequestError) ? error.retryAt : undefined;
         const retryAfter = retryAt ?? (retryDelay && Number.isFinite(retryDelay) && retryDelay > 0
@@ -493,10 +496,13 @@ async function publishBoard(board: BoardData, signal?: AbortSignal): Promise<boo
   return publication?.historyReset ?? false;
 }
 function persistenceFailureMessage(error: unknown): string {
-  const code = (error as NodeJS.ErrnoException | null)?.code;
+  const { code, path } = (error as NodeJS.ErrnoException | null) ?? {};
   const prefix = "Snapshot could not be saved; ";
   if (code === "EBUSY") return prefix + "another server process is writing; retry ingest_board.";
-  if (code === "EACCES" || code === "EPERM") return prefix + `${code}: check permissions of FIGJAM_MCP_CACHE_DIR or the cache directory, then retry ingest_board.`;
+  if (code === "EACCES" || code === "EPERM") {
+    const location = path ? ` for ${JSON.stringify(redactMessage(path))}` : "";
+    return prefix + `${code}${location}: check permissions of FIGJAM_MCP_CACHE_DIR or the cache directory, then retry ingest_board.`;
+  }
   if (code === "ENOSPC") return prefix + "ENOSPC: the disk is full; free disk space, then retry ingest_board.";
   const message = redactMessage(error instanceof Error ? error.message : String(error)).replace(/\s+/g, " ").trim().slice(0, 200).replace(/[.!?]+$/, "");
   return `${prefix}${code ? `${redactMessage(code)}: ` : ""}${message || "unknown error"}; retry ingest_board.`;
@@ -529,7 +535,9 @@ function classifyVisionFailure(error: unknown, stage: VisionStage): VisionFallba
   if (error instanceof VisionDeadlineExceededError || error instanceof LlmTimeoutError) return "timeout";
   if (error instanceof LlmUnusableReplyError) return "invalid_reply";
   if (error instanceof LlmBaseUrlError) return "base_url";
-  if (error instanceof LlmRequestError && error.status === 402) return "payment";
+  if (error instanceof LlmRequestError && error.status === 402) {
+    return error instanceof LlmPaymentError && error.temporary ? "rate_limit" : "payment";
+  }
   if (error instanceof FigmaApiError) {
     if (error.status === 429) return "figma_rate_limit";
     if (error.status === 401 || error.status === 403) return "figma_auth";

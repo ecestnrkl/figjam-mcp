@@ -20,6 +20,22 @@ describe("similar board words", () => {
   it.each([["rectangl", "rectangle"], ["speeech", "speech"]])("omits the default name word %s would otherwise suggest", (query, word) => {
     expect(similarBoardWords(board, query)).not.toContain(word);
   });
+  it.each([["plna", "plan"], ["öfxen", "ofen"], ["welrtaum", "weltraum"]])("suggests %s as %s with one edit", (query, word) => {
+    const typoBoard = evidenceBoard("SyntheticTypo", [textNode("1:1", word)]);
+    expect(retrieveEvidence(typoBoard, { query }).evidence).toEqual([]);
+    expect(similarBoardWords(typoBoard, query)[0]).toBe(word);
+  });
+  it("keeps a default name word from the shape's written text", () => {
+    const shape = { ...textNode("1:1", "Table supplies"), name: "Table 2", type: "SHAPE_WITH_TEXT" };
+    expect(similarBoardWords(evidenceBoard("SyntheticSupplies", [shape]), "tablle")).toContain("table");
+  });
+  it.each(["Speech Bubble (2)", "Speech-bubble"])("filters the default name variant %s from suggestions", name => {
+    const shape = { ...textNode("1:1", ""), name, type: "SHAPE_WITH_TEXT" };
+    const variant = evidenceBoard("SyntheticSpeech", [shape]);
+    variant.clusters = [];
+    expect(similarBoardWords(variant, "speeech")).toEqual([]);
+    expect(retrieveEvidence(variant).evidence.map(item => item.text)).toEqual([name]);
+  });
 });
 
 describe("source evidence", () => {

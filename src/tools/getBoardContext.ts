@@ -130,10 +130,18 @@ export async function getBoardContext(input: GetBoardContextInput, extra: { noti
   const cursorQuery = cursor?.version === 2 ? query : legacyQuerySignature(requested);
   if (cursor && ((cursor.query !== undefined && cursor.query !== cursorQuery) ||
     (requested.snapshotId && !(cursor.check ? requested.snapshotId.startsWith(cursor.snapshot) : requested.snapshotId === cursor.snapshot)))) {
-    throw new Error(CURSOR_MISMATCH);
+    throw new Error(CURSOR_MISMATCH + (requested.snapshotId && requested.snapshotId.length < 64
+      ? " Use the full snapshot ID to read a specific snapshot, or omit both cursor and snapshotId to start again from the latest ingest." : ""));
   }
-  const stored = cursor && !requested.snapshotId ? await cursorBoard(boardId, cursor)
-    : await getBoardOrRestore(boardId, requested.snapshotId);
+  let stored: BoardData | undefined;
+  try {
+    stored = cursor && !requested.snapshotId ? await cursorBoard(boardId, cursor) : await getBoardOrRestore(boardId, requested.snapshotId);
+  } catch (error) {
+    if (error instanceof SnapshotNotInHistoryError && cursor && requested.snapshotId) {
+      throw new SnapshotNotInHistoryError(boardId, requested.snapshotId, true);
+    }
+    throw error;
+  }
   if (!stored) throw new Error(await unknownBoardMessage(`Board "${boardId}" not found.`, boardId));
   // Snapshots cached before redaction existed are redacted here too.
   const board = redactBoard(stored);
