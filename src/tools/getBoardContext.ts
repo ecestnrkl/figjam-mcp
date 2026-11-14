@@ -10,7 +10,7 @@ import { getBoardOrRestore, getBoardReadWarning, SnapshotNotInHistoryError } fro
 import { assertBoardKeyCase, unknownBoardMessage } from "../lib/boardLookup.js";
 import { assertLinksOfBoard, conversionNotice, resolveNodeIds } from "../lib/nodeIds.js";
 import { readBoardHistory } from "../lib/persistentCache.js";
-import { redactBoard } from "../lib/redact.js";
+import { readBoardView } from "../lib/boardReadView.js";
 import {
   boundedText, connectionsForEvidence, countConnectionsForEvidence, enclosingIdsLookup, isGeneratedPlaceholder,
   formatEvidenceConnection, MAX_CONTEXT_RESPONSE_BYTES, readableContainerIds, scopeEvidenceRanks,
@@ -144,7 +144,7 @@ export async function getBoardContext(input: GetBoardContextInput, extra: { noti
   }
   if (!stored) throw new Error(await unknownBoardMessage(`Board "${boardId}" not found.`, boardId));
   // Snapshots cached before redaction existed are redacted here too.
-  const board = redactBoard(stored);
+  const board = readBoardView(stored);
   let readIndex = boardReadIndexes.get(board);
   if (!readIndex) {
     readIndex = {

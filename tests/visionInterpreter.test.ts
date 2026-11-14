@@ -29,6 +29,21 @@ afterEach(() => {
 });
 
 describe("refineClusterWithVision", () => {
+  it("masks a configured key in inventory and connector text before applying prompt limits", async () => {
+    const { refineClusterWithVision } = await import("../src/lib/visionInterpreter.js");
+    const key = "Z9KfxW22Zr8vUk6W";
+    vi.stubEnv("LLM_API_KEY", key);
+    vi.stubEnv("FIGJAM_MCP_REDACT_CREDENTIALS", "false");
+    const node = { ...normalizedNode(0), text: "x".repeat(288) + key + " caption" };
+    await refineClusterWithVision(clusterFor([node]), [], [node], undefined, [
+      { connectorId: "1:1", fromNodeId: node.id, toNodeId: node.id, label: key + " label" },
+    ]);
+    const content = chatJsonMock.mock.calls[0]![1][1].content[0].text as string;
+    expect(content).toContain("[redacted] label");
+    expect(content).toContain("x[redacted]");
+    for (let start = 0; start + 8 <= key.length; start++) expect(content).not.toContain(key.slice(start, start + 8));
+  });
+
   it("redacts credentials the model read from a screenshot before they are cached", async () => {
     const { refineClusterWithVision } = await import("../src/lib/visionInterpreter.js");
     chatJsonMock.mockResolvedValue({

@@ -4,6 +4,8 @@ export { tableCellPositions } from "./tableCells.js";
 import { connectorArrow } from "./connectorGraph.js";
 import { GENERIC_NODE_NAMES, isGenericNodeName } from "./nodeTree.js";
 import { inClusterReadingOrder, pagePositions } from "./readingOrder.js";
+import { boardIdentitySource, findSecretSpans, maskRange, type SecretSpan } from "./boardReadView.js";
+import { configuredSecrets } from "./secrets.js";
 import type { BoardData, ConnectorEdge, NormalizedNode, RefinedCluster, TableCell } from "../types.js";
 
 export const EVIDENCE_CHUNK_CHARS = 1200;
@@ -199,6 +201,7 @@ function tokenizeEvidence(text: string, words: Map<string, TokenizedWord>): stri
 }
 
 export function snapshotIdForBoard(board: BoardData): string {
+  board = boardIdentitySource(board);
   if (board.snapshotId) return board.snapshotId;
   // Compatibility for in-memory consumers that have not assigned a persisted snapshot yet.
   // Model summaries participate here because those consumers can have no original nodes.
@@ -869,6 +872,8 @@ function evidenceFields(
 }
 
 function buildEvidence(board: BoardData, snapshotId: string): EvidenceSource[] {
+  const identity = boardIdentitySource(board);
+  const secrets = identity === board ? [] : configuredSecrets();
   const clusterOf = new Map<string, RefinedCluster>();
   for (const cluster of board.clusters) {
     for (const nodeId of cluster.nodeIds) if (!clusterOf.has(nodeId)) clusterOf.set(nodeId, cluster);
@@ -879,20 +884,21 @@ function buildEvidence(board: BoardData, snapshotId: string): EvidenceSource[] {
     source: Pick<Evidence, "nodeId" | "sourceType" | "modelDerived"> & Partial<Evidence>,
     cluster?: RefinedCluster,
     cellIds?: string[],
+    spans = findSecretSpans(text, secrets),
   ) => {
-    const chunks = chunkText(text);
+    const chunks = chunkText(text, spans);
     // Rows of one table share its node ID; equal rows still get distinct IDs.
     const rowKey = source.sourceType === "table_row" ? `\0${source.row}` : "";
-    for (const [chunkIndex, chunk] of chunks.entries()) {
+    for (const [chunkIndex, { original, safe }] of chunks.entries()) {
       if (evidence.length >= MAX_INDEX_ENTRIES) {
         throw new Error(`Board exceeds the ${MAX_INDEX_ENTRIES}-chunk evidence limit. Ingest a smaller board or page.`);
       }
       evidence.push({ evidence: {
         ...source,
-        evidenceId: `ev_${digest(`${snapshotId}\0${source.sourceType}\0${source.nodeId}\0${source.modelDerived ? cluster?.id ?? "" : ""}\0${chunkIndex}\0${chunk}${rowKey}`).slice(0, 32)}`,
+        evidenceId: `ev_${digest(`${snapshotId}\0${source.sourceType}\0${source.nodeId}\0${source.modelDerived ? cluster?.id ?? "" : ""}\0${chunkIndex}\0${original}${rowKey}`).slice(0, 32)}`,
         snapshotId,
         nodeId: source.nodeId,
-        text: chunk,
+        text: safe,
         clusterId: cluster?.id,
         clusterLabel: cluster ? boundedText(cluster.label, 160) : undefined,
         clusterLabelModel: cluster ? isModelLabel(cluster) : undefined,
@@ -903,22 +909,23 @@ function buildEvidence(board: BoardData, snapshotId: string): EvidenceSource[] {
     }
   };
   const nodesById = new Map(board.nodes.map((node) => [node.id, node]));
-  for (const node of board.nodes) {
+  for (const [index, node] of identity.nodes.entries()) {
     if (node.hiddenDescendantIds !== undefined) continue;
     const cluster = clusterOf.get(node.id);
-    const provenance = nodeProvenance(node, nodesById);
+    const provenance = nodeProvenance(board.nodes[index], nodesById);
     const rows = node.table?.cells.length ? tableRows(node) : undefined;
     if (rows) {
       for (const { row, cells } of rows) {
         if (!cells.some((cell) => cell.text.trim())) continue;
-        append(cells.map((cell) => cell.text.replace(/\s+/g, " ").trim()).join(TABLE_CELL_SEPARATOR), {
+        const { text, spans } = evidenceRow(cells, secrets);
+        append(text, {
           ...provenance,
           nodeId: node.id,
           renderNodeId: node.renderNodeId ?? node.id,
           sourceType: "table_row",
           modelDerived: false,
           row,
-        }, cluster, cells.map((cell) => cell.id));
+        }, cluster, cells.map((cell) => cell.id), spans);
       }
     } else if (node.table?.cells.length) {
       for (const cell of node.table.cells) {
@@ -942,7 +949,7 @@ function buildEvidence(board: BoardData, snapshotId: string): EvidenceSource[] {
       append(node.name, { ...provenance, nodeId: node.id, sourceType: "board_metadata", modelDerived: false }, cluster);
     }
   }
-  for (const cluster of board.clusters) {
+  for (const [index, cluster] of board.clusters.entries()) {
     const modelDerived = isModelLabel(cluster);
     const hasOriginalText = cluster.nodeIds.some((id) => {
       const node = nodesById.get(id);
@@ -951,7 +958,7 @@ function buildEvidence(board: BoardData, snapshotId: string): EvidenceSource[] {
     if (!modelDerived && hasOriginalText) continue;
     const nodeId = cluster.nodeIds.find((id) => nodesById.get(id)?.imageRef) ?? cluster.nodeIds[0];
     if (!nodeId) continue;
-    append(cluster.summary, {
+    append(identity.clusters[index]!.summary, {
       ...nodeProvenance(nodesById.get(nodeId), nodesById),
       nodeId,
       sourceType: modelDerived ? "model_interpretation" : "cluster_summary",
@@ -1023,9 +1030,45 @@ function nodeProvenance(node: NormalizedNode | undefined, nodesById: Map<string,
   };
 }
 
-function chunkText(text: string): string[] {
+/** Keep the legacy normalized row for hashing; map cell masks through whitespace folding. */
+const TABLE_ROW_SPACE = /\s+/g;
+function evidenceRow(cells: TableCell[], secrets: readonly string[]): { text: string; spans: SecretSpan[] } {
+  let text = "";
+  const spans: SecretSpan[] = [];
+  for (const [index, cell] of cells.entries()) {
+    if (index) text += TABLE_CELL_SEPARATOR;
+    const masks = findSecretSpans(cell.text, secrets);
+    if (!masks.length) {
+      text += cell.text.replace(TABLE_ROW_SPACE, " ").trim();
+      continue;
+    }
+    const trimmed = cell.text.trim();
+    const start = cell.text.length - cell.text.trimStart().length;
+    const bounds = masks.flatMap(({ start: from, end }) => [from, end].map(pos => Math.min(trimmed.length, Math.max(0, pos - start))));
+    const positions: number[] = [];
+    let removed = 0;
+    const cellText = trimmed.replace(TABLE_ROW_SPACE, (space: string, offset: number) => {
+      while (positions.length < bounds.length && bounds[positions.length]! < offset + space.length) {
+        positions.push(Math.min(offset, bounds[positions.length]!) - removed);
+      }
+      removed += space.length - 1;
+      return " ";
+    });
+    while (positions.length < bounds.length) positions.push(bounds[positions.length]! - removed);
+    for (let i = 0; i < positions.length; i += 2) {
+      if (positions[i]! < positions[i + 1]!) spans.push({ start: text.length + positions[i]!, end: text.length + positions[i + 1]! });
+    }
+    text += cellText;
+  }
+  return { text, spans };
+}
+
+/** Legacy chunk boundaries and ID inputs stay fixed; only masked text reaches the index. */
+function chunkText(text: string, spans: readonly SecretSpan[]): Array<{ original: string; safe: string }> {
   const value = text.trim();
-  const chunks: string[] = [];
+  const base = spans.length ? text.length - text.trimStart().length : 0;
+  const chunks: Array<{ original: string; safe: string }> = [];
+  let first = 0;
   let start = 0;
   while (start < value.length) {
     let end = Math.min(value.length, start + EVIDENCE_CHUNK_CHARS);
@@ -1034,8 +1077,17 @@ function chunkText(text: string): string[] {
       if (whitespace > start + EVIDENCE_CHUNK_CHARS / 2) end = whitespace;
       if (/[\uD800-\uDBFF]/.test(value[end - 1]!)) end--;
     }
-    const chunk = value.slice(start, end).trim();
-    if (chunk) chunks.push(chunk);
+    const area = value.slice(start, end);
+    const original = area.trim();
+    if (original) {
+      let safe = original;
+      if (spans.length) {
+        const visibleStart = base + start + area.length - area.trimStart().length;
+        while (spans[first] && spans[first]!.end <= visibleStart) first++;
+        safe = maskRange(text, spans, visibleStart, visibleStart + original.length, first);
+      }
+      chunks.push({ original, safe });
+    }
     start = end;
   }
   return chunks;

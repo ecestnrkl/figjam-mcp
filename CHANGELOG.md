@@ -3,6 +3,7 @@
 ## 0.14.0 — Unreleased
 
 - Use fixed guidance for Figma request and download errors without exposing response bodies or network error text.
+- Hide configured credentials in board text before search, excerpts, and model prompts.
 
 ## 0.13.1 — 2026-11-14
 

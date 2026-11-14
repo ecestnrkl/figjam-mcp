@@ -1,8 +1,9 @@
+import { redactConfiguredSecrets } from "../lib/secrets.js";
 import type { AnswerFromBoardInput, AnswerFromBoardOutput } from "../schemas/answerFromBoard.js";
 import { figmaUrlNotices, parseBoardId } from "../schemas/common.js";
 import { getBoardOrRestore, getBoardReadWarning } from "../lib/cache.js";
 import { assertBoardKeyCase, unknownBoardMessage } from "../lib/boardLookup.js";
-import { redactBoard } from "../lib/redact.js";
+import { readBoardView } from "../lib/boardReadView.js";
 import {
   chatJson, getAnswerReasoningEffort, getTextModels, LlmUnusableReplyError, type ChatJsonOptions, type UnusableReplyReason,
 } from "../lib/llmClient.js";
@@ -79,7 +80,7 @@ export async function answerFromBoard(
   options: AnswerFromBoardOptions = {},
 ): Promise<AnswerFromBoardOutput> {
   // boardId is the file key or the board URL.
-  const input = { ...rawInput, boardId: parseBoardId(rawInput.boardId)?.fileKey ?? rawInput.boardId };
+  const input = { ...rawInput, boardId: parseBoardId(rawInput.boardId)?.fileKey ?? rawInput.boardId, question: redactConfiguredSecrets(rawInput.question) };
   options.signal?.throwIfAborted();
   const answerTopK = Math.min(readIntEnv("LLM_ANSWER_TOP_K", 15, 1), 30);
   const answerPromptMaxChars = Math.min(readIntEnv("LLM_ANSWER_PROMPT_MAX_CHARS", 40000, 4096), 60000);
@@ -87,7 +88,7 @@ export async function answerFromBoard(
   const stored = await getBoardOrRestore(input.boardId, input.snapshotId);
   if (!stored) throw new Error(await unknownBoardMessage(`Board "${input.boardId}" not found.`, input.boardId));
   // Snapshots cached before redaction existed must not reach the provider unredacted.
-  const board = redactBoard(stored);
+  const board = readBoardView(stored);
   const warning = [getBoardReadWarning(stored), ...figmaUrlNotices(rawInput.boardId).filter((notice) => notice.startsWith("The branch key"))].filter(Boolean).join(" ");
   const withReadWarning = (output: AnswerFromBoardOutput): AnswerFromBoardOutput => warning
     ? { ...output, answer: `${warning}\n\n${output.answer}` } : output;

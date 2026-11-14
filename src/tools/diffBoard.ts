@@ -3,7 +3,7 @@ import { figmaUrlNotices, parseBoardId } from "../schemas/common.js";
 import { assertBoardKeyCase, unknownBoardMessage } from "../lib/boardLookup.js";
 import { diffBoards } from "../lib/boardDiff.js";
 import { readBoardHistory, readCachedBoardState, readCachedBoard } from "../lib/persistentCache.js";
-import { redactBoard } from "../lib/redact.js";
+import { readBoardView } from "../lib/boardReadView.js";
 
 /**
  * diff_board — "what changed since the last workshop?".
@@ -58,7 +58,7 @@ export async function diffBoard(rawInput: DiffBoardInput): Promise<DiffBoardOutp
   }
 
   // A baseline cached before redaction existed must not leak through the diff.
-  const diff = diffBoards(redactBoard(baseline), redactBoard(current));
+  const diff = diffBoards(readBoardView(baseline), readBoardView(current));
 
   const [header, ...body] = diff.summaryText.split("\n\n");
   const branchNotice = figmaUrlNotices(rawInput.boardId).find((notice) => notice.startsWith("The branch key"));
