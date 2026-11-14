@@ -74,3 +74,35 @@ export function compactLabel(text: string): string {
 export function truncate(text: string, maxLength: number): string {
   return text.length <= maxLength ? text : `${text.slice(0, maxLength - 3)}...`;
 }
+
+/**
+ * Names deterministic clusters (no model label) on every ingest, including reused
+ * and cached ones. A cluster with at least two text nodes in one named innermost
+ * section is named after it: the section name if it is the section's only cluster,
+ * else "<section>: <first text>". Other clusters take their first text or name.
+ */
+export function labelDeterministicClusters(clusters: RefinedCluster[], clusterNodes: NormalizedNode[][],
+  nodes: NormalizedNode[]): RefinedCluster[] {
+  const sectionNames = new Map(nodes.filter((node) => node.type === "SECTION")
+    .map((node) => [node.id, node.name.replace(/\s+/g, " ").trim()]));
+  const sections = clusterNodes.map((members) => innermostSection(members, sectionNames));
+  const clustersPerSection = new Map<string, number>();
+  for (const id of sections) if (id) clustersPerSection.set(id, (clustersPerSection.get(id) ?? 0) + 1);
+  return clusters.map((cluster, index) => {
+    if (cluster.summarySource !== "deterministic" || cluster.modelId) return cluster;
+    const members = clusterNodes[index]!;
+    const texts = textSnippets(inReadingOrder(members));
+    const sectionId = sections[index];
+    if (!sectionId || texts.length < 2) return { ...cluster, label: fallbackLabel(cluster.id, members) };
+    const section = sectionNames.get(sectionId)!;
+    const label = clustersPerSection.get(sectionId) === 1 ? section : `${truncate(section, 40)}: ${compactLabel(texts[0]!)}`;
+    return { ...cluster, label: truncate(label, 80) };
+  });
+}
+
+/** The innermost section shared by all members; an unnamed section counts as none. */
+function innermostSection(members: NormalizedNode[], sectionNames: Map<string, string>): string | undefined {
+  const ids = new Set(members.map((node) => node.sectionIds?.at(-1)));
+  const [id] = ids;
+  return ids.size === 1 && id && sectionNames.get(id) ? id : undefined;
+}

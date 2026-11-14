@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.14.0 — Unreleased
+
+- Hide configured credentials in board text before search, excerpts, and model prompts.
+
 ## 0.13.1 — 2026-11-14
 
 - Retry transient Windows filesystem errors on cache write locks and report persistent permission errors with the affected path inside the cache directory.

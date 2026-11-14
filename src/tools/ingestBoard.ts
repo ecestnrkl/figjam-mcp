@@ -10,7 +10,7 @@ import {
   llmBaseUrlProblem, llmPaymentMessage, missingLlmConfigurationMessage, validateLlmConfiguration, validateLlmRuntimeConfiguration,
 } from "../lib/llmClient.js";
 import { flattenNodeTree } from "../lib/nodeTree.js";
-import { compactLabel, fallbackLabel, inReadingOrder, refineClusterFromText, textSnippets, truncate } from "../lib/clusterText.js";
+import { labelDeterministicClusters, refineClusterFromText } from "../lib/clusterText.js";
 import { partitionedBoardClusters } from "../lib/spatialCluster.js";
 import { refineClusterWithVision } from "../lib/visionInterpreter.js";
 import { prepareRenders, prepareVisionImage } from "../lib/visionImages.js";
@@ -18,6 +18,7 @@ import { mapClustersToPhases } from "../lib/docStructureMapper.js";
 import { buildClusterRelations, extractConnectorEdges } from "../lib/connectorGraph.js";
 import { setBoard } from "../lib/cache.js";
 import { deterministicRedactedCluster, hasProtectedTableValue, redactBoard, redactNodes } from "../lib/redact.js";
+import { boardIdentitySource, readBoardView } from "../lib/boardReadView.js";
 import { readIntEnv } from "../lib/env.js";
 import { missingEnvironmentHint } from "../lib/envFile.js";
 import { redactMessage, validateHeaderSecret, withSecretScope } from "../lib/secrets.js";
@@ -877,38 +878,6 @@ function reuseCluster(
   };
 }
 
-/**
- * Names deterministic clusters (no model label) on every ingest, including reused
- * and cached ones. A cluster with at least two text nodes in one named innermost
- * section is named after it: the section name if it is the section's only cluster,
- * else "<section>: <first text>". Other clusters take their first text or name.
- */
-function labelDeterministicClusters(clusters: RefinedCluster[], clusterNodes: NormalizedNode[][],
-  nodes: NormalizedNode[]): RefinedCluster[] {
-  const sectionNames = new Map(nodes.filter((node) => node.type === "SECTION")
-    .map((node) => [node.id, node.name.replace(/\s+/g, " ").trim()]));
-  const sections = clusterNodes.map((members) => innermostSection(members, sectionNames));
-  const clustersPerSection = new Map<string, number>();
-  for (const id of sections) if (id) clustersPerSection.set(id, (clustersPerSection.get(id) ?? 0) + 1);
-  return clusters.map((cluster, index) => {
-    if (cluster.summarySource !== "deterministic" || cluster.modelId) return cluster;
-    const members = clusterNodes[index]!;
-    const texts = textSnippets(inReadingOrder(members));
-    const sectionId = sections[index];
-    if (!sectionId || texts.length < 2) return { ...cluster, label: fallbackLabel(cluster.id, members) };
-    const section = sectionNames.get(sectionId)!;
-    const label = clustersPerSection.get(sectionId) === 1 ? section : `${truncate(section, 40)}: ${compactLabel(texts[0]!)}`;
-    return { ...cluster, label: truncate(label, 80) };
-  });
-}
-
-/** The innermost section shared by all members; an unnamed section counts as none. */
-function innermostSection(members: NormalizedNode[], sectionNames: Map<string, string>): string | undefined {
-  const ids = new Set(members.map((node) => node.sectionIds?.at(-1)));
-  const [id] = ids;
-  return ids.size === 1 && id && sectionNames.get(id) ? id : undefined;
-}
-
 function buildQualityReport(
   clusters: RefinedCluster[],
   cachedClusters: number,
@@ -945,20 +914,24 @@ function buildQualityReport(
 const LARGEST_SECTIONS_IN_SUMMARY = 8;
 
 function buildSummary(board: BoardData, qualityReport: IngestQualityReport, contentChanged?: boolean, paymentMessage?: string): string {
-  const { fileKey, snapshotId, clusters, docStructureHint, ingestMode } = board;
-  // get_board_context reads redactBoard(board); counting on that object builds its search index once.
-  const { largestLine: largestSections, outsideSections } = sectionGuide(redactBoard(board), LARGEST_SECTIONS_IN_SUMMARY);
+  const view = readBoardView(board);
+  // The persisted board already had the pattern rules applied. Preserve its
+  // summary wording unless exact credential masking produced a new view.
+  const display = boardIdentitySource(view) === view ? board : view;
+  const { fileKey, snapshotId, clusters, docStructureHint, ingestMode } = display;
+  // Counting on the same read view that context uses builds its index once.
+  const { largestLine: largestSections, outsideSections } = sectionGuide(view, LARGEST_SECTIONS_IN_SUMMARY);
   const labels = clusters.map((cluster) => `"${cluster.label}"`);
   const shownLabels = labels.slice(0, 8).join(", ") + (labels.length > 8 ? ", ..." : "");
   const settings = `(docStructureHint=${docStructureHint}${ingestMode ? `, ingestMode=${ingestMode}` : ""})`;
-  const overview = !clusters.length && !retrieveEvidence(redactBoard(board)).evidence.length ? "The board contains no readable content."
+  const overview = !clusters.length && !retrieveEvidence(view).evidence.length ? "The board contains no readable content."
     : largestSections
     ? `${clusters.length} cluster${clusters.length === 1 ? "" : "s"} ${settings}. ${largestSections} ` +
       "get_board_context without parameters gives bounded page and section guidance with IDs and one reusable page-read call; it is not a complete section directory. Use that call for each listed page and repeat unchanged with nextCursor; page reads include content outside sections. answer_from_board is for one specific question." +
       (outsideSections ? ` ${outsideSections} excerpt${outsideSections === 1 ? " lies" : "s lie"} outside sections; read ` +
         `${outsideSections === 1 ? "it" : "them"} with get_board_context and outsideSections: true.` : "")
     : `${clusters.length} cluster${clusters.length === 1 ? "" : "s"} - ${shownLabels} ${settings}.`;
-  const hiddenNote = board.nodes.filter((node) => node.hiddenDescendantIds).map((node) => ` ${sectionReference(node)}: ${hiddenSectionNotice(node.hiddenDescendantIds!.length)}.`).join("");
+  const hiddenNote = display.nodes.filter((node) => node.hiddenDescendantIds).map((node) => ` ${sectionReference(node)}: ${hiddenSectionNotice(node.hiddenDescendantIds!.length)}.`).join("");
   const fallbackNote =
     qualityReport.fallbackCount > 0
       ? ` Visual interpretation is incomplete for ${qualityReport.fallbackCount} cluster${qualityReport.fallbackCount === 1 ? "" : "s"}: ${describeFallbackReasons(qualityReport.fallbackReasons)}.`
