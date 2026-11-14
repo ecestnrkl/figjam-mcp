@@ -44,6 +44,13 @@ export function getBoard(boardId: string): BoardData | undefined {
   return board;
 }
 
+export class SnapshotNotInHistoryError extends Error {
+  constructor(boardId: string, snapshotId: string) {
+    super(`Snapshot ${snapshotId.slice(0, 12)} of board "${boardId}" is missing from local history. It may have aged out or the ID may be incomplete. `
+      + "Omit snapshotId to read the latest ingest, or run ingest_board.");
+  }
+}
+
 /** Check the published head before serving a mutable latest-board request from memory. */
 export async function getBoardOrRestore(boardId: string, snapshotId?: string): Promise<BoardData | undefined> {
   const inMemory = getBoard(boardId);
@@ -60,7 +67,7 @@ export async function getBoardOrRestore(boardId: string, snapshotId?: string): P
   if (!persisted) {
     if (state.damaged && snapshotId) throw new Error(`The requested snapshot of board "${boardId}" cannot be read (damaged files); run ingest_board to rebuild it.`);
     if (state.damaged) throw new Error(`The cached snapshots of board "${boardId}" cannot be read (damaged files); run ingest_board to rebuild them.`);
-    if (snapshotId) throw new Error("Snapshot is no longer available. Start a new context query against the latest ingest.");
+    if (snapshotId) throw new SnapshotNotInHistoryError(boardId, snapshotId);
     if (await hasLegacyBoard(boardId)) throw new Error("This board uses cache v3. Run ingest_board again to capture complete sources for cache v4; old files are preserved.");
     return undefined;
   }

@@ -3,6 +3,11 @@
 ## 0.13.1 — Unreleased
 
 - Retry transient Windows filesystem errors when acquiring, recovering, and cleaning up cache write locks.
+- Explain model HTTP 402 errors in diagnostics, ingest summaries, and answers, with a short URL-free provider reason and OpenRouter account credit guidance.
+- Identify missing snapshots by their ID prefix and board, and explain how to restart a snapshot or cursor read.
+- Explain which Node.js versions support environment proxies and system certificates in Figma connection errors.
+- Report the Node.js version and proxy status in `diagnose_llm_config` without exposing proxy values.
+- Show the plan tier and rate limit type from Figma HTTP 429 responses when available.
 
 ## 0.13.0 — 2026-11-13
 

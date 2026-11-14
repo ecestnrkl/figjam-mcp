@@ -457,7 +457,7 @@ describe("getBoardContext", () => {
       await expect(getBoardContext({ boardId: "Large300", limit: 5, cursor: changed })).rejects.toThrow(hint);
     }
     await expect(getBoardContext({ boardId: "Large300", limit: 5, cursor: `${version}.${representation}.${page}.${offset}.${"0".repeat(12)}.${check}` }))
-      .rejects.toThrow("The snapshot of this cursor is no longer available. Start again without a cursor.");
+      .rejects.toThrow("The cursor's snapshot is missing from local history or the cursor was changed. Start again without a cursor.");
   });
 
   it("accepts a base64url cursor of 0.9.x and continues on the same page", async () => {

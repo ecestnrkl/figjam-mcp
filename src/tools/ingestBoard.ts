@@ -6,8 +6,8 @@ import type { Cluster, IngestFocusReport, IngestMode, IngestQualityReport, Norma
 import { fetchFileTree, fetchRenderUrls, downloadRenders, fetchImageRefs, downloadOriginals, FigmaApiError, FigmaDownloadBudgetError,
   FigmaRenderUnavailableError, FigmaTimeoutError, IMAGE_MAX_BYTES, INGEST_IMAGE_MAX_BYTES, type OriginalImage, type RenderUrls } from "../lib/figmaApi.js";
 import {
-  LLMConfigurationError, LlmBaseUrlError, LlmRequestError, LlmTimeoutError, LlmUnusableReplyError, llmBaseUrlProblem, missingLlmConfigurationMessage, validateLlmConfiguration,
-  validateLlmRuntimeConfiguration,
+  LLMConfigurationError, LlmBaseUrlError, LlmPaymentError, LlmRequestError, LlmTimeoutError, LlmUnusableReplyError,
+  llmBaseUrlProblem, llmPaymentMessage, missingLlmConfigurationMessage, validateLlmConfiguration, validateLlmRuntimeConfiguration,
 } from "../lib/llmClient.js";
 import { flattenNodeTree } from "../lib/nodeTree.js";
 import { compactLabel, fallbackLabel, inReadingOrder, refineClusterFromText, textSnippets, truncate } from "../lib/clusterText.js";
@@ -256,7 +256,8 @@ async function performIngest(input: IngestBoardInput, options: OperationOptions)
   // Successful durations of this ingest: a whole cluster, and its model step alone.
   const clusterDurations: number[] = [];
   const modelDurations: number[] = [];
-  const modelFailures = new Set<string>();
+  const failureNotices = new Set<string>();
+  let paymentMessage: string | undefined;
   const renderRequests: Array<Promise<RenderUrls>> = [];
   // Render requests are shared by several clusters, so they end with the vision
   // phase or the ingest rather than with one cluster's work.
@@ -437,7 +438,9 @@ async function performIngest(input: IngestBoardInput, options: OperationOptions)
         clusterDurations.push(finishedAt - clusterStartedAt);
       } catch (error) {
         signal?.throwIfAborted();
-        if (error instanceof LlmRequestError && error.name === "LlmModelNotFoundError") modelFailures.add(error.message);
+        if (error instanceof LlmRequestError && error.name === "LlmModelNotFoundError") failureNotices.add(error.message);
+        if (error instanceof LlmPaymentError) paymentMessage ??= error.message;
+        if (error instanceof FigmaApiError && error.rateLimitDetails) failureNotices.add(error.rateLimitDetails);
         const reason = classifyVisionFailure(error, stage);
         const retryDelay = reason !== "payment" && (error instanceof FigmaApiError || error instanceof LlmRequestError) ? error.retryAfter : undefined;
         const retryAt = reason !== "payment" && (error instanceof FigmaApiError || error instanceof LlmRequestError) ? error.retryAt : undefined;
@@ -470,7 +473,8 @@ async function performIngest(input: IngestBoardInput, options: OperationOptions)
   await progress("persist", 4);
   const historyReset = await publishBoard(board, signal);
   await complete();
-  return ingestResult(board, contentChanged, historyReset, [conversionNote, ...modelFailures].filter(Boolean).join(" "));
+  return ingestResult(board, contentChanged, historyReset,
+    [conversionNote, ...failureNotices].filter(Boolean).join(" "), paymentMessage);
 }
 async function publishBoard(board: BoardData, signal?: AbortSignal): Promise<boolean> {
   signal?.throwIfAborted();
@@ -498,15 +502,15 @@ function persistenceFailureMessage(error: unknown): string {
   return `${prefix}${code ? `${redactMessage(code)}: ` : ""}${message || "unknown error"}; retry ingest_board.`;
 }
 const HISTORY_RESET_NOTICE = "The cache manifest cannot be read (damaged file); snapshot history has restarted; run ingest_board again after edits to record changes.";
-function ingestResult(board: BoardData, contentChanged?: boolean, historyReset = false, conversionNote?: string): IngestBoardOutput {
+function ingestResult(board: BoardData, contentChanged?: boolean, historyReset = false, notices?: string, paymentMessage?: string): IngestBoardOutput {
   const qualityReport = board.qualityReport ?? buildQualityReport(board.clusters, 0);
   return { boardId: board.boardId, ingestMode: board.ingestMode, clusterCount: board.clusters.length,
     relationCount: board.clusterRelations?.length ?? 0, qualityReport,
     snapshotId: board.snapshotId, figmaVersion: board.figmaVersion,
     freshnessCheckedAt: board.freshnessCheckedAt === undefined ? undefined : new Date(board.freshnessCheckedAt).toISOString(),
     persistenceWarning: board.persistenceWarning,
-    summary: buildSummary(board, qualityReport, historyReset ? undefined : contentChanged) + (historyReset ? ` ${HISTORY_RESET_NOTICE}` : "")
-      + (conversionNote ? ` ${conversionNote}` : "") };
+    summary: buildSummary(board, qualityReport, historyReset ? undefined : contentChanged, paymentMessage) + (historyReset ? ` ${HISTORY_RESET_NOTICE}` : "")
+      + (notices ? ` ${notices}` : "") };
 }
 
 type VisionStage = "render" | "model";
@@ -929,7 +933,7 @@ function buildQualityReport(
 /** Boards with sections are summarized by their largest sections, the way to read them next. */
 const LARGEST_SECTIONS_IN_SUMMARY = 8;
 
-function buildSummary(board: BoardData, qualityReport: IngestQualityReport, contentChanged?: boolean): string {
+function buildSummary(board: BoardData, qualityReport: IngestQualityReport, contentChanged?: boolean, paymentMessage?: string): string {
   const { fileKey, snapshotId, clusters, docStructureHint, ingestMode } = board;
   // get_board_context reads redactBoard(board); counting on that object builds its search index once.
   const { largestLine: largestSections, outsideSections } = sectionGuide(redactBoard(board), LARGEST_SECTIONS_IN_SUMMARY);
@@ -948,7 +952,7 @@ function buildSummary(board: BoardData, qualityReport: IngestQualityReport, cont
     qualityReport.fallbackCount > 0
       ? ` Visual interpretation is incomplete for ${qualityReport.fallbackCount} cluster${qualityReport.fallbackCount === 1 ? "" : "s"}: ${describeFallbackReasons(qualityReport.fallbackReasons)}.`
         + ` Original extracted texts, tables and node references remain available for search.`
-        + describeNextSteps(qualityReport)
+        + describeNextSteps(qualityReport, paymentMessage)
       : "";
   const changeNote = board.persistenceWarning || contentChanged === undefined ? ""
     : contentChanged ? ` The board content changed since the previous ingest; call diff_board with boardId ${fileKey} to see what changed.`
@@ -1010,14 +1014,14 @@ function describeFallbackReasons(reasons?: Record<string, number>): string {
 /** Reasons that a new run repeats until a setting, key, token or plan is changed. */
 const NEEDS_CHANGE_REASONS: ReadonlySet<string> = new Set(["config", "auth", "figma_auth", "payment", "base_url"]);
 
-function describeNextSteps(report: IngestQualityReport): string {
+function describeNextSteps(report: IngestQualityReport, paymentMessage?: string): string {
   const reasons = report.fallbackReasons ?? {};
   const instructions: string[] = [];
   if (reasons.config) instructions.push(`${missingLlmConfigurationMessage() ?? llmBaseUrlProblem() ?? "Check the model settings."} diagnose_llm_config can test the configured model provider.`);
   if (reasons.base_url) instructions.push("Check LLM_BASE_URL, then run diagnose_llm_config.");
   if (reasons.auth) instructions.push("Check LLM_API_KEY and the key's access to the configured models; diagnose_llm_config can test the configured model provider.");
   if (reasons.figma_auth) instructions.push("Check FIGMA_ACCESS_TOKEN: it needs the scope file_content:read, and its account must be able to open the file.");
-  if (reasons.payment) instructions.push("Add credits or raise the API key's credit limit at the model provider, or choose a free model; diagnose_llm_config can test the configured model provider.");
+  if (reasons.payment) instructions.push(paymentMessage ?? llmPaymentMessage());
   if (report.nextRetryAt) {
     const wait = `Retry after ${describeWaitUntil(report.nextRetryAt)}`;
     instructions.push(reasons.figma_rate_limit && reasons.rate_limit

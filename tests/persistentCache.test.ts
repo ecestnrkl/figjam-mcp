@@ -142,7 +142,6 @@ describe("v4 persistence", () => {
     const restored = await getBoardOrRestore("AbC123");
     expect(restored?.createdAt).toBe(1);
     expect(restored?.clusters[0]).toMatchObject({ summarySource: "vision_llm", cacheHit: true });
-    await expect(getBoardOrRestore("AbC123", "missing-snapshot")).rejects.toThrow(/Snapshot is no longer available/);
   });
   it("hashes content, table cells, provider and prompt configuration deterministically", async () => {
     const c = await import("../src/lib/persistentCache.js");

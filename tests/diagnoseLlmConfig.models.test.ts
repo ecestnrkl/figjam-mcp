@@ -8,6 +8,7 @@ vi.mock("../src/lib/llmClient.js", async (importOriginal) => ({
 const { diagnoseLlmConfig } = await import("../src/tools/diagnoseLlmConfig.js");
 
 beforeEach(() => {
+  for (const name of ["HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy"]) vi.stubEnv(name, undefined);
   for (const name of ["LLM_MODEL_PRESET", "LLM_TEXT_MODELS", "LLM_FAST_TEXT_MODELS", "LLM_VISION_MODELS", "LLM_TEXT_MODEL", "LLM_VISION_MODEL"]) {
     vi.stubEnv(name, "");
   }

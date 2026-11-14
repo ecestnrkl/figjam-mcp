@@ -26,13 +26,35 @@ const { diagnoseLlmConfig } = await import("../src/tools/diagnoseLlmConfig.js");
 
 beforeEach(() => {
   chatJsonMock.mockReset();
+  for (const key of ["HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy", "NODE_USE_ENV_PROXY", "NODE_OPTIONS"]) vi.stubEnv(key, undefined);
 });
 afterEach(() => {
   vi.useRealTimers();
   vi.unstubAllEnvs();
+  vi.restoreAllMocks();
 });
 
 describe("diagnoseLlmConfig", () => {
+  it.each([
+    { version: "22.20.0", variable: "HTTPS_PROXY", enabled: "1", active: false, hint: "Node.js 22.20.0 is too old for NODE_USE_ENV_PROXY." },
+    { version: "22.21.0", variable: "HTTP_PROXY", enabled: "1", active: true },
+    { version: "24.0.0", variable: "https_proxy", enabled: "1", active: true },
+    { version: "24.6.0", variable: "HTTPS_PROXY", enabled: undefined, active: false, hint: "Node ignores HTTPS_PROXY and HTTP_PROXY unless NODE_USE_ENV_PROXY=1." },
+    { version: "24.6.0", variable: undefined, enabled: "1", active: false },
+  ])("reports proxy configuration and activity on Node $version ($variable, enabled=$enabled)", async ({ version, variable, enabled, active, hint }) => {
+    vi.stubGlobal("process", Object.create(process, { versions: { value: { ...process.versions, node: version } } }));
+    try {
+      vi.stubEnv("NODE_USE_ENV_PROXY", enabled);
+      if (variable) vi.stubEnv(variable, "http://private-user:private-password@proxy.invalid:8080");
+      chatJsonMock.mockResolvedValueOnce({ result: 42 }).mockResolvedValueOnce({ result: 63 }).mockResolvedValueOnce({ dominantColor: "blue" });
+      const result = await diagnoseLlmConfig();
+      expect(result.network).toEqual({ nodeVersion: version, proxyConfigured: Boolean(variable), proxyActive: active });
+      const summary = "LLM configuration OK (student-free).";
+      expect(result.summary).toBe(hint ? `${summary}\n${hint}${version === "22.20.0"
+        ? " For fetch(), use Node.js 22.21.0+ on the 22.x line or 24.0.0+." : " Set the proxy and NODE_USE_ENV_PROXY before Node starts."}` : summary);
+      expect(JSON.stringify(result)).not.toMatch(/private-user|private-password|proxy\.invalid/);
+    } finally { vi.unstubAllGlobals(); }
+  });
   it("sends a 64x64 diagnostic PNG containing only pure opaque blue", async () => {
     chatJsonMock.mockResolvedValue({});
     await diagnoseLlmConfig();

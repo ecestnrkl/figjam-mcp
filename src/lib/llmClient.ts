@@ -25,6 +25,9 @@ export class LlmRequestError extends Error {
   /** retryAfter is the wait in seconds the provider named, if any. */
   constructor(message: string, readonly status?: number, readonly retryAfter?: number, readonly retryAt?: number) { super(message); }
 }
+export class LlmPaymentError extends LlmRequestError {
+  constructor(message: string, retryAfter?: number) { super(message, 402, retryAfter); }
+}
 /**
  * LLM_BASE_URL does not lead to a working OpenAI-compatible API: no connection, a wrong path, or a body that is no
  * JSON object. Another model at the same URL cannot help.
@@ -91,9 +94,8 @@ export interface ChatJsonOptions {
   onUsage?: (usage: { model: string; promptTokens?: number; completionTokens?: number; totalTokens?: number }) => void;
   onRequest?: (model: string) => void;
   /**
-   * Called for every candidate that fails, in order, with the provider's message (message, code and
-   * metadata.provider_name, at most 200 characters) or else the error message. Only for synthetic requests:
-   * provider text can echo the prompt.
+   * Called for every candidate that fails, in order. Includes the provider's message for diagnostics
+   * when available, or the normalized error (including for HTTP 402). Only for synthetic requests.
    */
   onModelFailed?: (model: string, message: string) => void;
   /** Optional caller-owned cancellation, e.g. an ingest phase deadline. */
@@ -257,9 +259,9 @@ export async function chatJson(
           throw abortReason(options.signal, error);
         }
         errors.push(error);
-        const normalized = normalizeLlmError(error, candidate, options.modelRole);
-        options.onModelFailed?.(candidate, describeProviderError(error)
-          ?? withoutDiagnoseHint(errorMessage(normalized)));
+        const normalized = normalizeLlmError(error, candidate, options.modelRole, llm.baseURL);
+        options.onModelFailed?.(candidate, normalized instanceof LlmPaymentError ? normalized.message
+          : describeProviderError(error) ?? withoutDiagnoseHint(errorMessage(normalized)));
         const recoverable = shouldTryNextModel(error) && remainingMs(requestOptions) >= MIN_REQUEST_TIMEOUT_MS;
         // A router picks a model per request, so one more request can reach a working one.
         // Rate limits have their own backoff in createCompletion.
@@ -470,9 +472,6 @@ function isProviderReturnedError(error: unknown): boolean {
 function describeProviderError(error: unknown): string | undefined {
   const body = providerErrorBody(error);
   if (!body) return undefined;
-  // A bare payment code has no provider explanation; use our actionable message.
-  if ((error instanceof OpenAI.APIError || error instanceof LlmRequestError) && error.status === 402 &&
-    (typeof body.message !== "string" || !body.message.trim())) return undefined;
   const metadata = body.metadata && typeof body.metadata === "object" ? body.metadata as Record<string, unknown> : {};
   const parts = [
     typeof body.message === "string" ? body.message : undefined,
@@ -525,7 +524,20 @@ function withoutDiagnoseHint(message: string): string {
   return message.endsWith(` ${DIAGNOSE_HINT}`) ? message.slice(0, -DIAGNOSE_HINT.length - 1) : message;
 }
 
-function normalizeLlmError(error: unknown, model?: string, role?: LlmRole): unknown {
+function normalizeLlmError(error: unknown, model?: string, role?: LlmRole, baseUrl?: string): unknown {
+  if ((error instanceof OpenAI.APIError || error instanceof LlmRequestError) && error.status === 402) {
+    const detail = providerErrorBody(error)?.message ?? (error instanceof OpenAI.APIError
+      ? error.error ?? error.message.replace(/^402 (?:status code \(no body\)$)?/, "") : undefined);
+    const reason = typeof detail === "string" ? redactMessage(detail)
+      .replace(/,\s+or fewer max_tokens\b/gi, "")
+      .replace(/\s+To increase, visit\b[\s\S]*$/i, "")
+      .replace(/\s*[(\[<]?(?:[a-z][a-z\d+.-]*:\/\/|\bwww\.)[^\s<>"']+>?/gi, url => /[.!?]$/.test(url) ? url.slice(-1) : "")
+      .replace(/\s+/g, " ").trim() : "";
+    const excerpt = reason.length > 200 ? `${reason.slice(0, 199).trimEnd()}…` : reason;
+    const waitMs = error instanceof OpenAI.APIError ? parseRetryAfter(headerValue("retry-after", error.headers, error.error)) : undefined;
+    return new LlmPaymentError(llmPaymentMessage(baseUrl) + (excerpt ? ` Provider reason: ${excerpt}` : ""),
+      error instanceof LlmRequestError ? error.retryAfter : waitMs === undefined ? undefined : Math.ceil(waitMs / 1000));
+  }
   if (!(error instanceof LlmBaseUrlError) && role && model &&
       (error instanceof OpenAI.APIError || error instanceof LlmRequestError) && error.status === 404) {
     const message = redactMessage(`LLM request failed (HTTP 404): model ${model} was not found or has no available endpoint. Check ${modelSettingForRole(role, model)}. ${DIAGNOSE_HINT}`);
@@ -538,10 +550,7 @@ function normalizeLlmError(error: unknown, model?: string, role?: LlmRole): unkn
   const now = Date.now();
   const timing = status === 429 ? rateLimitTiming(error.headers, error.error, now) : undefined;
   const waitMs = timing?.waitMs ?? parseRetryAfter(headerValue("retry-after", error.headers, error.error), now);
-  const message = status === 402
-    ? "LLM request failed (HTTP 402): the model provider requires payment or more credits for this model. "
-      + "Add credits or raise the API key's credit limit, or use a free model."
-    : status === 401
+  const message = status === 401
       ? "LLM request failed (HTTP 401): the model provider rejected LLM_API_KEY. "
         + `Check the key in your MCP client configuration and restart the server. ${DIAGNOSE_HINT}`
     : status === 403
@@ -553,6 +562,15 @@ function normalizeLlmError(error: unknown, model?: string, role?: LlmRole): unkn
         + `Unset LLM_ANSWER_REASONING_EFFORT, choose another value or another model. ${DIAGNOSE_HINT}`
     : `LLM request failed (HTTP ${status ?? "unknown"}). Check provider availability and configuration. ${DIAGNOSE_HINT}`;
   return new LlmRequestError(redactMessage(message), status, waitMs === undefined ? undefined : Math.ceil(waitMs / 1000), timing?.retryAt);
+}
+
+export function llmPaymentMessage(baseUrl = process.env.LLM_BASE_URL): string {
+  const message = "LLM request failed (HTTP 402): the model provider requires payment or more credits for this model. ";
+  if (baseUrl && URL.parse(baseUrl)?.hostname === "openrouter.ai") {
+    return message + "Before routing a paid request, OpenRouter checks whether your account balance covers the estimated cost, including the requested maximum output tokens up to its per-request cap. "
+      + "Remaining API key credit alone is insufficient. Check your OpenRouter account balance and add credits if needed.";
+  }
+  return message + "Check your account balance and billing settings with the provider, and add credits if needed.";
 }
 
 function rateLimitMessage(retryAt: number | undefined): string {

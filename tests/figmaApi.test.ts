@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); vi.resetModules(); vi.unstubAllGlobals(); });
+afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); vi.resetModules(); vi.unstubAllEnvs(); vi.unstubAllGlobals(); });
 function json(data: unknown): Response { return new Response(JSON.stringify(data)); }
 async function failure(request: Promise<unknown>): Promise<Error & { retryAfter?: number; retryAt?: number }> {
   return request.then(() => { throw new Error("expected the request to fail"); }, (error: unknown) => error as Error & { retryAfter?: number; retryAt?: number });
@@ -59,6 +59,20 @@ describe("bounded Figma requests", () => {
       const { fetchFileTree } = await import("../src/lib/figmaApi.js");
       await expect(fetchFileTree("AbC123", "secret")).rejects.toMatchObject({ status: 429 });
       expect(mock).toHaveBeenCalledTimes(1);
+    });
+    it.each([
+      { plan: "starter", type: "low", expected: "plan tier starter and rate limit type low" },
+      { plan: "future-plan", type: undefined, expected: "plan tier future-plan" },
+      { plan: undefined, type: "future-limit", expected: "rate limit type future-limit" },
+    ])("shows $expected alongside the wait", async ({ plan, type, expected }) => {
+      const headers = new Headers({ "Retry-After": "30" });
+      if (plan) headers.set("X-Figma-Plan-Tier", plan);
+      if (type) headers.set("X-Figma-Rate-Limit-Type", type);
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("", { status: 429, headers })));
+      const { fetchFileTree } = await import("../src/lib/figmaApi.js");
+      const error = await failure(fetchFileTree("AbC123", "synthetic-token"));
+      expect(error.message).toContain("Retry after 30 seconds.");
+      expect(error.message).toContain(`Figma reports ${expected}.`);
     });
   });
   describe("Figma server errors", () => {
@@ -293,8 +307,10 @@ it.each([
   ["ETIMEDOUT", "connection timed out"],
   ["CERT_HAS_EXPIRED", "certificate"],
 ])("explains Figma network failure %s without exposing tokens or proxy credentials", async (code, cause) => {
+  vi.stubGlobal("process", Object.create(process, { versions: { value: { ...process.versions, node: "24.6.0" } } }));
   vi.stubEnv("HTTPS_PROXY", "http://proxy-user:proxy-password@proxy.invalid:8080");
   vi.stubEnv("NODE_USE_ENV_PROXY", undefined);
+  vi.stubEnv("NODE_USE_SYSTEM_CA", undefined);
   const failureCause = Object.assign(new Error("private network detail proxy-password"), { code });
   vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new TypeError("fetch failed", { cause: failureCause })));
   const { fetchFileTree } = await import("../src/lib/figmaApi.js");
@@ -308,6 +324,28 @@ it.each([
   vi.unstubAllEnvs();
 });
 
+it.each([
+  ["22.12.0", true, true],
+  ["22.18.0", true, true],
+  ["22.19.0", true, false],
+  ["22.21.0", false, false],
+  ["24.0.0", false, true],
+  ["24.5.0", false, true],
+  ["24.6.0", false, false],
+] as const)("explains unsupported startup settings in a TLS failure on Node %s", async (version, proxyTooOld, systemCaTooOld) => {
+  vi.stubGlobal("process", Object.create(process, { versions: { value: { ...process.versions, node: version } } }));
+  vi.stubEnv("HTTPS_PROXY", "http://proxy.invalid:8080");
+  vi.stubEnv("NODE_USE_ENV_PROXY", "1");
+  vi.stubEnv("NODE_USE_SYSTEM_CA", "1");
+  const cause = Object.assign(new Error("certificate failed"), { code: "CERT_HAS_EXPIRED" });
+  vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new TypeError("fetch failed", { cause })));
+  const { fetchFileTree } = await import("../src/lib/figmaApi.js");
+  const { message } = await failure(fetchFileTree("AbC123", "synthetic-token"));
+  expect(message.includes(`Node.js ${version} is too old for NODE_USE_ENV_PROXY. For fetch(), use Node.js 22.21.0+ on the 22.x line or 24.0.0+.`)).toBe(proxyTooOld);
+  expect(message.includes(`Node.js ${version} is too old for NODE_USE_SYSTEM_CA. Use Node.js 22.19.0+ on the 22.x line or 24.6.0+.`)).toBe(systemCaTooOld);
+  expect(message).not.toMatch(/Try NODE_USE_SYSTEM_CA|proxy\.invalid/);
+});
+
 it("allows the server's default file timeout to finish before a 60-second client timeout", async () => {
   vi.stubEnv("FIGMA_FILE_REQUEST_TIMEOUT_MS", undefined);
   const timeout = vi.spyOn(AbortSignal, "timeout");
@@ -319,6 +357,7 @@ it("allows the server's default file timeout to finish before a 60-second client
 });
 
 it.each([false, true])("explains a Figma timeout with the proxy enabled=%s", async (enabled) => {
+  vi.stubGlobal("process", Object.create(process, { versions: { value: { ...process.versions, node: "24.6.0" } } }));
   vi.stubEnv("HTTPS_PROXY", "http://user:synthetic-secret@proxy.invalid:8080");
   vi.stubEnv("NODE_USE_ENV_PROXY", enabled ? "1" : undefined);
   vi.stubEnv("FIGMA_FILE_REQUEST_TIMEOUT_MS", undefined);
@@ -332,6 +371,7 @@ it.each([false, true])("explains a Figma timeout with the proxy enabled=%s", asy
 });
 
 it.each(["https_proxy", "http_proxy"])("explains the lowercase %s proxy", async (variable) => {
+  vi.stubGlobal("process", Object.create(process, { versions: { value: { ...process.versions, node: "24.6.0" } } }));
   for (const key of ["HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy", "NODE_USE_ENV_PROXY"]) vi.stubEnv(key, undefined);
   vi.stubEnv(variable, "http://proxy.invalid:8080");
   vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new TypeError("fetch failed")));

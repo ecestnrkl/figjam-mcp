@@ -26,6 +26,11 @@ export const diagnoseLlmConfigOutputShape = {
     }),
   ),
   summary: z.string(),
+  network: z.object({
+    nodeVersion: z.string(),
+    proxyConfigured: z.boolean(),
+    proxyActive: z.boolean(),
+  }).optional().describe("Node.js version and environment proxy status, without proxy values"),
   ...ignoredArgumentsShape,
 };
 

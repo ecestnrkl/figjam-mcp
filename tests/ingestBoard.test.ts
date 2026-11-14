@@ -578,7 +578,7 @@ describe("ingestBoard", () => {
     expect(output.qualityReport).toMatchObject({ fallbackReasons: { payment: 10 }, visionClusters: 7, incompleteClusters: 10 });
     expect(output.qualityReport?.nextRetryAt).toBeUndefined();
     expect(output.summary).toContain("Visual interpretation is incomplete for 10 clusters: the model provider requires payment or more credits.");
-    expect(output.summary).toContain("Add credits or raise the API key's credit limit at the model provider, or choose a free model; diagnose_llm_config can test the configured model provider.");
+    expect(output.summary).toContain("Check your OpenRouter account balance and add credits if needed.");
     expect(output.summary).toContain("After that, run ingest_board again; finished clusters are kept.");
     expect(output.summary).not.toContain("Run ingest_board again");
     expect(output.summary).not.toContain("Retry after");
@@ -1063,8 +1063,10 @@ describe("ingestBoard", () => {
         text: "Figma denied access (FIGMA_ACCESS_TOKEN)", next: "Check FIGMA_ACCESS_TOKEN: it needs the scope file_content:read, and its account must be able to open the file.",
         absent: ["LLM_API_KEY", "diagnose_llm_config", "Retry after"] },
       { name: "image fills 429", tree: () => imageClusterTree(3), count: 3, reason: "figma_rate_limit",
-        setup: () => fetchImageRefsMock.mockRejectedValueOnce(new FigmaApiError("private provider body", 429, 3600)),
+        setup: () => fetchImageRefsMock.mockRejectedValueOnce(new FigmaApiError("private provider body", 429, 3600, undefined,
+          "Figma reports plan tier starter and rate limit type low.")),
         text: "Figma's rate limit was reached", next: "Retry after 2026-11-05 13:00 UTC (in about 1 hour): Figma limits requests by seat and plan; View and Collab seats are limited most strictly.",
+        details: "Figma reports plan tier starter and rate limit type low.",
         absent: ["model provider", "diagnose_llm_config"] },
       { name: "render 429", tree: () => drawingClusterTree(2), count: 2, reason: "figma_rate_limit",
         setup: () => fetchRenderUrlsMock.mockRejectedValueOnce(new FigmaApiError("private provider body", 429, 396000)),
@@ -1082,7 +1084,7 @@ describe("ingestBoard", () => {
         setup: () => refineClusterWithVisionMock.mockRejectedValueOnce(new LlmRequestError("private provider body", 429, 7200, Date.parse("2026-11-05T14:00:00Z"))),
         text: "the model provider's rate limit was reached", next: "Retry after 2026-11-05 14:00 UTC (in about 2 hours) for the pending provider cooldown.",
         absent: ["Figma's", "seat and plan", "FIGMA_ACCESS_TOKEN"] },
-    ])("$name is $reason with its own text and next step", async ({ tree, count, reason, setup, text, next, absent }) => {
+    ])("$name is $reason with its own text and next step", async ({ tree, count, reason, setup, text, next, absent, details }) => {
       vi.useFakeTimers({ toFake: ["Date"], now: noon });
       fetchFileTreeMock.mockResolvedValueOnce(tree());
       setup();
@@ -1090,6 +1092,7 @@ describe("ingestBoard", () => {
       expect(output.qualityReport?.fallbackReasons).toEqual({ [reason]: count });
       expect(output.summary).toContain(`incomplete for ${count} cluster${count === 1 ? "" : "s"}: ${text}.`);
       expect(output.summary).toContain(next);
+      if (details) expect(output.summary).toContain(details);
       for (const fragment of absent) expect(output.summary).not.toContain(fragment);
       expect(output.summary).not.toContain("private provider body");
       if (reason === "rate_limit") expect(output.qualityReport?.nextRetryAt).toBe(Date.parse("2026-11-05T14:00:00Z"));

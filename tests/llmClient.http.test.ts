@@ -59,6 +59,7 @@ beforeEach(() => {
   vi.stubEnv("LLM_SDK_MAX_RETRIES", "0");
   vi.stubEnv("LLM_RATE_LIMIT_RETRIES", "0");
   vi.stubEnv("LLM_PROVIDER_REQUIRE_PARAMETERS", "true");
+  for (const name of ["HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy"]) vi.stubEnv(name, undefined);
   vi.spyOn(console, "error").mockImplementation(() => {});
 });
 
@@ -70,6 +71,7 @@ afterEach(async () => {
   }
   server = undefined;
   vi.unstubAllEnvs();
+  vi.unstubAllGlobals();
   vi.restoreAllMocks();
   expect(fixtureErrors).toEqual([]);
 });
@@ -248,32 +250,43 @@ describe("LLM requests through real local HTTP and the OpenAI SDK", () => {
     expect(requests.map(request => request.model)).toEqual(["longer/vision", "ordinary/text"]);
   });
 
-  it.each([undefined, "", "   ", "Synthetic provider needs more credits"])(
-    "shows actionable HTTP 402 without provider text, or preserves its message in diagnose (%j)", async message => {
+  it.each([
+    { name: "OpenRouter", url: "https://openrouter.ai/api/v1", status: 402,
+      message: "This request requires more credits, or fewer max_tokens. You requested up to 4096 tokens, but can only afford 3400. To increase, visit https://billing.invalid/key and adjust your limit.",
+      guidance: "Before routing a paid request, OpenRouter checks whether your account balance covers the estimated cost, including the requested maximum output tokens up to its per-request cap. Remaining API key credit alone is insufficient. Check your OpenRouter account balance and add credits if needed.",
+      reason: "This request requires more credits. You requested up to 4096 tokens, but can only afford 3400." },
+    { name: "another provider with an embedded payment error", url: "https://openrouter.ai.example.invalid/v1", status: 200,
+      message: `Synthetic billing restriction ${"x".repeat(210)}`,
+      guidance: "Check your account balance and billing settings with the provider, and add credits if needed.",
+      reason: `Synthetic billing restriction ${"x".repeat(169)}…` },
+    { name: "a bare payment error", url: "https://other.invalid/v1", status: 402, message: undefined,
+      guidance: "Check your account balance and billing settings with the provider, and add credits if needed." },
+  ])("explains a payment error from $name throughout the diagnosis", async ({ url, status, message, guidance, reason }) => {
       for (const name of ["LLM_TEXT_MODELS", "LLM_FAST_TEXT_MODELS", "LLM_VISION_MODELS"]) vi.stubEnv(name, "paid/first,paid/second");
       vi.stubEnv("LLM_TEXT_MODEL", "");
       vi.stubEnv("LLM_VISION_MODEL", "");
-      await localClient((_request, response) => json(response, 402, { error: { code: 402, message } }));
+      vi.stubEnv("LLM_BASE_URL", url);
+      const fetchMock = vi.fn(async () => Response.json({ error: { code: 402, message } }, { status }));
+      vi.stubGlobal("fetch", fetchMock);
       const { diagnoseLlmConfig } = await import("../src/tools/diagnoseLlmConfig.js");
       const diagnosis = await diagnoseLlmConfig();
-      const expected = message?.trim() ? `${message}, code 402`
-        : "LLM request failed (HTTP 402): the model provider requires payment or more credits for this model. "
-          + "Add credits or raise the API key's credit limit, or use a free model.";
+      const expected = "LLM request failed (HTTP 402): the model provider requires payment or more credits for this model. "
+        + guidance + (reason ? ` Provider reason: ${reason}` : "");
       expect(diagnosis.ok).toBe(false);
       for (const check of diagnosis.checks) {
         expect(check).toMatchObject({ ok: false, error: `paid/first: ${expected}`,
           attempts: [{ model: "paid/first", ok: false, error: expected }] });
       }
       expect(diagnosis.summary).toBe(`LLM configuration has 3 checks failing.\n- text_json, fast_text_json, vision_json: paid/first: ${expected}`);
-      expect(requests.map(request => request.model)).toEqual(["paid/first", "paid/first", "paid/first"]);
+      expect(fetchMock).toHaveBeenCalledTimes(3);
     },
   );
 
-  it("gives answer_from_board the actionable HTTP 402 error without exposing provider details", async () => {
+  it("gives answer_from_board actionable HTTP 402 guidance before the URL-free provider reason", async () => {
     vi.stubEnv("LLM_TEXT_MODELS", "paid/first,paid/second");
     vi.stubEnv("LLM_TEXT_MODEL", "");
     await localClient((_request, response) => json(response, 402, { error: { code: 402,
-      message: "Provider returned error: synthetic private account detail" } }));
+      message: "Billing is disabled (https://billing.invalid/secret-path) for this account." } }));
     const { answerFromBoard } = await import("../src/tools/answerFromBoard.js");
     const { setBoard } = await import("../src/lib/cache.js");
     const { evidenceBoard } = await import("./fixtures/retrieval.js");
@@ -282,8 +295,24 @@ describe("LLM requests through real local HTTP and the OpenAI SDK", () => {
     await expect(answerFromBoard({ boardId: board.boardId, question: "What is required for payment retries?" }))
       .rejects.toMatchObject({ status: 402,
         message: "LLM request failed (HTTP 402): the model provider requires payment or more credits for this model. "
-          + "Add credits or raise the API key's credit limit, or use a free model." });
+          + "Check your account balance and billing settings with the provider, and add credits if needed. "
+          + "Provider reason: Billing is disabled for this account." });
     expect(requests.map(request => request.model)).toEqual(["paid/first"]);
+  });
+
+  it("leads a failed check with its terminal payment error after an earlier candidate fails", async () => {
+    for (const name of ["LLM_TEXT_MODELS", "LLM_FAST_TEXT_MODELS", "LLM_VISION_MODELS"]) vi.stubEnv(name, "paid/first,paid/second");
+    vi.stubEnv("LLM_TEXT_MODEL", "");
+    vi.stubEnv("LLM_VISION_MODEL", "");
+    vi.stubEnv("LLM_BASE_URL", "https://other.invalid/v1");
+    vi.stubGlobal("fetch", vi.fn(async (_url: string, init: RequestInit) => JSON.parse(String(init.body)).model === "paid/first"
+      ? Response.json({ error: { message: "Model unavailable" } }, { status: 503 })
+      : Response.json({ error: { message: "Insufficient credits" } }, { status: 402 })));
+    const { diagnoseLlmConfig } = await import("../src/tools/diagnoseLlmConfig.js");
+    const result = await diagnoseLlmConfig();
+    expect(result.checks[0]?.attempts?.map(attempt => attempt.model)).toEqual(["paid/first", "paid/second"]);
+    expect(result.checks[0]?.error).toMatch(/^paid\/second: LLM request failed \(HTTP 402\).*; paid\/first: Model unavailable$/);
+    expect(result.summary).toContain("- text_json, fast_text_json, vision_json: paid/second: LLM request failed (HTTP 402)");
   });
 
   it("names the provider's message in diagnose_llm_config only, without metadata.raw", async () => {
