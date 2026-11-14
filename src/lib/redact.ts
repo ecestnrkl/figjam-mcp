@@ -17,7 +17,7 @@ const VALUE_LABELS = String.raw`(?:${EXTENDABLE_LABELS})${LABEL_SUFFIX}|${DIRECT
 const LABELED_VALUE = new RegExp(String.raw`(?<![\p{L}\p{N}])((?:${VALUE_LABELS})${SPACE}*[:=]${SPACE}*)(?!\[redacted\])(?=\S)[^\r\n]*`, "giu");
 const EMPTY_LABEL = new RegExp(String.raw`(?<![\p{L}\p{N}])((?:${EXTENDABLE_LABELS})${LABEL_SUFFIX}|${DIRECT_LABELS}|pin)${SPACE}*[:=]${SPACE}*$`, "iu");
 const TABLE_LABEL = new RegExp(String.raw`^(?:${EXTENDABLE_LABELS}|${DIRECT_LABELS}|pin)${SPACE}*:?$`, "iu");
-const BEARER_TOKEN = /\b(Bearer(?:(?![\r\n\u2028\u2029])[\s\p{White_Space}])+)[A-Za-z0-9._~+/-]{20,}=*/giu;
+const BEARER_TOKEN = /\b(Bearer[\t \u00a0\u1680\u2000-\u200a\u202f\u205f\u3000]+)[A-Za-z0-9._~+/-]{20,}=*/giu;
 const JWT = /(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+(?![A-Za-z0-9_-])/g;
 // Error messages retain the established rules: board-only labels must not consume
 // actionable configuration names such as FIGMA_ACCESS_TOKEN followed by a colon.
