@@ -8,7 +8,7 @@ arrows into clusters, and answers questions with links back to the original node
 
 Rendered from the tool calls and outputs of a real run against the public
 [demo board](https://www.figma.com/board/MnLdkszfu3jthPDWHYWRiH/Demo-Board) with
-figjam-context-mcp 0.10.2 and `openai/gpt-4.1-mini`. Figma's MCP server
+figjam-context-mcp 0.14.0 and `openai/gpt-4.1-mini`. Figma's MCP server
 (`use_figma`) made the edit.
 
 ## Why
