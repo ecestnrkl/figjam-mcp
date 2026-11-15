@@ -491,7 +491,7 @@ async function publishBoard(board: BoardData, signal?: AbortSignal): Promise<boo
   catch (error) {
     signal?.throwIfAborted();
     board.persistenceWarning = persistenceFailureMessage(error);
-    // stderr stays on this machine and names the directory; the tool output does not.
+    // Permission diagnostics can name the directory locally. Other errors get the same fixed guidance.
     console.error(persistenceFailureMessage(error, true));
     failedRevision = (await readBoardHead(board.boardId)).revisionId ?? null;
   }
@@ -508,8 +508,10 @@ function persistenceFailureMessage(error: unknown, absolutePath = false): string
     return prefix + `${code}${location}: check permissions of FIGJAM_MCP_CACHE_DIR or the cache directory, then retry ingest_board.`;
   }
   if (code === "ENOSPC") return prefix + "ENOSPC: the disk is full; free disk space, then retry ingest_board.";
-  const message = redactMessage(error instanceof Error ? error.message : String(error)).replace(/\s+/g, " ").trim().slice(0, 200).replace(/[.!?]+$/, "");
-  return `${prefix}${code ? `${redactMessage(code)}: ` : ""}${message || "unknown error"}; retry ingest_board.`;
+  const relative = typeof path === "string" ? cacheRelativePath(path) : undefined;
+  const location = relative ? ` for ${JSON.stringify(redactMessage(relative))}` : "";
+  const reason = typeof code === "string" && code ? redactMessage(code) : "cache write failed";
+  return `${prefix}${reason}${location}: check the cache directory, then retry ingest_board.`;
 }
 const HISTORY_RESET_NOTICE = "The cache manifest cannot be read (damaged file); snapshot history has restarted; run ingest_board again after edits to record changes.";
 function ingestResult(board: BoardData, contentChanged?: boolean, historyReset = false, notices?: string, paymentMessage?: string): IngestBoardOutput {

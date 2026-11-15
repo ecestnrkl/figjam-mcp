@@ -654,6 +654,17 @@ describe("getBoardContext response size", () => {
     expect(lookup.text).toContain("[Part 3 of 3.]");
   });
 
+  it("reads a 60,000-character sticky without renormalizing its full text for every part", async () => {
+    const sticky = { ...textNode("9:1", "a ".repeat(30_000)), name: "Long-text fixture" };
+    const data = evidenceBoard("LongNameCheck123", [sticky]);
+    setBoard(data.boardId, data);
+    const start = performance.now();
+    const result = await getBoardContext({ boardId: data.boardId, nodeIds: [sticky.id], detail: "full", limit: 100, maxChars: 24000 });
+    expect(performance.now() - start).toBeLessThan(1000);
+    expect(result.structuredContent.evidence.length).toBeGreaterThan(5);
+    expect(result.text).toContain("Node name: Long-text fixture");
+  });
+
   it("shortens a first excerpt that alone exceeds the budget instead of failing", async () => {
     const data = evidenceBoard("Shorten123", [textNode("9:2", "evidence ".repeat(140))]);
     setBoard(data.boardId, data);

@@ -97,7 +97,7 @@ describe("MCP wire contract", () => {
     try {
       const result = await client.callTool({ name: "ingest_board", arguments: { figmaFileUrl: "https://www.figma.com/board/Synthetic/Fixture", ingestMode: "max_speed" } });
       const expected = status === 400
-        ? "Figma rejected the request (HTTP 400). Check the board URL and node IDs. For a large render, request fewer or smaller nodes."
+        ? "Figma rejected the request (HTTP 400). Check the board URL and file key."
         : "Figma sent an unreadable response: the connection failed while reading it. Try again in a few minutes; if it persists, check the network and status.figma.com.";
       expect(result.isError).toBe(true);
       expect(result.content).toEqual([{ type: "text", text: expected }]);

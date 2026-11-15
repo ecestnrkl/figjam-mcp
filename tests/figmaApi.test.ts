@@ -130,9 +130,9 @@ describe("bounded Figma requests", () => {
   });
   describe("other client errors", () => {
     it.each([
-      [400, "Check the board URL and node IDs. For a large render, request fewer or smaller nodes."],
-      [413, "Request fewer or smaller nodes at a time."],
-      [414, "Request fewer node IDs at a time."],
+      [400, "Check the board URL and file key."],
+      [413, "Try again. If the error persists, run ingest_board with ingestMode set to max_speed."],
+      [414, "Try again. If the error persists, run ingest_board with ingestMode set to max_speed."],
       [422, "Check the board URL and request parameters, then try again."],
     ])("gives fixed guidance for HTTP %i without retrying", async (status, guidance) => {
       const mock = vi.fn().mockResolvedValue(new Response(null, { status }));
@@ -154,7 +154,7 @@ describe("bounded Figma requests", () => {
       vi.stubGlobal("fetch", vi.fn().mockResolvedValue(response));
       const { fetchRenderUrls } = await import("../src/lib/figmaApi.js");
       const error = await failure(fetchRenderUrls("AbC123", ["1:2"], token));
-      expect(error.message).toBe("Figma rejected the request (HTTP 400). Check the board URL and node IDs. For a large render, request fewer or smaller nodes.");
+      expect(error.message).toBe("Figma rejected the request (HTTP 400). Check the board URL and file key.");
       expect(read).not.toHaveBeenCalled();
       expect(stderr).not.toHaveBeenCalled();
     });

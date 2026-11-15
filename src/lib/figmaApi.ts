@@ -45,9 +45,9 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
 }
 function rejectedRequestGuidance(status: number): string {
   switch (status) {
-    case 400: return "Check the board URL and node IDs. For a large render, request fewer or smaller nodes.";
-    case 413: return "Request fewer or smaller nodes at a time.";
-    case 414: return "Request fewer node IDs at a time.";
+    case 400: return "Check the board URL and file key.";
+    case 413:
+    case 414: return "Try again. If the error persists, run ingest_board with ingestMode set to max_speed.";
     default: return "Check the board URL and request parameters, then try again.";
   }
 }

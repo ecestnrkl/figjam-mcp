@@ -247,7 +247,7 @@ describe("ingestBoard", () => {
     ["EPERM", "Snapshot could not be saved; EPERM: check permissions of FIGJAM_MCP_CACHE_DIR or the cache directory, then retry ingest_board."],
     ["ENOSPC", "Snapshot could not be saved; ENOSPC: the disk is full; free disk space, then retry ingest_board."],
     ["EBUSY", "Snapshot could not be saved; another server process is writing; retry ingest_board."],
-    ["EIO", "Snapshot could not be saved; EIO: write failed; retry ingest_board."],
+    ["EIO", "Snapshot could not be saved; EIO: check the cache directory, then retry ingest_board."],
   ])("reports %s and its remedy in both persistence warning and summary", async (code, warning) => {
     const previous = await ingestBoard({ figmaFileUrl: "https://www.figma.com/board/AbC123/Fixture", docStructureHint: "freeform", ingestMode: "max_speed" });
     readLatestBoardMock.mockResolvedValue({ ...(persistBoardMock.mock.calls.at(-1)![0] as BoardData), snapshotId: "previous-snapshot" });
@@ -278,14 +278,20 @@ describe("ingestBoard", () => {
     stderr.mockRestore();
   });
 
-  it("redacts and bounds unexpected persistence errors", async () => {
-    vi.stubEnv("LLM_API_KEY", "synthetic-provider-secret-value");
-    persistBoardMock.mockRejectedValueOnce(Object.assign(new Error("write synthetic-provider-secret-value\n" + "x".repeat(250)), { code: "EIO" }));
-    const result = await ingestBoard({ figmaFileUrl: "https://www.figma.com/board/AbC123/Fixture", docStructureHint: "freeform", ingestMode: "max_speed" });
-    expect(result.persistenceWarning).toContain("EIO: write [redacted]");
-    expect(result.persistenceWarning).not.toMatch(/synthetic-provider-secret-value|\n/);
-    expect(result.persistenceWarning!.length).toBeLessThan(270);
-    expect(result.summary).toContain(result.persistenceWarning);
+  it("reports an EIO cache path without the Node error text or absolute directory", async () => {
+    const root = path.join(tmpdir(), "synthetic-profile", "figjam-cache");
+    vi.stubEnv("FIGJAM_MCP_CACHE_DIR", root);
+    const target = path.join(root, "v4", "snapshot.json");
+    persistBoardMock.mockRejectedValueOnce(Object.assign(new Error(`EIO: input/output error, write '${target}'`), { code: "EIO", path: target }));
+    const stderr = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const result = await ingestBoard({ figmaFileUrl: "https://www.figma.com/board/AbC123/Fixture", docStructureHint: "freeform", ingestMode: "max_speed" });
+      const warning = 'Snapshot could not be saved; EIO for "<cache>/v4/snapshot.json": check the cache directory, then retry ingest_board.';
+      expect(result.persistenceWarning).toBe(warning);
+      expect(result.summary).toContain(warning);
+      expect(JSON.stringify(result)).not.toContain("synthetic-profile");
+      expect(stderr.mock.calls).toEqual([[warning]]);
+    } finally { stderr.mockRestore(); }
   });
 
   it("parses only canonical Figma hosts and paths", () => {
