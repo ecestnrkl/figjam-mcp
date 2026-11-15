@@ -4,6 +4,7 @@ import path from "node:path";
 import { Client } from "@modelcontextprotocol/client";
 import { InMemoryTransport } from "@modelcontextprotocol/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { findSecretSpans, type SecretSpan } from "../src/lib/boardReadView.js";
 import { getBoard, setBoard } from "../src/lib/cache.js";
 import { retrieveEvidence } from "../src/lib/evidence.js";
 import { persistBoard, readLatestBoard } from "../src/lib/persistentCache.js";
@@ -22,6 +23,53 @@ const node = (id: string, text: string, name = "Sticky") => ({ ...textNode(id, t
 let directory: string;
 let server: ReturnType<typeof createServer>;
 let client: Client;
+
+describe("findSecretSpans", () => {
+  it("matches an indexOf reference on seeded cases with overlapping, nested and repeated secrets", () => {
+    const reference = (text: string, secrets: string[]) => {
+      const matches: SecretSpan[] = [];
+      for (const secret of secrets) {
+        for (let start = text.indexOf(secret); start !== -1; start = text.indexOf(secret, start + 1)) {
+          matches.push({ start, end: start + secret.length });
+        }
+      }
+      const merged: SecretSpan[] = [];
+      for (const match of matches.sort((a, b) => a.start - b.start)) {
+        const previous = merged.at(-1);
+        if (previous && match.start <= previous.end) previous.end = Math.max(previous.end, match.end);
+        else merged.push(match);
+      }
+      return merged;
+    };
+    let seed = 0x8516a3;
+    const random = (max: number) => {
+      seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+      return Math.floor(seed / 0x100000000 * max);
+    };
+    const word = (length: number) => Array.from({ length }, () => ["a", "b", "😀"][random(3)]).join("");
+    for (let i = 0; i < 600; i++) {
+      const motif = word(1 + random(3));
+      const text = i % 2 === 0 ? word(random(48)) : word(random(8)) + motif.repeat(6) + word(random(8));
+      const first = motif.repeat(2 + random(3));
+      const secrets = [first, i % 3 === 0 ? first : i % 3 === 1 ? motif : word(1 + random(7)), word(1 + random(7))]
+        .slice(0, 1 + random(3));
+      if (random(2)) secrets.reverse();
+      expect(findSecretSpans(text, secrets), `seeded case ${i}`).toEqual(reference(text, secrets));
+    }
+  });
+
+  it.each([
+    ["a × 30,000", "a".repeat(60000), "a".repeat(30000), 0],
+    ["a × 8,192", "a".repeat(60000), "a".repeat(8192), 0],
+    ["ab × 15,000", "ab".repeat(30000), "ab".repeat(15000), 0],
+    ["a × 29,999 followed by b", "a".repeat(59999) + "b", "a".repeat(29999) + "b", 30000],
+  ] as const)("finds spans for %s in 60,000 characters in under 100 ms", (_name, text, secret, start) => {
+    const before = performance.now();
+    const spans = findSecretSpans(text, [secret]);
+    expect(performance.now() - before).toBeLessThan(100);
+    expect(spans).toEqual([{ start, end: text.length }]);
+  });
+});
 
 beforeEach(async () => {
   directory = await mkdtemp(path.join(tmpdir(), "figjam-read-synthetic-"));
@@ -74,6 +122,17 @@ function safeText(output: unknown, key: string): void {
   expect(json).toContain("[redacted]");
   for (let start = 0; start + 8 <= key.length; start++) expect(json).not.toContain(key.slice(start, start + 8));
 }
+
+it("masks the full overlap of repeated keys in get_board_context", async () => {
+  const key = "ab".repeat(8);
+  const text = "before [redacted] after";
+  setBoard(boardId, evidenceBoard(boardId, [node("1:3", `before ${"ab".repeat(11)} after`)]));
+  vi.stubEnv("LLM_API_KEY", key);
+  const result = await client.callTool({ name: "get_board_context", arguments: { boardId, nodeIds: ["1:3"], detail: "full" } });
+  expect(result.isError).not.toBe(true);
+  expect(result.structuredContent).toMatchObject({ evidence: [{ text }] });
+  expect(JSON.stringify(result.content)).toContain(text);
+});
 
 it("masks table cell text before folding internal key whitespace across a part boundary", async () => {
   const key = "Z9KfxW22Zr8v   Uk6WFN9G";
