@@ -8,24 +8,50 @@ export interface SecretSpan { start: number; end: number }
 
 /** Find complete secrets while there is still enough text to recognize them. */
 export function findSecretSpans(text: string, secrets: readonly string[]): SecretSpan[] {
-  const spans: SecretSpan[] = [];
-  for (const secret of secrets) {
-    let previous: SecretSpan | undefined;
-    for (let start = text.indexOf(secret); start >= 0; start = text.indexOf(secret, start + 1)) {
-      const end = start + secret.length;
-      if (previous && start <= previous.end) previous.end = end;
-      else { previous = { start, end }; spans.push(previous); }
-    }
-  }
-  if (spans.length < 2) return spans;
-  spans.sort((a, b) => a.start - b.start);
-  const merged: SecretSpan[] = [];
-  for (const span of spans) {
+  let spans: SecretSpan[] = [];
+  const append = (merged: SecretSpan[], start: number, end: number) => {
     const previous = merged.at(-1);
-    if (previous && span.start <= previous.end) previous.end = Math.max(previous.end, span.end);
-    else merged.push(span);
+    if (previous && start <= previous.end) previous.end = Math.max(previous.end, end);
+    else merged.push({ start, end });
+  };
+  for (const secret of secrets) {
+    if (!secret.length || secret.length > text.length) continue;
+
+    // KMP prefix lengths let mismatches and overlapping matches reuse work.
+    const prefix = new Uint32Array(secret.length);
+    for (let i = 1, matched = 0; i < secret.length; i++) {
+      const unit = secret.charCodeAt(i);
+      while (matched && unit !== secret.charCodeAt(matched)) matched = prefix[matched - 1]!;
+      if (unit === secret.charCodeAt(matched)) matched++;
+      prefix[i] = matched;
+    }
+
+    // Matches arrive in start order; merge them with the already sorted spans.
+    const merged: SecretSpan[] = [];
+    let next = 0;
+    for (let i = 0, matched = 0; i < text.length; i++) {
+      const unit = text.charCodeAt(i);
+      while (matched && unit !== secret.charCodeAt(matched)) matched = prefix[matched - 1]!;
+      if (unit === secret.charCodeAt(matched)) matched++;
+      if (matched !== secret.length) continue;
+
+      const end = i + 1;
+      const start = end - matched;
+      while (next < spans.length && spans[next]!.start <= start) {
+        const span = spans[next++]!;
+        append(merged, span.start, span.end);
+      }
+      append(merged, start, end);
+      matched = prefix[matched - 1]!;
+    }
+    if (!merged.length) continue;
+    for (; next < spans.length; next++) {
+      const span = spans[next]!;
+      append(merged, span.start, span.end);
+    }
+    spans = merged;
   }
-  return merged;
+  return spans;
 }
 
 /** Render any range of the source, including a range that straddles a secret. */
